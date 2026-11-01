@@ -33,6 +33,11 @@ class RunMetrics:
     lock_blocked_bars: int
     skipped_no_candles: int
     filtered_out: int
+    lots_le_minus20: int = 0  # all lots (open marked, closed realized) with ret <= -20 %
+    share_lots_le_minus20: float = 0.0
+    early_exits: int = 0
+    flat_stops: int = 0
+    skipped_adds: int = 0
 
 
 def summarize(run: RunResult) -> RunMetrics:
@@ -71,6 +76,11 @@ def summarize(run: RunResult) -> RunMetrics:
         lock_blocked_bars=sum(x.locked_blocks for x in lots),
         skipped_no_candles=run.skipped_no_candles,
         filtered_out=run.filtered_out,
+        lots_le_minus20=sum(1 for x in lots if x.ret <= LOSS_LOT_PCT / 100.0),
+        share_lots_le_minus20=100.0 * sum(1 for x in lots if x.ret <= LOSS_LOT_PCT / 100.0) / len(lots) if lots else 0.0,
+        early_exits=sum(x.early_exits for x in lots),
+        flat_stops=sum(x.flat_stops for x in lots),
+        skipped_adds=sum(x.skipped_adds for x in lots),
     )
 
 

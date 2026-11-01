@@ -99,6 +99,11 @@ class Policy:
     entry_filter: Callable[[Episode], bool | None] | None = None
     size_multiplier: Callable[[Episode], float] | None = None
     description: str = ""
+    # loser-coin rules (2026-11-01): optional extra exits on top of the real stop code
+    early_exit_pct: float | None = None  # full sell if bar low <= avg * (1 - pct/100) ...
+    early_exit_hours: float = 72.0  # ... within this many hours after the entry fill
+    flat_stop_pct: float | None = None  # full sell at any time if bar low <= avg * (1 - pct/100)
+    no_adds: bool = False  # ignore every DCA/add buy (tape and rule)
 
 
 @dataclass
@@ -121,6 +126,9 @@ class LotResult:
     locked_blocks: int = 0
     min_unreal_pct: float = 0.0
     tape_sells_applied: int = 0
+    early_exits: int = 0
+    flat_stops: int = 0
+    skipped_adds: int = 0
 
 
 @dataclass
@@ -325,6 +333,7 @@ class Engine:
             return None
 
         lot = LotResult(ep.key, ep.entry.ts, self.window_of(ep.entry.ts), 0.0, 0.0, 0.0, 0.0, False, None, 0.0)
+        entry_unix = int(ep.entry.ts.timestamp())
         pos = _position_doc(ep, tier)
         cost_basis = 0.0  # cash in the open amount (incl. buy fees)
         prev_pnl = 0.0
@@ -377,6 +386,9 @@ class Engine:
                     tape_amount += f.amount
                     if f.is_add and policy.dca_mode == "rule":
                         continue  # rule mode decides adds itself
+                    if policy.no_adds:
+                        lot.skipped_adds += 1
+                        continue  # rule: no further DCA / adds
                     usdt = f.usdt * mult
                     px = self.costs.buy_price(f.price, slip)
                     amt = usdt / px
@@ -450,8 +462,26 @@ class Engine:
                                 lot.escalated += 1
                             else:
                                 lot.partial_rejects += 1
+            # 2b) loser-coin rules: early exit in the first N hours, flat full stop
+            if not closed and pos["amount"] > 0 and pos["average_entry"] > 0 and not locked:
+                avg = pos["average_entry"]
+                level = None
+                if policy.early_exit_pct is not None and bar_end <= entry_unix + policy.early_exit_hours * HOUR:
+                    lv = avg * (1.0 - policy.early_exit_pct / 100.0)
+                    if low <= lv:
+                        level = lv
+                        lot.early_exits += 1
+                if level is None and policy.flat_stop_pct is not None:
+                    lv = avg * (1.0 - policy.flat_stop_pct / 100.0)
+                    if low <= lv:
+                        level = lv
+                        lot.flat_stops += 1
+                if level is not None:
+                    mid = min(o, max(level, low))
+                    closed = self._sell(pos, lot, 1.0, self.costs.sell_price(mid, slip), fee_pct)
+                    cost_basis = 0.0
             # 3) rule-mode DCA at the bar close
-            if not closed and indicators is not None and pos["amount"] > 0 and not locked:
+            if not closed and indicators is not None and pos["amount"] > 0 and not locked and not policy.no_adds:
                 ind = indicators.at(i)
                 if ind:
                     from core.models import MarketContext

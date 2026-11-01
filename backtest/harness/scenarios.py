@@ -53,7 +53,7 @@ ENTRY_WINDOWS = tuple(_berlin_window(*w) for w in efr.WINDOWS)
 
 # Every candidate variant evaluated by this harness run (3 per scenario).
 # DSR deflates each primary candidate against all of them.
-N_TRIALS = 12
+N_TRIALS = 23  # 12 from (a)-(d) + 11 loser-coin candidates (e)-(h), 2026-11-01
 
 
 @dataclass
@@ -398,7 +398,106 @@ def scenario_d(ctx: Context) -> ScenarioResult:
     return res
 
 
+# ---------------------------------------------------------------------------
+# Loser-coin rules (2026-11-01, /workspace/umbau/loser_coins_analysis.md).
+# Pre-registered before the run: primary thresholds are the ones from the
+# analysis (-10 % in 72 h; -15 % flat stop without adds; 48 h pump > 15 %);
+# the neighbours are sensitivity variants and count as trials for the DSR.
+
+
+def _pump48_ok(ctx: Context, limit_pct: float, missing: set) -> Callable[[Episode], bool | None]:
+    def ok(ep: Episode) -> bool | None:
+        hourly = ctx.engine.candles_1h(ep.symbol)
+        sig = _signal_unix(ep)
+        lows = [b[3] for b in hourly if sig - 48 * 3600 <= b[0] and b[0] + 3600 <= sig]
+        if len(lows) < 36 or min(lows) <= 0:
+            missing.add((limit_pct, ep.key, ep.entry.ts))
+            return None  # not enough history: keep
+        pump = (ep.entry.price / min(lows) - 1.0) * 100.0
+        return pump <= limit_pct
+
+    return ok
+
+
+def _early(name: str, pct: float, hours: float = 72.0, **kw) -> Policy:
+    return policy(name, ref=None, escalate=True, early_exit_pct=pct, early_exit_hours=hours, **kw)
+
+
+def _flat(name: str, pct: float, **kw) -> Policy:
+    return policy(name, ref=None, escalate=True, flat_stop_pct=pct, no_adds=True, **kw)
+
+
+def _early_variants():
+    return [
+        (policy("baseline", ref=None, escalate=True), "staging stop/DCA code, recorded entries and adds"),
+        (_early("early10_72h", 10.0), "full sell when the lot is -10 % vs avg within 72 h of entry; closed lot takes no further adds"),
+        (_early("early8_72h", 8.0), "same, -8 %"),
+        (_early("early12_72h", 12.0), "same, -12 %"),
+    ]
+
+
+def _flat_variants():
+    return [
+        (policy("baseline", ref=None, escalate=True), "staging stop/DCA code, recorded entries and adds"),
+        (_flat("stop15_noadd", 15.0), "full stop at -15 % vs avg any time, no DCA/add buys at all"),
+        (_flat("stop12_noadd", 12.0), "same, -12 %"),
+        (_flat("stop20_noadd", 20.0), "same, -20 %"),
+    ]
+
+
+def scenario_e(ctx: Context) -> ScenarioResult:
+    return _evaluate(ctx, key="e", title="Early exit: -10 % within 72 h -> full sell", question="Does cutting lots that fall 10 % in their first 72 h beat staging (Jul-Oct entries)?",
+                     mode="entries", windows=ENTRY_WINDOWS, variants=_early_variants(), baseline="baseline", primary="early10_72h")
+
+
+def scenario_f(ctx: Context) -> ScenarioResult:
+    return _evaluate(ctx, key="f", title="Plain -15 % full stop, no DCA", question="Does a flat -15 % stop without any adds beat staging (Jul-Oct entries)?",
+                     mode="entries", windows=ENTRY_WINDOWS, variants=_flat_variants(), baseline="baseline", primary="stop15_noadd")
+
+
+def scenario_g(ctx: Context) -> ScenarioResult:
+    missing: set = set()
+    variants = [(policy("baseline", ref=None, escalate=True), "all recorded entries")]
+    for lim in (15.0, 10.0, 20.0):
+        variants.append((policy(f"nochase{lim:.0f}", ref=None, escalate=True, entry_filter=_pump48_ok(ctx, lim, missing)),
+                         f"skip entry if price > {lim:.0f} % above the lowest 1h low of the 48 h before the signal"))
+    res = _evaluate(ctx, key="g", title="No chasing: skip entry after >15 % 48 h pump", question="Does skipping entries after a 48 h pump > 15 % beat staging?",
+                    mode="entries", windows=ENTRY_WINDOWS, variants=variants, baseline="baseline", primary="nochase15")
+    res.notes.append(f"Entries kept for lack of 48 h history (primary): {sum(1 for m in missing if m[0] == 15.0)}.")
+    return res
+
+
+def scenario_h(ctx: Context) -> ScenarioResult:
+    missing: set = set()
+    nc = _pump48_ok(ctx, 15.0, missing)
+    variants = [
+        (policy("baseline", ref=None, escalate=True), "staging, all recorded entries"),
+        (_early("early10+nochase15", 10.0, entry_filter=nc), "(e) early10_72h + (g) nochase15"),
+        (_flat("stop15_noadd+nochase15", 15.0, entry_filter=nc), "(f) stop15_noadd + (g) nochase15"),
+    ]
+    return _evaluate(ctx, key="h", title="Combined: early exit + no chasing", question="Do the exit and entry rules together beat staging?",
+                     mode="entries", windows=ENTRY_WINDOWS, variants=variants, baseline="baseline", primary="early10+nochase15")
+
+
+def scenario_e_oct(ctx: Context) -> ScenarioResult:
+    return _evaluate(ctx, key="e_oct", title="Early exit on the October book (check)", question="Same rule on the whole October book (lots carried in at window start).",
+                     mode="book", windows=OCT_WINDOWS, variants=_early_variants(), baseline="baseline", primary="early10_72h",
+                     notes=["Book mode: lots entered before a window keep their 72 h clock from the real entry, so carried-in lots older than 72 h only see the staging stops."])
+
+
+def scenario_f_oct(ctx: Context) -> ScenarioResult:
+    return _evaluate(ctx, key="f_oct", title="Flat -15 % stop, no DCA, on the October book (check)", question="Same rule on the whole October book.",
+                     mode="book", windows=OCT_WINDOWS, variants=_flat_variants(), baseline="baseline", primary="stop15_noadd",
+                     notes=["Book mode: a carried-in lot already below -15 % vs avg at window start is sold on the first bar."])
+
+
 SCENARIOS: dict[str, Callable[[Context], ScenarioResult]] = {
+    "e": scenario_e,
+    "f": scenario_f,
+    "g": scenario_g,
+    "h": scenario_h,
+    "e_oct": scenario_e_oct,
+    "f_oct": scenario_f_oct,
     "a": scenario_a,
     "b": scenario_b,
     "c": scenario_c,
