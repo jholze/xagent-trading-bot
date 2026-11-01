@@ -422,6 +422,14 @@ class RiskManager:
     ) -> RiskDecision:
         from core.test_symbols import is_phantom_test_symbol
 
+        # One check for every BUY and add, including manual. Before other
+        # gates so the tape records the denylist code. Sells, covers, and
+        # shorts are not this rule.
+        if str(getattr(order, "type", "") or "").upper() == "BUY":
+            denied = self._symbol_source_denylist(order, source)
+            if denied is not None:
+                return denied
+
         cfg = self.config.raw if hasattr(self.config, "raw") else self.config
         if (
             is_demo_mode()
@@ -1883,6 +1891,33 @@ class RiskManager:
             code=code,
             size_multiplier=0.0,
             details=details,
+        )
+
+    def _symbol_source_denylist(self, order: TradeOrder, source: str) -> RiskDecision | None:
+        """Reject a BUY whose base or signal source is on the risk denylist.
+
+        Checked once, before sizing. Malformed ``risk.symbol_denylist`` or
+        ``risk.source_denylist`` fail-closes. Absent keys do not block.
+        """
+        from risk.denylist import CODE_CONFIG, evaluate_denylist
+
+        if str(getattr(order, "type", "") or "").upper() != "BUY":
+            return None
+        risk = self.config.risk_config if hasattr(self.config, "risk_config") else {}
+        verdict = evaluate_denylist(
+            getattr(order, "symbol", "") or "",
+            [source, getattr(order, "source", None)],
+            risk,
+        )
+        if not verdict.blocked:
+            return None
+        codes = [CODE_CONFIG] if verdict.malformed else list(verdict.codes)
+        return RiskDecision(
+            approved=False,
+            message=" ".join(codes),
+            code=codes[0],
+            size_multiplier=0.0,
+            details={"codes": list(codes)},
         )
 
     def _buy_lock_decision(

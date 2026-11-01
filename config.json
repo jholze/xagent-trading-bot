@@ -466,6 +466,10 @@
   },
   "risk": {
     "fail_closed_guards": "deny",
+    "symbol_denylist": ["BLESS", "LAB", "AVAIL", "H"],
+    "source_denylist": ["gainer_rank_entry"],
+    "_symbol_denylist_doc": "Base assets. Every BUY and every add is rejected. Tenant override replaces the list. A present value that is not a list of non-empty strings fail-closes every BUY. A missing key is an empty list.",
+    "_source_denylist_doc": "Signal sources. Same check, same fail-closed rule, same tenant replace.",
     "block_stablecoin_buys": true,
     "_block_stablecoin_buys_doc": "Hard block buys of pegged bases (GUSD, USDP, USDC, DAI, …). Not volatility_tier stable. Kill: false. Enforced in risk_manager + coin_eligibility.",
     "position_locks": {
