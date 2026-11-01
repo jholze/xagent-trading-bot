@@ -53,7 +53,7 @@ ENTRY_WINDOWS = tuple(_berlin_window(*w) for w in efr.WINDOWS)
 
 # Every candidate variant evaluated by this harness run (3 per scenario).
 # DSR deflates each primary candidate against all of them.
-N_TRIALS = 23  # 12 from (a)-(d) + 11 loser-coin candidates (e)-(h), 2026-11-01
+N_TRIALS = 50  # 12 from (a)-(d) + 11 loser-coin candidates (e)-(h) + 27 regime-conditional (r_*), 2026-11-01
 
 
 @dataclass
@@ -491,6 +491,96 @@ def scenario_f_oct(ctx: Context) -> ScenarioResult:
                      notes=["Book mode: a carried-in lot already below -15 % vs avg at window start is sold on the first bar."])
 
 
+# ---------------------------------------------------------------------------
+# Regime-conditional loser-coin rules (2026-11-01, second run).
+# Regime known at decision time only (bars closed before the bar / the signal).
+# Per regime definition: primary parameters + 2 shifted neighbours (count as trials).
+import os as _os
+
+from . import regime as _rg
+
+_REGIME_CACHE: dict = {}
+
+
+def _regimes(ctx: Context) -> dict[str, list]:
+    if "series" in _REGIME_CACHE:
+        return _REGIME_CACHE["series"]
+    cdir = _os.environ.get("BT_CANDLES", "/workspace/bt-data/candles")
+    I = _rg.load_inputs(
+        cdir,
+        _os.environ.get("BT_BREADTH", "/workspace/bt-data/candles_breadth"),
+        _os.environ.get("BT_FUNDING", "/workspace/bt-data/btc_funding_gate.json"),
+    )
+    br = _rg.breadth_table(I["universe"])
+    b1, e1, bd = I["btc_1h"], I["eth_1h"], I["btc_1d"]
+    fund = I["funding"]
+    series = {
+        "oracle": [
+            _rg.oracle_series(b1, e1, bd, breadth=br, funding=fund, name="oracle"),
+            _rg.oracle_series(b1, e1, bd, breadth=br, funding=fund, risk_off_24h=-2.5,
+                              breadth_risk_off_max_green=0.40, breadth_rotten_max_green=0.30, name="oracle_sensitive"),
+            _rg.oracle_series(b1, e1, bd, breadth=br, funding=fund, risk_off_24h=-3.5,
+                              breadth_risk_off_max_green=0.30, breadth_rotten_max_green=0.20, name="oracle_lax"),
+        ],
+        "sma": [_rg.sma_series(bd, b1, n=50), _rg.sma_series(bd, b1, n=40), _rg.sma_series(bd, b1, n=60)],
+        "ret": [_rg.ret_series(b1, hours=168, name="ret7d"), _rg.ret_series(b1, hours=120, name="ret5d"),
+                _rg.ret_series(b1, hours=240, name="ret10d")],
+    }
+    _REGIME_CACHE["series"] = series
+    _REGIME_CACHE["breadth"] = br
+    return series
+
+
+def _nochase_regime(ctx: Context, ser: "_rg.Series", missing: set, off: float = 10.0, on: float = 20.0,
+                    neutral: float = 15.0) -> Callable[[Episode], bool | None]:
+    filters = {lim: _pump48_ok(ctx, lim, missing) for lim in (off, on, neutral)}
+
+    def ok(ep: Episode) -> bool | None:
+        lab = ser.at(_signal_unix(ep))
+        if lab is None:
+            lim = neutral
+        elif lab in _rg.OFF_STATES or lab == "OFF":
+            lim = off
+        elif lab == "NEUTRAL":
+            lim = neutral
+        else:
+            lim = on
+        return filters[lim](ep)
+
+    return ok
+
+
+def _regime_variants(ctx: Context, fam: str, rule: str):
+    missing: set = set()
+    out = [(policy("baseline", ref=None, escalate=True), "staging, all recorded entries")]
+    for ser in _regimes(ctx)[fam]:
+        kw: dict = {}
+        desc = []
+        if rule in ("e", "h"):
+            kw.update(early_exit_pct=10.0, early_exit_hours=72.0, early_exit_gate=ser.gate())
+            desc.append(f"early exit -10 %/72 h only while {ser.name} is risk-off")
+        if rule in ("g", "h"):
+            kw["entry_filter"] = _nochase_regime(ctx, ser, missing)
+            desc.append(f"no-chase 48 h pump limit 10 % if {ser.name} risk-off, 20 % risk-on (15 % NEUTRAL)")
+        out.append((policy(f"{rule}_{ser.name}", ref=None, escalate=True, **kw), "; ".join(desc)))
+    return out
+
+
+_RTITLE = {"e": "Early exit only in risk-off", "g": "No-chase threshold by regime", "h": "Both (regime early exit + regime no-chase)"}
+_RFAM = {"oracle": "bot Market Oracle state (RISK_OFF/CRASH)", "sma": "BTC daily close < SMA50", "ret": "BTC 7-day return < 0"}
+
+
+def _regime_scenario(fam: str, rule: str):
+    def run(ctx: Context) -> ScenarioResult:
+        variants = _regime_variants(ctx, fam, rule)
+        prim = variants[1][0].name
+        return _evaluate(ctx, key=f"r_{rule}_{fam}", title=f"{_RTITLE[rule]} [{_RFAM[fam]}]",
+                         question="Does making the loser-coin rule regime-conditional beat staging in all market phases?",
+                         mode="entries", windows=ENTRY_WINDOWS, variants=variants, baseline="baseline", primary=prim,
+                         notes=["Regime from BTC/ETH (and breadth/funding for oracle) bars closed before the decision bar."])
+    return run
+
+
 SCENARIOS: dict[str, Callable[[Context], ScenarioResult]] = {
     "e": scenario_e,
     "f": scenario_f,
@@ -503,3 +593,6 @@ SCENARIOS: dict[str, Callable[[Context], ScenarioResult]] = {
     "c": scenario_c,
     "d": scenario_d,
 }
+for _fam in ("oracle", "sma", "ret"):
+    for _rule in ("e", "g", "h"):
+        SCENARIOS[f"r_{_rule}_{_fam}"] = _regime_scenario(_fam, _rule)

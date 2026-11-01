@@ -104,6 +104,9 @@ class Policy:
     early_exit_hours: float = 72.0  # ... within this many hours after the entry fill
     flat_stop_pct: float | None = None  # full sell at any time if bar low <= avg * (1 - pct/100)
     no_adds: bool = False  # ignore every DCA/add buy (tape and rule)
+    # regime-conditional (2026-11-01): early exit only when gate(bar_open_unix) is True.
+    # The gate must only use data closed before bar_open_unix (no lookahead).
+    early_exit_gate: Callable[[int], bool] | None = None
 
 
 @dataclass
@@ -466,7 +469,11 @@ class Engine:
             if not closed and pos["amount"] > 0 and pos["average_entry"] > 0 and not locked:
                 avg = pos["average_entry"]
                 level = None
-                if policy.early_exit_pct is not None and bar_end <= entry_unix + policy.early_exit_hours * HOUR:
+                if (
+                    policy.early_exit_pct is not None
+                    and bar_end <= entry_unix + policy.early_exit_hours * HOUR
+                    and (policy.early_exit_gate is None or policy.early_exit_gate(bar_ts))
+                ):
                     lv = avg * (1.0 - policy.early_exit_pct / 100.0)
                     if low <= lv:
                         level = lv
