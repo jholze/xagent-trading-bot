@@ -2,6 +2,7 @@
 
 import json
 import os
+import uuid
 
 import pytest
 
@@ -14,7 +15,7 @@ from data_manager import (
     save_positions_document,
     save_trade_history_document,
 )
-from storage.mongo_client import drop_database
+from storage.mongo_client import close_client, drop_database, get_client, resolve_test_db_name
 
 FIXTURES = (
     __import__("pathlib").Path(__file__).resolve().parents[1] / "fixtures" / "hermes"
@@ -26,6 +27,26 @@ def mongo_test_env(monkeypatch):
     drop_database(test=True)
     yield
     drop_database(test=True)
+
+
+def _use_unique_mongo_db(monkeypatch, request) -> str:
+    """Point MONGODB_DB at a DB name owned by this test only and drop it afterwards.
+
+    A hardcoded ``xagent_pytest`` bypasses ``PYTEST_DB_SUFFIX`` and lets parallel
+    suites on one mongod write into the same ledger (flaky snapshot compare).
+    """
+    name = f"{resolve_test_db_name()[:50]}_{uuid.uuid4().hex[:12]}"
+    monkeypatch.setenv("MONGODB_DB", name)
+    close_client()
+
+    def _drop() -> None:
+        try:
+            get_client().drop_database(name)
+        finally:
+            close_client()
+
+    request.addfinalizer(_drop)
+    return name
 
 
 def _mongo_config(base: dict) -> dict:
@@ -292,7 +313,9 @@ def _run_buy_sell_cycle(monkeypatch, cfg: dict, paths: dict):
 
 
 @pytest.mark.parametrize("backend", ["local", "mongo"])
-def test_buy_sell_cycle_equivalent_results(tmp_path, monkeypatch, mongo_test_env, backend, zero_cost_model):  # #301
+def test_buy_sell_cycle_equivalent_results(
+    tmp_path, monkeypatch, request, mongo_test_env, backend, zero_cost_model
+):  # #301
     from data_manager import get_config
 
     base = get_config()
@@ -301,7 +324,7 @@ def test_buy_sell_cycle_equivalent_results(tmp_path, monkeypatch, mongo_test_env
         cfg = _local_config(base)
     else:
         cfg = _mongo_config(base)
-        monkeypatch.setenv("MONGODB_DB", "xagent_pytest")
+        _use_unique_mongo_db(monkeypatch, request)
 
     snapshot = _run_buy_sell_cycle(monkeypatch, cfg, paths)
 
@@ -367,11 +390,12 @@ def test_migration_json_matches_mongo_content(tmp_path, monkeypatch, mongo_test_
     assert load_trade_history_document(scope)["trades"] == history["trades"]
 
 
-def test_local_vs_mongo_buy_sell_snapshots_match(tmp_path, monkeypatch, mongo_test_env):
+def test_local_vs_mongo_buy_sell_snapshots_match(tmp_path, monkeypatch, request, mongo_test_env):
     from data_manager import get_config
 
     base = get_config()
-    monkeypatch.setenv("MONGODB_DB", "xagent_pytest")
+    db_name = _use_unique_mongo_db(monkeypatch, request)
+    assert db_name != "xagent_pytest"
 
     local_paths = _isolated_ledger_paths(tmp_path / "local_cmp")
     mongo_paths = _isolated_ledger_paths(tmp_path / "mongo_cmp")

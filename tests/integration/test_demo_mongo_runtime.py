@@ -1,6 +1,7 @@
 """Demo ledger runtime invariants when DEMO_LEDGER_BACKEND=mongo."""
 
 import os
+import uuid
 
 import pytest
 
@@ -10,7 +11,10 @@ from storage.errors import LedgerUnavailable
 def demo_mongo_env(monkeypatch):
     monkeypatch.setenv("DEMO_MODE", "1")
     monkeypatch.setenv("DEMO_LEDGER_BACKEND", "mongo")
-    monkeypatch.setenv("MONGODB_DB", "xagent_pytest")
+    from storage.mongo_client import resolve_test_db_name
+
+    # Unique per test: a hardcoded xagent_pytest bypasses PYTEST_DB_SUFFIX.
+    monkeypatch.setenv("MONGODB_DB", f"{resolve_test_db_name()[:50]}_{uuid.uuid4().hex[:12]}")
     monkeypatch.delenv("DEMO_LEDGER_JSON_FALLBACK", raising=False)
 
 
