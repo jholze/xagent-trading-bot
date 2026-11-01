@@ -95,7 +95,7 @@ drawdown, measured on paper first; see the evidence rules in `AGENTS.md` and `do
 - Change live config or `*.live.json`, enable live trading, place orders, call bot MCP buy/sell/lock.
 - Create accounts or paid services.
 - Read or print `.env`, `.env.local`, `ngrok.log`, credentials files, tokens, `.cursor/mcp.json`.
-- Merge, push to `main` or `staging`, set `owner-approved` or Omnigent labels, use `ALLOW_DEPLOY_PUSH=1`.
+- Merge (exception: Kay into `staging` under the merge rule in `AGENTS.md` rule 6), push to `main` or `staging`, set `owner-approved` or Omnigent labels, use `ALLOW_DEPLOY_PUSH=1`.
 - Edit an existing test assertion to make a change pass.
 - Hardcode coin names in strategy or risk code.
 
@@ -108,7 +108,7 @@ drawdown, measured on paper first; see the evidence rules in `AGENTS.md` and `do
 - [ ] DeepSeek review passed; Claude Opus final review passed for high-risk paths / before going live; tester sign-off.
 - [ ] Docs updated (`AGENTS.md`, `docs/`) when rules or behavior change.
 - [ ] No secrets in diff, logs or PR text.
-- [ ] Merged by Jens.
+- [ ] Merged by Jens, or by Kay into `staging` only under the merge rule below.
 
 ## 9. Workflow and roles
 
@@ -116,8 +116,12 @@ See [`docs/workflow.md`](workflow.md). Lead: Kay (Grok Bot lead). Coder: Grok 4.
 (`deepseek-v4-pro`) per PR. Final reviewer: Claude Opus (`claude-opus-5-5`), mandatory. Tester: separate role.
 Branch naming `<type>/<slug>-<issue>` (`fix/`, `feat/`, `docs/`, `chore/`, `perf/`, `test/`, `ci/`, `hotfix/`,
 `cursor/`), one worktree per task under `/Users/jholze/Documents/scripts/trading_bot-worktrees/<branch-slug>`, PR
-against `staging`, merge only by Jens. PR template: none in `.github/` (OPEN). Back channel: a session in the Omnigent
+against `staging`, merge only by Jens except as below. PR template: none in `.github/` (OPEN). Back channel: a session in the Omnigent
 project `adba8ee6896849cd82e22bec7a881691`, addressed to Jens' assistant.
+
+Merge rule for this project (Jens, 2026-11-01): Kay may merge a PR into `staging` himself only if ALL hold: (1) demonstrated improvement with evidence in the PR (tests, backtest or paper-trading results); (2) it affects paper trading only; (3) review gate passed: a DeepSeek review on the PR, plus a Claude Opus review if any high-risk path is touched; (4) CI is green. Everything else stays with Jens: merges to `main`, any deploy, changes to live paths (`aria_bot.py`, `execution/`, `risk/`, `*.live.json`), and anything involving real money. For those, open the PR and stop.
+
+Model rule: Grok 4.7 writes code, DeepSeek reviews every PR, Claude Opus does the final review before anything live and on risky paths (mandatory, real money), every PR needs at least two model families, author and reviewer never from the same family.
 
 ## 10. Open questions
 
