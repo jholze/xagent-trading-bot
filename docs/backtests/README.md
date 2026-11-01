@@ -83,3 +83,6 @@ block bootstrap, explicit cost tiers.
   not seen.
 * The positions export is a single snapshot; the report prints how many open
   lots the tape and the export agree on.
+
+## Long walk-forward + DCA caps (2026-11-01)
+`python -m backtest.harness.longwf` (full: proxy entries Jan 2025 - Oct 2026 + tape) or `--tape-only` (recorded entries W1-W3, random gate baselines). Candles from `BT_LONG` (default /workspace/bt-data/candles_long, public Gate.io; 1h before ~2025-09-10 synthesised from 4h). Reports: 2026-11-01-longwf-dcacap.md, 2026-11-01-dcacap-tape.md. Use `--procs 2` (each worker holds ~1.3 GB of candles).
