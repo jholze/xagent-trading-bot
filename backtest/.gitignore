@@ -1,0 +1,7 @@
+# Local candle / OHLCV caches and exports: never commit
+candles/
+cache/
+.cache/
+data/
+*.parquet
+*.jsonl

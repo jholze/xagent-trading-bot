@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from hypothesis import HealthCheck, given, settings
-from hypothesis import strategies as st
+import pytest
 
-from backtest.harness import stats
-from backtest.harness.costs import CostModel
-from tests.unit.test_backtest_harness import T0, _engine, _fill, _policy, _run
+pytest.importorskip("hypothesis", reason="property tests need `pip install hypothesis`")
+
+from hypothesis import HealthCheck, given, settings   # noqa: E402
+from hypothesis import strategies as st   # noqa: E402
+
+from backtest.harness import stats  # noqa: E402
+from backtest.harness.costs import CostModel  # noqa: E402
+from tests.unit.test_backtest_harness import T0, _engine, _fill, _policy, _run  # noqa: E402
 
 prices = st.lists(st.floats(min_value=0.05, max_value=5.0, allow_nan=False), min_size=4, max_size=60)
 rets = st.lists(st.floats(min_value=-0.5, max_value=0.5, allow_nan=False), min_size=3, max_size=120)
