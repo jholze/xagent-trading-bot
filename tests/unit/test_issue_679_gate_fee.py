@@ -59,7 +59,8 @@ def _cfg(**swap_overrides) -> BotConfig:
                 "funding_rate_8h": 0.0,
                 "volatile": {"market_cap_min_usd": 0},
             },
-            "risk": {"max_daily_loss_pct": 0, "max_daily_sells": 0},
+            # Pinned: this fixture was written for the old implicit "log" default.
+            "risk": {"max_daily_loss_pct": 0, "max_daily_sells": 0, "fail_closed_guards": "log"},
             "costs": {
                 "fee_source": "config",
                 "gate": {

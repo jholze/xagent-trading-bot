@@ -287,6 +287,8 @@ class TestRiskVenueAndSoftBlockScope(unittest.TestCase):
         rm = RiskManager(config=MagicMock())
         rm.config.raw = {
             "risk": {
+                # Pinned: written for the old implicit "log" default.
+                "fail_closed_guards": "log",
                 "venue_quality": VENUE_CFG,
                 "cash_floor_pct": 0,
                 "liquidity_guard": {
