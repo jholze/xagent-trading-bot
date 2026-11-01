@@ -897,7 +897,13 @@ class DecisionEngine:
         market: MarketContext = None,
         position: dict = None,
         lc_signal=None,
+        merge_flags: dict | None = None,
     ) -> tuple:
+        # merge_flags is a per-call out-parameter owned by the caller (one evaluation).
+        # It replaces instance state so concurrent process_coin calls cannot leak a flag
+        # from one coin's merge into another coin's sell decision.
+        if merge_flags is None:
+            merge_flags = {}
         sources = list(technical.sources)
         candidates = []
         structure_rationales = []
@@ -955,7 +961,7 @@ class DecisionEngine:
 
         # CS-F1: the long hard stop is evaluated HERE for every held lot with a positive entry, not only when
         # TechnicalRSIStrategy put "stop_loss" into technical.sources (grid / HOLD / other class cannot skip it).
-        self._merge_long_hard_stop = bool(getattr(technical, "long_hard_stop", False))
+        merge_flags["long_hard_stop"] = bool(getattr(technical, "long_hard_stop", False))
         if (
             market is not None
             and getattr(market, "has_position", False)
@@ -1001,7 +1007,7 @@ class DecisionEngine:
                     candidates.append((normalize(_act), 7, _src))  # CS-F1-APPEND
                     if "stop_loss" not in sources:
                         sources.append("stop_loss")
-                    self._merge_long_hard_stop = True  # CS-F1-FLAG
+                    merge_flags["long_hard_stop"] = True  # CS-F1-FLAG
                 else:
                     structure_rationales.append("partial_stop paused (DCA rounds still open)")
 
@@ -1666,9 +1672,11 @@ class DecisionEngine:
         sell_source = ""
         sell_policy_audit: dict = {}
         sensor_shadow = ""
+        merge_flags: dict = {}  # per-evaluation; filled by _merge_sell (CS-F1-FLAG)
         if market.has_position:
             normalized, sources, confidence, structure_rationales, sell_source, sell_policy_audit = self._merge_sell(
-                technical, x_signal, cmc_signal, all_social, market, position, lc_signal
+                technical, x_signal, cmc_signal, all_social, market, position, lc_signal,
+                merge_flags=merge_flags,
             )
             if normalized == HOLD:
                 # Epic #222: sniper owns heavy DCA when enabled
@@ -1999,7 +2007,7 @@ class DecisionEngine:
         # Hard stop only if the shared stop fired and this merge kept it.
         # A later RSI / trail / TP winner stays its own sell.
         analysis.long_hard_stop = bool(
-            (getattr(technical, "long_hard_stop", False) or getattr(self, "_merge_long_hard_stop", False))  # CS-F1-FLAG
+            (getattr(technical, "long_hard_stop", False) or bool(merge_flags.get("long_hard_stop")))  # CS-F1-FLAG
             and str(sell_source or "") in ("stop_loss", "partial_stop")
         )
         if analysis.long_hard_stop and "grid" in (analysis.sources or []):

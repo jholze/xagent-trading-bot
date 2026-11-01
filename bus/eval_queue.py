@@ -224,27 +224,98 @@ def _is_protected_member(client, meta_key: str, member) -> bool:
     """CS-F3: a pending position heartbeat is never trimmed (it is the only path to analyze for a held lot)."""
     try:
         raw = client.hget(meta_key, member)
+        return _is_protected_meta(raw)
+    except Exception:
+        return False
+
+
+def _is_protected_meta(raw) -> bool:
+    try:
         return bool(raw) and str(json.loads(raw).get("reason") or "") == HEARTBEAT_REASON  # CS-F3-PROTECT
     except Exception:
         return False
 
 
+_TRIM_FIRST_CHUNK = 64
+_TRIM_BLOCKED_BACKOFF_SEC = 30.0
+_TRIM_WARN_INTERVAL_SEC = 60.0
+# (id(client), queue_key) -> monotonic time of the last trim that found only protected heartbeats left
+_trim_blocked_at: dict[tuple, float] = {}
+# (id(client), queue_key) -> monotonic time of the last over-cap warning
+_trim_warned_at: dict[tuple, float] = {}
+
+
+def _reset_trim_state_for_tests() -> None:
+    _trim_blocked_at.clear()
+    _trim_warned_at.clear()
+
+
 def _trim_queue(client, queue_key: str, meta_key: str, max_len: int) -> int:
-    """CS-F3: trim the worst-ranked NON-heartbeat members until len <= max_len (or only heartbeats are left)."""
+    """CS-F3: trim the worst-ranked NON-heartbeat members until len <= max_len (or only heartbeats are left).
+
+    Cost per call is bounded and independent of queue length in the common case:
+    - ZCARD first; nothing else happens while the queue is at or under the cap.
+    - The worst end is read in chunks (64, then doubling) with one ZREVRANGE + one HMGET per chunk,
+      and the scan stops as soon as enough victims are found. The old code did one HGET + one ZREM
+      round trip per member over the whole queue.
+    - Victims are removed with one ZREM and their meta entries with one HDEL (the old code left the
+      meta hash entries behind, so a trimmed member stayed debounced and the hash grew).
+    - When only protected heartbeats are left above the cap, further scans are skipped for
+      _TRIM_BLOCKED_BACKOFF_SEC, and the warning is logged at most once per _TRIM_WARN_INTERVAL_SEC.
+    """
+    state_key = (id(client), queue_key)
     excess = int(client.zcard(queue_key)) - int(max_len)
     if excess <= 0:
+        _trim_blocked_at.pop(state_key, None)
         return 0
-    removed = 0
-    for member in client.zrevrange(queue_key, 0, -1):
-        if removed >= excess:
+    now = time.monotonic()
+    blocked_at = _trim_blocked_at.get(state_key)
+    if blocked_at is not None and (now - blocked_at) < _TRIM_BLOCKED_BACKOFF_SEC:
+        return 0
+
+    victims: list = []
+    start = 0
+    chunk = max(_TRIM_FIRST_CHUNK, 2 * excess)
+    while len(victims) < excess:
+        members = client.zrevrange(queue_key, start, start + chunk - 1)
+        if not members:
             break
-        if _is_protected_member(client, meta_key, member):
-            continue
-        client.zrem(queue_key, member)
-        removed += 1
+        metas = _hmget(client, meta_key, members)
+        for member, raw in zip(members, metas):
+            if _is_protected_meta(raw):
+                continue
+            victims.append(member)
+            if len(victims) >= excess:
+                break
+        if len(members) < chunk:
+            break
+        start += chunk
+        chunk *= 2
+
+    if victims:
+        client.zrem(queue_key, *victims)
+        try:
+            client.hdel(meta_key, *victims)  # CS-F3-META: no stale meta for trimmed members
+        except Exception as e:
+            log(f"eval_queue trim meta cleanup failed: {e}", "WARNING")
+    removed = len(victims)
     if removed < excess:
-        log(f"eval_queue over cap by {excess - removed} protected heartbeat(s) (max_len={max_len})", "WARNING")
+        _trim_blocked_at[state_key] = now
+        last = _trim_warned_at.get(state_key)
+        if last is None or (now - last) >= _TRIM_WARN_INTERVAL_SEC:
+            _trim_warned_at[state_key] = now
+            log(f"eval_queue over cap by {excess - removed} protected heartbeat(s) (max_len={max_len})", "WARNING")
+    else:
+        _trim_blocked_at.pop(state_key, None)
     return removed
+
+
+def _hmget(client, meta_key: str, members: list) -> list:
+    """One round trip for the meta of a chunk; falls back to HGET per member for clients without HMGET."""
+    try:
+        return list(client.hmget(meta_key, members))
+    except AttributeError:
+        return [client.hget(meta_key, m) for m in members]
 
 
 def pop_eval_batch(
@@ -399,6 +470,7 @@ def reset_eval_queue_for_tests(config_raw: dict | None = None) -> None:
     arch = _arch(config_raw)
     prefix = str(arch.get("key_prefix", "aria:"))
     queue_key, meta_key, processed_key = _keys(prefix)
+    _reset_trim_state_for_tests()
     try:
         client.delete(queue_key, meta_key, processed_key)
     except Exception:

@@ -34,7 +34,7 @@ CFG = repo_cfg()
 # ----------------------------------------------------------------------------- fake redis (real ZSET/HASH semantics)
 class FakeRedis:
     """In-memory subset of redis-py used by bus/eval_queue.py: ZADD/ZSCORE/ZPOPMIN/ZRANGE/ZREVRANGE/ZREM/ZCARD/
-    ZREMRANGEBYRANK, HGET/HSET/HDEL/HGETALL, GET/SET/INCR/DELETE, pipeline() (executes immediately, in order)."""
+    ZREMRANGEBYRANK, HGET/HMGET/HSET/HDEL/HGETALL, GET/SET/INCR/DELETE, pipeline() (executes immediately, in order)."""
 
     def __init__(self):
         self.z: dict[str, dict[str, float]] = {}
@@ -118,6 +118,11 @@ class FakeRedis:
     def hdel(self, key, *fields):
         self.writes += 1
         return sum(1 for f in fields if self.h.get(key, {}).pop(str(f), None) is not None)
+
+    def hmget(self, key, fields, *more):
+        names = list(fields) if isinstance(fields, (list, tuple)) else [fields]
+        names += list(more)
+        return [self.h.get(key, {}).get(str(f)) for f in names]
 
     def hgetall(self, key):
         return dict(self.h.get(key, {}))
