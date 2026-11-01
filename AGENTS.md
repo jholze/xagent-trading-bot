@@ -2,9 +2,9 @@
 
 This file is the single source of truth for every coding agent (Grok, DeepSeek, Claude, Cursor, Codex, ...) working in this repository. `CLAUDE.md` only points here.
 
-The owner is Jens Holze. Agents do not merge.
+The owner is Jens Holze. Only Jens merges to main. Kay (lead agent) may merge PRs into staging (paper) when CI `unit` is green, an evidence file exists, the change is a measured improvement, and money-path PRs carry `owner-approved` set per the release framework. Decided by Jens on 2026-11-01.
 
-> **Staging vs. live.** Branch `staging` is the **paper-trading** bot: merging to `staging` auto-deploys the paper bot on Railway (`xagent-test`). Anything that reaches `main` or touches live trading (real money, live Gate account, `*.live.json`) is **Jens only**. Open pull requests against `staging` only. Never push or merge to `main` or `staging`. Never enable live trading. Never add API keys, exchange secrets, or credentials.
+> **Staging vs. live.** Branch `staging` is the **paper-trading** bot: merging to `staging` auto-deploys the paper bot on Railway (`xagent-test`). Anything that reaches `main` or touches live trading (real money, live Gate account, `*.live.json`) is **Jens only**. Open pull requests against `staging` only. Never push to `main` or `staging`; only Jens merges to `main`; Kay (lead agent) may merge into `staging` under rule 6 below. Never enable live trading. Never add API keys, exchange secrets, or credentials.
 
 ## Safety guardrail — this bot trades with real state
 
@@ -43,7 +43,7 @@ These rules are fixed by Jens (2026-11-01). They override anything else in this 
 3. Development and tests run **locally only**. Bind local services to `127.0.0.1` (for the bot: `HOST=127.0.0.1`; its default is `0.0.0.0`).
 4. This project is **production** (real money, live trading state). No deploy (Railway or any other target), no live config changes, no orders, no account or paid-service creation. Do not run `scripts/deploy_staging.sh`, `scripts/deploy_test_branch.sh`, `scripts/railway_trigger_test_deploy.sh`, or anything that writes to Railway or a Railway Mongo.
 5. **Never read or print secrets**: `.env`, `.env.local`, `ngrok.log`, credentials files, tokens (also `.cursor/mcp.json` and similar local tool configs).
-6. **No merge without green CI and Jens' OK.** Only Jens merges.
+6. **Merge rule.** Only Jens merges to main. Kay (lead agent) may merge PRs into staging (paper) when CI `unit` is green, an evidence file exists, the change is a measured improvement, and money-path PRs carry `owner-approved` set per the release framework. Decided by Jens on 2026-11-01.
 
 Workflow, roles, branch naming, and test commands: [`docs/workflow.md`](docs/workflow.md). Project facts for new agents: [`docs/agent-onboarding.md`](docs/agent-onboarding.md).
 
