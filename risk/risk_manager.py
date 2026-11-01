@@ -112,11 +112,18 @@ def _is_partial_sell(signal: str) -> bool:
 
 
 def _fail_closed_guards_mode(config) -> str:
-    """Rollout switch: 'log' (default, old behaviour + ERROR) | 'deny'."""
+    """Rollout switch for guard exceptions: 'deny' (default, fail-closed) | 'log'.
+
+    Only an explicit ``risk.fail_closed_guards: "log"`` keeps the old fail-open
+    behaviour (ERROR + continue). A missing config, a missing or malformed key,
+    an unknown value, or an error while reading the config all resolve to
+    ``"deny"``, so a config without the key (e.g. an older live config) can no
+    longer turn a crashing guard into an approval.
+    """
     try:
         risk = None
         if config is None:
-            return "log"
+            return "deny"
         if isinstance(config, dict):
             nested = config.get("risk")
             if isinstance(nested, dict):
@@ -132,11 +139,13 @@ def _fail_closed_guards_mode(config) -> str:
                 if isinstance(raw, dict) and isinstance(raw.get("risk"), dict):
                     risk = raw.get("risk")
         if not isinstance(risk, dict):
+            return "deny"
+        value = risk.get("fail_closed_guards")
+        if isinstance(value, str) and value.strip().lower() == "log":
             return "log"
-        mode = str(risk.get("fail_closed_guards") or "log").strip().lower()
-        return "deny" if mode == "deny" else "log"
+        return "deny"
     except Exception:
-        return "log"
+        return "deny"
 
 
 def guard_failed(guard: str, exc: BaseException, order, *, config=None) -> RiskDecision | None:

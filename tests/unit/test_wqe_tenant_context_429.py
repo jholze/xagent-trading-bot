@@ -110,7 +110,8 @@ def _thin_risk_manager():
     rm.config.max_open_positions = 50
     rm.config.max_position_percent = 100
     rm.config.max_usdt_per_trade = 500
-    rm.config.risk_config = {"min_trade_usdt": 1, "min_size_multiplier": 0.1}
+    # Pinned: written for the old implicit "log" fail_closed_guards default.
+    rm.config.risk_config = {"min_trade_usdt": 1, "min_size_multiplier": 0.1, "fail_closed_guards": "log"}
     rm.config.aggression_config = {}
     rm.config.entry_sensor_15m_config = {}
     return rm
