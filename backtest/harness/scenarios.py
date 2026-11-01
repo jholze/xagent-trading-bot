@@ -406,14 +406,17 @@ def scenario_d(ctx: Context) -> ScenarioResult:
 
 
 def _pump48_ok(ctx: Context, limit_pct: float, missing: set) -> Callable[[Episode], bool | None]:
+    # Same 48 h pump definition as the live shadow rule (services/shadow_rules.py).
+    from services.shadow_rules import pump_pct_from_lows
+
     def ok(ep: Episode) -> bool | None:
         hourly = ctx.engine.candles_1h(ep.symbol)
         sig = _signal_unix(ep)
         lows = [b[3] for b in hourly if sig - 48 * 3600 <= b[0] and b[0] + 3600 <= sig]
-        if len(lows) < 36 or min(lows) <= 0:
+        pump = pump_pct_from_lows(lows, ep.entry.price)
+        if pump is None:
             missing.add((limit_pct, ep.key, ep.entry.ts))
             return None  # not enough history: keep
-        pump = (ep.entry.price / min(lows) - 1.0) * 100.0
         return pump <= limit_pct
 
     return ok

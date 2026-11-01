@@ -205,6 +205,15 @@ class TradingService:
             order.idempotency_key = idem
             order.client_order_id = idem
 
+        # Observe only (obs_shadow_rules): snapshot entry candidates for the
+        # g/no-chase shadow rule. Never raises, never changes the order.
+        try:
+            from services.shadow_rules import observe_entry_candidate
+
+            observe_entry_candidate(order, timeframe=timeframe, source=source)
+        except Exception as exc:
+            log(f"shadow_rules entry hook skipped: {exc}", "WARNING")
+
         from bus.writer_lease import require_lease_for_order
 
         try:

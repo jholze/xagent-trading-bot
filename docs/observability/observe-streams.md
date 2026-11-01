@@ -19,6 +19,7 @@ Set `OBSERVE_STREAMS_MONGO=0` to stop the copy. The JSONL files stay. This switc
 | `shadow_exit.jsonl` | `obs_shadow_exit` | The shadow exit for that signal or its control |
 | `shadow_link.jsonl` | `obs_shadow_link` | The buy stamped with `shadow_signal_id`. Not a signal |
 | `shadow_control.jsonl` | `obs_shadow_control` | The control row paired with a shadow signal |
+| none (Mongo only) | `obs_shadow_rules` | What a candidate entry/exit rule would have done. Observe only (see below) |
 
 ## Fields
 
@@ -72,3 +73,35 @@ db.obs_cap_order_observe.find(
 ```
 
 `obs_shadow_link` is the join from a buy to a signal id. It is not a substitute for `obs_shadow_signal`.
+
+## Shadow rules (`obs_shadow_rules`)
+
+`services/shadow_rules.py` evaluates three candidate rules and only writes what they would have done. No order, size, exit or DCA decision reads these rows. There is no JSONL file; rows go straight to the Mongo copy queue.
+
+| rule | when it is checked | trigger | action |
+| --- | --- | --- | --- |
+| `g_no_chase` | every BUY that would open a new long lot (`execute_order`, before risk) | price rose more than the limit over the closed 1h lows of the last 48 h (at least 36 bars). Limit: 10 % in `RISK_OFF`/`CRASH`, 20 % in `RISK_ON`, else 15 % | `would_skip_entry`; otherwise `would_allow_entry` or `no_data` |
+| `h_oracle_early_exit` | each open long lot seen by `process_coin` | lot pnl <= -10 % within its first 72 h and oracle `RISK_OFF` or `CRASH` | `would_full_exit` |
+| `e_age_limit` | each open long lot seen by `process_coin` | lot older than 14 days and pnl <= -15 % | `would_close_aged` |
+
+Thresholds are code constants in `services/shadow_rules.py`, not `config.json` keys. `e_age_limit` is a new rule; it is not harness scenario `e` (early10_72h) or `f` (flat -15 %). The 48 h pump definition is shared with `backtest/harness/scenarios.py` (`_pump48_ok`).
+
+Fields: `type` `shadow_rule`, `observe_only` true, `timestamp`, `tenant_id`, `symbol`, `timeframe`, `lot_id` (`symbol|timeframe|entry_at`), `rule`, `action`, `rule_params`, `oracle_state`, `price`, `pnl_pct`. Entry rows add `pump_48h_pct`, `limit_pct`, `bars_in_window`, `order_source`, `idempotency_key`. Lot rows add `average_entry`, `entry_at`, `lot_age_hours`, `amount`.
+
+A lot rule writes once per lot and rule per process (the first cycle it triggers). A restart can write it again; dedupe on `lot_id` + `rule` when counting.
+
+The work (1h candle fetch, oracle read, insert) runs on a background thread. A failure there is logged and dropped. Set `SHADOW_RULES=0` to switch the rules off; `OBSERVE_STREAMS_MONGO=0` also stops the insert.
+
+Every order document and ledger row now has `ctx_oracle_state`: the decision-time value when the analysis path set it, otherwise the oracle state when the row was written (`null` when no snapshot is available).
+
+```javascript
+db.obs_shadow_rules.aggregate([
+  {$match: {tenant_id: "henry"}},
+  {$group: {_id: {rule: "$rule", action: "$action", oracle: "$oracle_state"}, n: {$sum: 1}}}
+])
+
+db.obs_shadow_rules.find(
+  {rule: "e_age_limit"},
+  {symbol: 1, lot_id: 1, pnl_pct: 1, lot_age_hours: 1, timestamp: 1}
+).sort({timestamp: -1}).limit(50)
+```
