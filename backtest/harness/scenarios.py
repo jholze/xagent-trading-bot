@@ -53,7 +53,7 @@ ENTRY_WINDOWS = tuple(_berlin_window(*w) for w in efr.WINDOWS)
 
 # Every candidate variant evaluated by this harness run (3 per scenario).
 # DSR deflates each primary candidate against all of them.
-N_TRIALS = 12
+N_TRIALS = 50  # 12 from (a)-(d) + 11 loser-coin candidates (e)-(h) + 27 regime-conditional (r_*), 2026-11-01
 
 
 @dataclass
@@ -398,9 +398,201 @@ def scenario_d(ctx: Context) -> ScenarioResult:
     return res
 
 
+# ---------------------------------------------------------------------------
+# Loser-coin rules (2026-11-01, /workspace/umbau/loser_coins_analysis.md).
+# Pre-registered before the run: primary thresholds are the ones from the
+# analysis (-10 % in 72 h; -15 % flat stop without adds; 48 h pump > 15 %);
+# the neighbours are sensitivity variants and count as trials for the DSR.
+
+
+def _pump48_ok(ctx: Context, limit_pct: float, missing: set) -> Callable[[Episode], bool | None]:
+    def ok(ep: Episode) -> bool | None:
+        hourly = ctx.engine.candles_1h(ep.symbol)
+        sig = _signal_unix(ep)
+        lows = [b[3] for b in hourly if sig - 48 * 3600 <= b[0] and b[0] + 3600 <= sig]
+        if len(lows) < 36 or min(lows) <= 0:
+            missing.add((limit_pct, ep.key, ep.entry.ts))
+            return None  # not enough history: keep
+        pump = (ep.entry.price / min(lows) - 1.0) * 100.0
+        return pump <= limit_pct
+
+    return ok
+
+
+def _early(name: str, pct: float, hours: float = 72.0, **kw) -> Policy:
+    return policy(name, ref=None, escalate=True, early_exit_pct=pct, early_exit_hours=hours, **kw)
+
+
+def _flat(name: str, pct: float, **kw) -> Policy:
+    return policy(name, ref=None, escalate=True, flat_stop_pct=pct, no_adds=True, **kw)
+
+
+def _early_variants():
+    return [
+        (policy("baseline", ref=None, escalate=True), "staging stop/DCA code, recorded entries and adds"),
+        (_early("early10_72h", 10.0), "full sell when the lot is -10 % vs avg within 72 h of entry; closed lot takes no further adds"),
+        (_early("early8_72h", 8.0), "same, -8 %"),
+        (_early("early12_72h", 12.0), "same, -12 %"),
+    ]
+
+
+def _flat_variants():
+    return [
+        (policy("baseline", ref=None, escalate=True), "staging stop/DCA code, recorded entries and adds"),
+        (_flat("stop15_noadd", 15.0), "full stop at -15 % vs avg any time, no DCA/add buys at all"),
+        (_flat("stop12_noadd", 12.0), "same, -12 %"),
+        (_flat("stop20_noadd", 20.0), "same, -20 %"),
+    ]
+
+
+def scenario_e(ctx: Context) -> ScenarioResult:
+    return _evaluate(ctx, key="e", title="Early exit: -10 % within 72 h -> full sell", question="Does cutting lots that fall 10 % in their first 72 h beat staging (Jul-Oct entries)?",
+                     mode="entries", windows=ENTRY_WINDOWS, variants=_early_variants(), baseline="baseline", primary="early10_72h")
+
+
+def scenario_f(ctx: Context) -> ScenarioResult:
+    return _evaluate(ctx, key="f", title="Plain -15 % full stop, no DCA", question="Does a flat -15 % stop without any adds beat staging (Jul-Oct entries)?",
+                     mode="entries", windows=ENTRY_WINDOWS, variants=_flat_variants(), baseline="baseline", primary="stop15_noadd")
+
+
+def scenario_g(ctx: Context) -> ScenarioResult:
+    missing: set = set()
+    variants = [(policy("baseline", ref=None, escalate=True), "all recorded entries")]
+    for lim in (15.0, 10.0, 20.0):
+        variants.append((policy(f"nochase{lim:.0f}", ref=None, escalate=True, entry_filter=_pump48_ok(ctx, lim, missing)),
+                         f"skip entry if price > {lim:.0f} % above the lowest 1h low of the 48 h before the signal"))
+    res = _evaluate(ctx, key="g", title="No chasing: skip entry after >15 % 48 h pump", question="Does skipping entries after a 48 h pump > 15 % beat staging?",
+                    mode="entries", windows=ENTRY_WINDOWS, variants=variants, baseline="baseline", primary="nochase15")
+    res.notes.append(f"Entries kept for lack of 48 h history (primary): {sum(1 for m in missing if m[0] == 15.0)}.")
+    return res
+
+
+def scenario_h(ctx: Context) -> ScenarioResult:
+    missing: set = set()
+    nc = _pump48_ok(ctx, 15.0, missing)
+    variants = [
+        (policy("baseline", ref=None, escalate=True), "staging, all recorded entries"),
+        (_early("early10+nochase15", 10.0, entry_filter=nc), "(e) early10_72h + (g) nochase15"),
+        (_flat("stop15_noadd+nochase15", 15.0, entry_filter=nc), "(f) stop15_noadd + (g) nochase15"),
+    ]
+    return _evaluate(ctx, key="h", title="Combined: early exit + no chasing", question="Do the exit and entry rules together beat staging?",
+                     mode="entries", windows=ENTRY_WINDOWS, variants=variants, baseline="baseline", primary="early10+nochase15")
+
+
+def scenario_e_oct(ctx: Context) -> ScenarioResult:
+    return _evaluate(ctx, key="e_oct", title="Early exit on the October book (check)", question="Same rule on the whole October book (lots carried in at window start).",
+                     mode="book", windows=OCT_WINDOWS, variants=_early_variants(), baseline="baseline", primary="early10_72h",
+                     notes=["Book mode: lots entered before a window keep their 72 h clock from the real entry, so carried-in lots older than 72 h only see the staging stops."])
+
+
+def scenario_f_oct(ctx: Context) -> ScenarioResult:
+    return _evaluate(ctx, key="f_oct", title="Flat -15 % stop, no DCA, on the October book (check)", question="Same rule on the whole October book.",
+                     mode="book", windows=OCT_WINDOWS, variants=_flat_variants(), baseline="baseline", primary="stop15_noadd",
+                     notes=["Book mode: a carried-in lot already below -15 % vs avg at window start is sold on the first bar."])
+
+
+# ---------------------------------------------------------------------------
+# Regime-conditional loser-coin rules (2026-11-01, second run).
+# Regime known at decision time only (bars closed before the bar / the signal).
+# Per regime definition: primary parameters + 2 shifted neighbours (count as trials).
+import os as _os
+
+from . import regime as _rg
+
+_REGIME_CACHE: dict = {}
+
+
+def _regimes(ctx: Context) -> dict[str, list]:
+    if "series" in _REGIME_CACHE:
+        return _REGIME_CACHE["series"]
+    cdir = _os.environ.get("BT_CANDLES", "/workspace/bt-data/candles")
+    I = _rg.load_inputs(
+        cdir,
+        _os.environ.get("BT_BREADTH", "/workspace/bt-data/candles_breadth"),
+        _os.environ.get("BT_FUNDING", "/workspace/bt-data/btc_funding_gate.json"),
+    )
+    br = _rg.breadth_table(I["universe"])
+    b1, e1, bd = I["btc_1h"], I["eth_1h"], I["btc_1d"]
+    fund = I["funding"]
+    series = {
+        "oracle": [
+            _rg.oracle_series(b1, e1, bd, breadth=br, funding=fund, name="oracle"),
+            _rg.oracle_series(b1, e1, bd, breadth=br, funding=fund, risk_off_24h=-2.5,
+                              breadth_risk_off_max_green=0.40, breadth_rotten_max_green=0.30, name="oracle_sensitive"),
+            _rg.oracle_series(b1, e1, bd, breadth=br, funding=fund, risk_off_24h=-3.5,
+                              breadth_risk_off_max_green=0.30, breadth_rotten_max_green=0.20, name="oracle_lax"),
+        ],
+        "sma": [_rg.sma_series(bd, b1, n=50), _rg.sma_series(bd, b1, n=40), _rg.sma_series(bd, b1, n=60)],
+        "ret": [_rg.ret_series(b1, hours=168, name="ret7d"), _rg.ret_series(b1, hours=120, name="ret5d"),
+                _rg.ret_series(b1, hours=240, name="ret10d")],
+    }
+    _REGIME_CACHE["series"] = series
+    _REGIME_CACHE["breadth"] = br
+    return series
+
+
+def _nochase_regime(ctx: Context, ser: "_rg.Series", missing: set, off: float = 10.0, on: float = 20.0,
+                    neutral: float = 15.0) -> Callable[[Episode], bool | None]:
+    filters = {lim: _pump48_ok(ctx, lim, missing) for lim in (off, on, neutral)}
+
+    def ok(ep: Episode) -> bool | None:
+        lab = ser.at(_signal_unix(ep))
+        if lab is None:
+            lim = neutral
+        elif lab in _rg.OFF_STATES or lab == "OFF":
+            lim = off
+        elif lab == "NEUTRAL":
+            lim = neutral
+        else:
+            lim = on
+        return filters[lim](ep)
+
+    return ok
+
+
+def _regime_variants(ctx: Context, fam: str, rule: str):
+    missing: set = set()
+    out = [(policy("baseline", ref=None, escalate=True), "staging, all recorded entries")]
+    for ser in _regimes(ctx)[fam]:
+        kw: dict = {}
+        desc = []
+        if rule in ("e", "h"):
+            kw.update(early_exit_pct=10.0, early_exit_hours=72.0, early_exit_gate=ser.gate())
+            desc.append(f"early exit -10 %/72 h only while {ser.name} is risk-off")
+        if rule in ("g", "h"):
+            kw["entry_filter"] = _nochase_regime(ctx, ser, missing)
+            desc.append(f"no-chase 48 h pump limit 10 % if {ser.name} risk-off, 20 % risk-on (15 % NEUTRAL)")
+        out.append((policy(f"{rule}_{ser.name}", ref=None, escalate=True, **kw), "; ".join(desc)))
+    return out
+
+
+_RTITLE = {"e": "Early exit only in risk-off", "g": "No-chase threshold by regime", "h": "Both (regime early exit + regime no-chase)"}
+_RFAM = {"oracle": "bot Market Oracle state (RISK_OFF/CRASH)", "sma": "BTC daily close < SMA50", "ret": "BTC 7-day return < 0"}
+
+
+def _regime_scenario(fam: str, rule: str):
+    def run(ctx: Context) -> ScenarioResult:
+        variants = _regime_variants(ctx, fam, rule)
+        prim = variants[1][0].name
+        return _evaluate(ctx, key=f"r_{rule}_{fam}", title=f"{_RTITLE[rule]} [{_RFAM[fam]}]",
+                         question="Does making the loser-coin rule regime-conditional beat staging in all market phases?",
+                         mode="entries", windows=ENTRY_WINDOWS, variants=variants, baseline="baseline", primary=prim,
+                         notes=["Regime from BTC/ETH (and breadth/funding for oracle) bars closed before the decision bar."])
+    return run
+
+
 SCENARIOS: dict[str, Callable[[Context], ScenarioResult]] = {
+    "e": scenario_e,
+    "f": scenario_f,
+    "g": scenario_g,
+    "h": scenario_h,
+    "e_oct": scenario_e_oct,
+    "f_oct": scenario_f_oct,
     "a": scenario_a,
     "b": scenario_b,
     "c": scenario_c,
     "d": scenario_d,
 }
+for _fam in ("oracle", "sma", "ret"):
+    for _rule in ("e", "g", "h"):
+        SCENARIOS[f"r_{_rule}_{_fam}"] = _regime_scenario(_fam, _rule)

@@ -99,6 +99,24 @@ class Policy:
     entry_filter: Callable[[Episode], bool | None] | None = None
     size_multiplier: Callable[[Episode], float] | None = None
     description: str = ""
+    # loser-coin rules (2026-11-01): optional extra exits on top of the real stop code
+    early_exit_pct: float | None = None  # full sell if bar low <= avg * (1 - pct/100) ...
+    early_exit_hours: float = 72.0  # ... within this many hours after the entry fill
+    flat_stop_pct: float | None = None  # full sell at any time if bar low <= avg * (1 - pct/100)
+    no_adds: bool = False  # ignore every DCA/add buy (tape and rule)
+    # regime-conditional (2026-11-01): early exit only when gate(bar_open_unix) is True.
+    # The gate must only use data closed before bar_open_unix (no lookahead).
+    early_exit_gate: Callable[[int], bool] | None = None
+    # DCA caps / long walk-forward (2026-11-01). All default off = old behaviour.
+    max_adds: int | None = None  # (a) at most this many adds per lot
+    dca_budget_mult: float | None = None  # (b) sum of adds <= mult * entry USDT (last add truncated)
+    dca_gate: Callable[[int], bool] | None = None  # (c) add allowed only if gate(bar_open_unix) is True
+    cooldown_after_stop_h: float | None = None  # (d) no new lot on tenant+symbol this long after a stop exit
+    time_limit_days: float | None = None  # (e) close at bar close if lot older than this ...
+    time_limit_loss_pct: float = 15.0  # ... and close <= avg * (1 - pct/100)
+    bar_exit: Callable[[str, int, list, dict], bool] | None = None  # full sell at bar close if True
+    skip_if_open: bool = False  # no new lot while a simulated lot on tenant+symbol is still open
+    min_add_usdt: float = 50.0  # budget-truncated adds below this are skipped
 
 
 @dataclass
@@ -121,6 +139,17 @@ class LotResult:
     locked_blocks: int = 0
     min_unreal_pct: float = 0.0
     tape_sells_applied: int = 0
+    early_exits: int = 0
+    flat_stops: int = 0
+    skipped_adds: int = 0
+    time_stops: int = 0
+    capped_adds: int = 0
+    bar_exits: int = 0
+    exit_ts: int | None = None  # unix of the bar in which the lot went flat
+    exit_reason: str = ""  # tape|stop|escalated|early|flat|time|bar_exit|open
+    entry_usdt: float = 0.0
+    add_usdt: float = 0.0
+    source: str = ""
 
 
 @dataclass
@@ -143,6 +172,47 @@ class _Indicators:
 
     def __init__(self, candles: list[Candle]):
         self.c = candles
+        self._fast = None
+
+    def fast(self):
+        """Vectorised copy of ``at`` for all bars (same formulas), computed once."""
+        if self._fast is None:
+            import numpy as np
+
+            a = np.asarray([b[:5] for b in self.c], dtype=float).reshape(-1, 5)
+            n = len(a)
+            hi, lo, cl = a[:, 2], a[:, 3], a[:, 4]
+            d = np.diff(cl, prepend=np.nan)
+            g = np.where(d > 0, d, 0.0)
+            l_ = np.where(d < 0, -d, 0.0)
+            cs_g = np.concatenate([[0.0], np.nancumsum(g)])
+            cs_l = np.concatenate([[0.0], np.nancumsum(l_)])
+            idx = np.arange(n)
+            lo14 = np.clip(idx - 13, 0, None)
+            gains = cs_g[idx + 1] - cs_g[lo14]
+            losses = cs_l[idx + 1] - cs_l[lo14]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rsi = np.where(losses == 0, 100.0, 100.0 - 100.0 / (1.0 + gains / losses))
+            c1 = np.concatenate([[0.0], np.cumsum(cl)])
+            c2 = np.concatenate([[0.0], np.cumsum(cl * cl)])
+            lo20 = np.clip(idx - 19, 0, None)
+            mid = (c1[idx + 1] - c1[lo20]) / 20.0
+            var = np.maximum((c2[idx + 1] - c2[lo20]) / 20.0 - mid * mid, 0.0)
+            sd = np.sqrt(var)
+            pc = np.concatenate([[np.nan], cl[:-1]])
+            tr = np.nanmax(np.vstack([hi - lo, np.abs(hi - pc), np.abs(lo - pc)]), axis=0)
+            ct = np.concatenate([[0.0], np.nancumsum(tr)])
+            atr = (ct[idx + 1] - ct[lo14]) / 14.0
+            with np.errstate(divide="ignore", invalid="ignore"):
+                atr_pct = np.where(cl > 0, atr / cl * 100.0, 0.0)
+            self._fast = (rsi, mid - 2 * sd, mid, mid + 2 * sd, atr_pct)
+        return self._fast
+
+    def at_fast(self, i: int) -> dict:
+        if i < 21:
+            return {}
+        r, lb, m, ub, ap = self.fast()
+        return {"rsi": float(r[i]), "lower_bb": float(lb[i]), "middle_bb": float(m[i]), "upper_bb": float(ub[i]), "atr_pct": float(ap[i])}
 
     def at(self, i: int) -> dict:
         if i < 21:
@@ -229,6 +299,8 @@ class Engine:
         self.default_tier = default_tier
         self.window_of = window_of or (lambda _ts: "all")
         self._tier_by_symbol: dict[tuple[str, str], str] = {}
+        self._ind_cache: dict[int, _Indicators] = {}
+        self.fast_indicators = False  # opt-in: vectorised indicators (same formulas)
         for (tenant, symbol, _tf), lot in book.items():
             if lot.tier:
                 self._tier_by_symbol.setdefault((tenant, symbol), lot.tier)
@@ -264,6 +336,8 @@ class Engine:
         """
         horizon = horizon_end or end
         res = RunResult(policy.name, [], {}, {})
+        last_stop: dict[tuple[str, str], int] = {}
+        busy_until: dict[tuple[str, str], int] = {}
         for ep in episodes:
             if carry_in:
                 active = ep.entry.ts < end and (ep.closed_at is None or ep.closed_at > start)
@@ -276,6 +350,17 @@ class Engine:
                 if verdict is False:
                     res.filtered_out += 1
                     continue
+            ts_sym = (ep.tenant, ep.symbol)
+            entry_u = int(ep.entry.ts.timestamp())
+            if policy.cooldown_after_stop_h is not None and ep.entry.ts >= start:
+                ls = last_stop.get(ts_sym)
+                if ls is not None and ls <= entry_u < ls + policy.cooldown_after_stop_h * HOUR:
+                    res.filtered_out += 1
+                    res.notes.append("cooldown")
+                    continue
+            if policy.skip_if_open and busy_until.get(ts_sym, -1) > entry_u:
+                res.filtered_out += 1
+                continue
             candles = self.candles_1h(ep.symbol)
             if not candles:
                 res.skipped_no_candles += 1
@@ -285,7 +370,33 @@ class Engine:
                 res.skipped_no_candles += 1
             else:
                 res.lots.append(lot)
+                if lot.exit_ts is not None:
+                    busy_until[ts_sym] = lot.exit_ts + HOUR
+                    if lot.exit_reason in ("stop", "escalated", "early", "flat", "time"):
+                        last_stop[ts_sym] = lot.exit_ts + HOUR
+                else:
+                    busy_until[ts_sym] = 2**62
         return res
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _cap_add(policy: Policy, lot: LotResult, usdt: float, bar_ts: int) -> float:
+        """USDT the caps let through for one add (0 = skip)."""
+        if policy.max_adds is not None and lot.dca_adds >= policy.max_adds:
+            lot.capped_adds += 1
+            return 0.0
+        if policy.dca_gate is not None and not policy.dca_gate(bar_ts):
+            lot.capped_adds += 1
+            return 0.0
+        if policy.dca_budget_mult is not None:
+            room = policy.dca_budget_mult * lot.entry_usdt - lot.add_usdt
+            if room < policy.min_add_usdt:
+                lot.capped_adds += 1
+                return 0.0
+            if usdt > room:
+                lot.capped_adds += 1
+                usdt = room
+        return usdt
 
     # ------------------------------------------------------------------
     def _simulate(
@@ -313,7 +424,14 @@ class Engine:
         bound = min(float(partial_bound), base_stop)
         lock = self.book.get(ep.key)
         lock_since = lock.lock_since if (lock and policy.respect_locks and "no_auto_sell" in lock.lock_modes) else None
-        indicators = _Indicators(candles) if policy.dca_mode == "rule" else None
+        indicators = None
+        if policy.dca_mode == "rule":
+            indicators = self._ind_cache.get(id(candles)) if self.fast_indicators else None
+            if indicators is None:
+                indicators = _Indicators(candles)
+                if self.fast_indicators:
+                    self._ind_cache[id(candles)] = indicators
+        ind_at = (indicators.at_fast if self.fast_indicators else indicators.at) if indicators else None
 
         begin = max(start, ep.entry.ts) if carry_in else ep.entry.ts
         first_bar_ts = (int(begin.timestamp()) // HOUR) * HOUR
@@ -325,6 +443,8 @@ class Engine:
             return None
 
         lot = LotResult(ep.key, ep.entry.ts, self.window_of(ep.entry.ts), 0.0, 0.0, 0.0, 0.0, False, None, 0.0)
+        lot.source = ep.entry.source
+        entry_unix = int(ep.entry.ts.timestamp())
         pos = _position_doc(ep, tier)
         cost_basis = 0.0  # cash in the open amount (incl. buy fees)
         prev_pnl = 0.0
@@ -341,6 +461,8 @@ class Engine:
             if pos["amount"] * mark < FLAT_USDT:
                 return None
             cost_basis = pos["amount"] * mark  # start value: window PnL is from here
+            lot.entry_usdt = ep.entry.usdt * mult
+            lot.add_usdt = sum(f.usdt for f in ep.events if f.side == "buy" and f.is_add and f.ts < start)
             lot.invested += cost_basis
             prev_cb = cost_basis
             res.capital_curve[candles[i][0]] = res.capital_curve.get(candles[i][0], 0.0) + cost_basis
@@ -355,6 +477,7 @@ class Engine:
             pos["average_entry"] = px
             cost_basis = usdt + fee
             lot.invested += usdt + fee
+            lot.entry_usdt = usdt
             tape_amount = ep.entry.amount
             pending = ep.events[1:]
             if ep.entry.is_add:
@@ -377,7 +500,16 @@ class Engine:
                     tape_amount += f.amount
                     if f.is_add and policy.dca_mode == "rule":
                         continue  # rule mode decides adds itself
+                    if policy.no_adds:
+                        lot.skipped_adds += 1
+                        continue  # rule: no further DCA / adds
                     usdt = f.usdt * mult
+                    if f.is_add:
+                        usdt = self._cap_add(policy, lot, usdt, bar_ts)
+                        if usdt <= 0:
+                            lot.skipped_adds += 1
+                            continue
+                        lot.add_usdt += usdt
                     px = self.costs.buy_price(f.price, slip)
                     amt = usdt / px
                     fee = usdt * fee_pct
@@ -403,6 +535,7 @@ class Engine:
                     cost_basis *= (1.0 - frac)
                     lot.tape_sells_applied += 1
                     if closed:
+                        lot.exit_reason = "tape"
                         break
             if closed:
                 last_close = c
@@ -431,6 +564,7 @@ class Engine:
                             closed = self._sell(pos, lot, 1.0, self.costs.sell_price(mid, slip), fee_pct)
                             cost_basis = 0.0
                             lot.stop_full += 1
+                            lot.exit_reason = "stop"
                         else:
                             level = avg * (1.0 - float(part_t if part_t is not None else partial_bound) / 100.0)
                             mid = min(o, max(level, low))
@@ -438,6 +572,8 @@ class Engine:
                             if code is None:
                                 closed = self._sell(pos, lot, sell_frac_partial, self.costs.sell_price(mid, slip), fee_pct)
                                 cost_basis *= (1.0 - sell_frac_partial)
+                                if closed:
+                                    lot.exit_reason = "stop"
                                 pos["hard_partial_stop_done"] = True
                                 lot.stop_partial += 1
                             elif (
@@ -448,11 +584,36 @@ class Engine:
                                 closed = self._sell(pos, lot, 1.0, self.costs.sell_price(mid, slip), fee_pct)
                                 cost_basis = 0.0
                                 lot.escalated += 1
+                                lot.exit_reason = "escalated"
                             else:
                                 lot.partial_rejects += 1
+            # 2b) loser-coin rules: early exit in the first N hours, flat full stop
+            if not closed and pos["amount"] > 0 and pos["average_entry"] > 0 and not locked:
+                avg = pos["average_entry"]
+                level = None
+                if (
+                    policy.early_exit_pct is not None
+                    and bar_end <= entry_unix + policy.early_exit_hours * HOUR
+                    and (policy.early_exit_gate is None or policy.early_exit_gate(bar_ts))
+                ):
+                    lv = avg * (1.0 - policy.early_exit_pct / 100.0)
+                    if low <= lv:
+                        level = lv
+                        lot.early_exits += 1
+                        lot.exit_reason = "early"
+                if level is None and policy.flat_stop_pct is not None:
+                    lv = avg * (1.0 - policy.flat_stop_pct / 100.0)
+                    if low <= lv:
+                        level = lv
+                        lot.flat_stops += 1
+                        lot.exit_reason = "flat"
+                if level is not None:
+                    mid = min(o, max(level, low))
+                    closed = self._sell(pos, lot, 1.0, self.costs.sell_price(mid, slip), fee_pct)
+                    cost_basis = 0.0
             # 3) rule-mode DCA at the bar close
-            if not closed and indicators is not None and pos["amount"] > 0 and not locked:
-                ind = indicators.at(i)
+            if not closed and indicators is not None and pos["amount"] > 0 and not locked and not policy.no_adds:
+                ind = ind_at(i) if (not self.fast_indicators or c < pos["average_entry"] * 0.995) else None
                 if ind:
                     from core.models import MarketContext
 
@@ -466,8 +627,13 @@ class Engine:
                         **ind,
                     )
                     decision = dca.should_dca(market, pos, params)
+                    usdt = 0.0
                     if decision.should_dca and not decision.shadow_only and decision.usdt_amount > 0:
-                        usdt = float(decision.usdt_amount) * mult
+                        usdt = self._cap_add(policy, lot, float(decision.usdt_amount) * mult, bar_ts)
+                        if usdt <= 0:
+                            lot.skipped_adds += 1
+                    if usdt > 0:
+                        lot.add_usdt += usdt
                         px = self.costs.buy_price(c, slip)
                         amt = usdt / px
                         new_amt = pos["amount"] + amt
@@ -479,6 +645,22 @@ class Engine:
                         pos["dca_rounds"] = int(pos["dca_rounds"]) + 1
                         pos["last_dca_at"] = to_naive_berlin_iso(datetime.fromtimestamp(bar_end, UTC))
                         lot.dca_adds += 1
+            # 3b) time stop (e) and bar-close exit hook, both at the close
+            if not closed and pos["amount"] > 0 and not locked and pos["average_entry"] > 0:
+                if (
+                    policy.time_limit_days is not None
+                    and bar_end - entry_unix >= policy.time_limit_days * 86400
+                    and c <= pos["average_entry"] * (1.0 - policy.time_limit_loss_pct / 100.0)
+                ):
+                    closed = self._sell(pos, lot, 1.0, self.costs.sell_price(c, slip), fee_pct)
+                    cost_basis = 0.0
+                    lot.time_stops += 1
+                    lot.exit_reason = "time"
+                elif policy.bar_exit is not None and policy.bar_exit(ep.symbol, i, candles, pos):
+                    closed = self._sell(pos, lot, 1.0, self.costs.sell_price(c, slip), fee_pct)
+                    cost_basis = 0.0
+                    lot.bar_exits += 1
+                    lot.exit_reason = "bar_exit"
             last_close = c
             last_bar_ts = bar_ts
             # 4) curves
@@ -496,6 +678,11 @@ class Engine:
             lot.end_unreal_pct = (last_close / pos["average_entry"] - 1.0) * 100.0
             lot.end_cost_basis = pos["amount"] * pos["average_entry"]  # true entry cost, not the window mark
         lot.proceeds += end_value
+        if not lot.open_at_end:
+            lot.exit_ts = last_bar_ts
+            lot.exit_reason = lot.exit_reason or "tape"
+        else:
+            lot.exit_reason = "open"
         lot.pnl = lot.proceeds - lot.invested
         lot.ret = lot.pnl / lot.invested if lot.invested > 0 else 0.0
         final_ts = last_bar_ts
