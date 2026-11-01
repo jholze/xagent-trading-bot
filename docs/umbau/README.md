@@ -45,4 +45,4 @@ Das Review (5 Fachlinien + Grok-Intent-Klärung, 3./4.9.) hat unabhängig diesel
 
 ## Arbeitsweise
 
-Ein Branch pro Ticket, Grok implementiert, Claude reviewt — Details in [`CLAUDE.md`](../../CLAUDE.md). Geldrelevante Änderungen (`risk/`, `execution/`, `aria_bot.py`, Ledger) werden zeilenweise auditiert, nie direkt gemerged.
+Ein Branch pro Ticket; Rollen, Modelle und Regeln in [`AGENTS.md`](../../AGENTS.md) und [`docs/workflow.md`](../workflow.md). Geldrelevante Änderungen (`risk/`, `execution/`, `aria_bot.py`, Ledger) werden zeilenweise auditiert, nie direkt gemerged.
