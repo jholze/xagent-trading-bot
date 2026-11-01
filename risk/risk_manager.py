@@ -1,4 +1,6 @@
+import math
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -82,9 +84,185 @@ class _MissingMark(RuntimeError):
     """Open live lot has no mark. The USDT daily-loss check always denies."""
 
 
+# #709: counted hard-stop rejections in this process, split by tenant. Only
+# "already sold" and "position $… below minimum" increment the count. Inflight,
+# exchange, cooldown, and lock rejects do not. In-memory. The exit-radar hub
+# mirrors the fires it observes into stats()["rejected_stops"].
+_REJECTED_BY_TENANT: dict[str, int] = {}
+_SOLD_PERCENT_PLAUSIBILITY_TOLERANCE = 0.01
+_reject_event = threading.local()
+_ignore_unreliable_sold = threading.local()
+
+
 def reset_risk_manager_globals_for_tests() -> None:
-    global _EQUITY_MTM_UNAVAILABLE_LOGGED
+    global _EQUITY_MTM_UNAVAILABLE_LOGGED, _REJECTED_BY_TENANT
     _EQUITY_MTM_UNAVAILABLE_LOGGED = False
+    _REJECTED_BY_TENANT = {}
+    _reject_event.active = False
+    _reject_event.counted = False
+    _ignore_unreliable_sold.on = False
+
+
+def rejected_stop_count(tenant: str | None = None) -> int:
+    """Counted hard-stop rejections since start (or the last test reset).
+
+    No tenant: every tenant. A tenant id: that tenant only.
+    """
+    if tenant is None:
+        return sum(int(v) for v in _REJECTED_BY_TENANT.values())
+    return int(_REJECTED_BY_TENANT.get(str(tenant), 0))
+
+
+def rejected_stop_counts_by_tenant() -> dict[str, int]:
+    return {str(k): int(v) for k, v in _REJECTED_BY_TENANT.items()}
+
+
+def _counted_stop_reason(reason: str) -> bool:
+    """The two #709 risk-guard rejects. Gate-minimum and inflight are not these."""
+    msg = reason or ""
+    if "already sold" in msg:
+        return True
+    if "position $" in msg and "below minimum" in msg:
+        return True
+    return False
+
+
+@contextmanager
+def rejected_stop_event():
+    """One stop fire. The partial and its follow-up increment the counter once."""
+    prev_active = bool(getattr(_reject_event, "active", False))
+    prev_counted = bool(getattr(_reject_event, "counted", False))
+    _reject_event.active = True
+    _reject_event.counted = False
+    try:
+        yield
+    finally:
+        _reject_event.active = prev_active
+        _reject_event.counted = prev_counted
+
+
+@contextmanager
+def ignoring_unreliable_sold_percent():
+    """One partial check may ignore stored sold_percent when the peak is unusable.
+
+    The lot dict is not modified. A finite peak is still a basis.
+    """
+    prev = bool(getattr(_ignore_unreliable_sold, "on", False))
+    _ignore_unreliable_sold.on = True
+    try:
+        yield
+    finally:
+        _ignore_unreliable_sold.on = prev
+
+
+def _ignoring_unreliable_sold_percent() -> bool:
+    return bool(getattr(_ignore_unreliable_sold, "on", False))
+
+
+def peak_amount_usable(pos: dict | None) -> float | None:
+    """Finite peak above 0, or None when the lot has no usable peak."""
+    if not isinstance(pos, dict):
+        return None
+    raw = pos.get("peak_amount")
+    if raw is None or raw == "":
+        return None
+    try:
+        peak = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(peak) or peak <= 0:
+        return None
+    return peak
+
+
+def _lower_sold_percent_for_check(pos: dict | None, stored: float) -> float:
+    """Sold fraction for the partial-sell check only (#709).
+
+    ``peak_amount`` is the opening fill. DCA and add-on buys raise ``amount``
+    and not peak, so the held basis is ``max(peak_amount, amount)``.
+    ``implied = 1 - amount / basis``. A stored value clearly above ``implied``
+    is stale and is lowered to ``implied``. The result is never higher than
+    ``stored``, and ``pos`` is not modified.
+    """
+    if not isinstance(pos, dict):
+        return stored
+    try:
+        amount_now = float(pos.get("amount") or 0)
+        peak = float(pos.get("peak_amount") or 0)
+    except (TypeError, ValueError):
+        return stored
+    # NaN/inf is not a held basis. It must not imply 0 sold.
+    if not math.isfinite(amount_now) or not math.isfinite(peak):
+        return stored
+    # Without a peak there is no held basis. amount alone implies 0 sold and
+    # would wipe a real sold_percent.
+    if amount_now <= 0 or peak <= 0:
+        return stored
+    basis = max(peak, amount_now)
+    implied = max(0.0, 1.0 - (amount_now / basis))
+    if stored > implied + _SOLD_PERCENT_PLAUSIBILITY_TOLERANCE and implied < stored:
+        return implied
+    return stored
+
+
+def _rejected_stop_signal_kind(signal: str) -> str:
+    if str(signal or "") == "SELL_STOP_FULL":
+        return "SELL_STOP_FULL"
+    return "partial"
+
+
+def _format_peak_amount(peak_amount: float | None) -> str:
+    """Missing peak is ``null``. A real 0 stays ``0.0`` so it is not invented."""
+    if peak_amount is None:
+        return "null"
+    return f"{peak_amount}"
+
+
+def note_rejected_stop(
+    *,
+    tenant: str,
+    symbol: str,
+    timeframe: str,
+    signal: str,
+    reason: str,
+    sold_percent: float,
+    amount: float,
+    peak_amount: float | None,
+) -> None:
+    """WARNING plus the process counter for one rejected hard stop (#709).
+
+    The line is the log source for later measurement. ``sold_percent`` is the
+    stored lot value, not a plausibility correction. ``peak_amount`` is None
+    when the lot has no peak, and the line then says ``peak_amount=null``.
+    ``reason`` is last so the earlier fields stay single tokens.
+
+    The counter moves only for the two risk-guard reasons, and only once when
+    a partial and its follow-up share ``rejected_stop_event``.
+    """
+    from core.time_utils import format_display_time
+    from logger import log
+
+    count_this = _counted_stop_reason(reason)
+    if (
+        count_this
+        and getattr(_reject_event, "active", False)
+        and getattr(_reject_event, "counted", False)
+    ):
+        count_this = False
+    tenant_id = str(tenant or "")
+    if count_this:
+        _REJECTED_BY_TENANT[tenant_id] = int(_REJECTED_BY_TENANT.get(tenant_id, 0)) + 1
+        if getattr(_reject_event, "active", False):
+            _reject_event.counted = True
+    kind = _rejected_stop_signal_kind(signal)
+    log(
+        "rejected_stop "
+        f"timestamp={format_display_time()} tenant={tenant} symbol={symbol} "
+        f"tf={timeframe} signal={kind} sold_percent={sold_percent} "
+        f"amount={amount} peak_amount={_format_peak_amount(peak_amount)} "
+        f"rejected_stops={rejected_stop_count()} reason={reason}",
+        "WARNING",
+    )
 
 
 def _is_emergency_sell(signal: str) -> bool:
@@ -394,9 +572,61 @@ class RiskManager:
                     log(f"daily_gainer_desk emit failed: {exc}", "WARNING")
                 except Exception:
                     pass
+            try:
+                self._record_rejected_stop(order, timeframe, decision)
+            except Exception:
+                pass
             return decision
         finally:
             scope.doc = previous
+
+    def _record_rejected_stop(self, order: TradeOrder, timeframe: str, decision: RiskDecision) -> None:
+        """Log and count a rejected hard stop. Does not change the decision or the lot."""
+        if getattr(decision, "approved", True):
+            return
+        if str(getattr(order, "type", "") or "").upper() != "SELL":
+            return
+        signal = str(getattr(order, "signal", "") or "")
+        if not _is_stop_loss_sell(signal):
+            return
+        pos = {}
+        try:
+            pos = get_position(order.symbol, timeframe) or {}
+        except Exception:
+            pos = {}
+
+        def _num(key: str) -> float:
+            try:
+                return float(pos.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _peak_for_log() -> float | None:
+            if not isinstance(pos, dict) or "peak_amount" not in pos:
+                return None
+            raw = pos.get("peak_amount")
+            if raw is None or raw == "":
+                return None
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(value):
+                return None
+            return value
+
+        from core.tenant_context import resolve_tenant_id
+
+        note_rejected_stop(
+            tenant=resolve_tenant_id(),
+            symbol=str(getattr(order, "symbol", "") or ""),
+            timeframe=str(timeframe or ""),
+            signal=signal,
+            reason=str(getattr(decision, "message", "") or ""),
+            sold_percent=_num("sold_percent"),
+            amount=_num("amount"),
+            peak_amount=_peak_for_log(),
+        )
 
     def _eval_scope(self) -> threading.local:
         tls = self.__dict__.get("_eval_tls")
@@ -4164,7 +4394,13 @@ class RiskManager:
         pos = get_position(order.symbol, timeframe)
         pos_value = float(pos.get("amount", 0)) * order.price
         notional = float(order.amount) * order.price
-        sold_pct = float(pos.get("sold_percent", 0))
+        sold_pct = float(pos.get("sold_percent", 0) or 0)
+        # #709: lower a stale sold_percent for this check only. Not written back.
+        sold_pct = _lower_sold_percent_for_check(pos, sold_pct)
+        # No usable peak: stored sold_percent is not a basis for this decision.
+        # Only the no-peak retry sets the flag. The lot is not written.
+        if _ignoring_unreliable_sold_percent() and peak_amount_usable(pos) is None:
+            sold_pct = 0.0
 
         if limits["max_sold_percent"] is None:  # P723B-MISSING block; only a hard partial escalates (allowlist)
             try:
