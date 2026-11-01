@@ -9,7 +9,7 @@ and `-stress.md`.
 | Check | Before | After |
 |---|---|---|
 | Unit tests for a portfolio replay with the real stop/DCA code | none | 20 in `tests/unit/test_backtest_harness.py` |
-| Property tests (hypothesis) | none, library not installed | 8 in `tests/unit/test_backtest_harness_properties.py` (skipped unless `hypothesis` is installed; not added to requirements.txt) |
+| Property tests (hypothesis) | none, library not installed | 8 in `tests/unit/test_backtest_harness_properties.py`, `hypothesis` in requirements |
 | DSR parity with `tools/entry_filter_replay.py` | n/a | equal to 1e-9 on 60 random series, N = 1, 12, 31 |
 | PBO (CSCV) / block bootstrap | not in repo outside hermes fold deltas | `backtest/harness/stats.py`, tested |
 | Bugs found by the property tests while writing | n/a | 2 fixed (moment underflow in DSR; last PnL bucket past the horizon) |
