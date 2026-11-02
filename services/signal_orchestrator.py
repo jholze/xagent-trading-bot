@@ -496,6 +496,14 @@ class SignalOrchestrator:
         tf = analysis.timeframe
         pos = get_position(symbol, tf)
         has_position = is_open_position(pos)
+        # Observe only (obs_shadow_rules): h_oracle early exit / e age limit
+        # on the open lot at this cycle's price. Never raises, never trades.
+        try:
+            from services.shadow_rules import observe_symbol_lot
+
+            observe_symbol_lot(symbol, current_price, preferred_timeframe=tf)
+        except Exception as exc:
+            log(f"shadow_rules lot hook skipped: {exc}", "WARNING")
 
         if self.config.raw.get("debug", False):
             print(get_text("debug_ampel_change").format(
