@@ -4,6 +4,7 @@
 (b) volatility-based position sizing on recorded entries
 (c) SMA50 trend filter + distance filter (Herman) on recorded entries
 (d) PR #740 coin / source denylist on recorded entries
+(k) criteria eligibility: 7d median quote volume, 90d collapse, 48h no-chase (#643)
 
 Every variant runs the bot's own ``strategies.dca`` stop code. Book mode
 starts each window from the tape's own lot state; entry mode takes lots
@@ -53,7 +54,8 @@ ENTRY_WINDOWS = tuple(_berlin_window(*w) for w in efr.WINDOWS)
 
 # Every candidate variant evaluated by this harness run (3 per scenario).
 # DSR deflates each primary candidate against all of them.
-N_TRIALS = 50  # 12 from (a)-(d) + 11 loser-coin candidates (e)-(h) + 27 regime-conditional (r_*), 2026-11-01
+N_TRIALS = 55  # 12 from (a)-(d) + 11 loser-coin candidates (e)-(h) + 27 regime-conditional (r_*), 2026-11-01
+# + 5 criteria-eligibility variants (k), 2026-11-02
 
 
 @dataclass
@@ -599,3 +601,99 @@ SCENARIOS: dict[str, Callable[[Context], ScenarioResult]] = {
 for _fam in ("oracle", "sma", "ret"):
     for _rule in ("e", "g", "h"):
         SCENARIOS[f"r_{_rule}_{_fam}"] = _regime_scenario(_fam, _rule)
+
+
+# ---------------------------------------------------------------------------
+# (k) Criteria-based eligibility (2026-11-02). Extends #643 (tradability by
+# features, no coin names) inside the #641 guard. Live code:
+# services.venue_quality.evaluate_eligibility (rule_switches.elig_*).
+# E1 = median of the last 7 closed daily quote volumes, E2 = collapse when the
+# last closed close <= 20 % of the 90d high, G15 = #747 no-chase (price more
+# than 15 % above the lowest closed 1h low of the last 48 h).
+# Unknown feature -> keep (same convention as scenarios c/g, live on_missing=keep).
+def _median(values: list[float]) -> float:
+    s = sorted(values)
+    mid = len(s) // 2
+    return s[mid] if len(s) % 2 else 0.5 * (s[mid - 1] + s[mid])
+
+
+def _elig(
+    ctx: Context,
+    liq7: float | None,
+    dd90: float | None,
+    chase: float | None,
+    missing: set,
+    hits: dict,
+) -> Callable[[Episode], bool | None]:
+    from services.shadow_rules import pump_pct_from_lows
+
+    def ok(ep: Episode) -> bool | None:
+        sig = _signal_unix(ep)
+        day0 = sig // DAY * DAY
+        daily = [b for b in ctx.cache.get(ep.symbol, "1d") if b[0] < day0]
+        codes = []
+        if liq7 is not None:
+            last7 = [b[5] * b[4] for b in daily[-7:]]
+            if len(last7) >= 3:
+                if _median(last7) < liq7:
+                    codes.append("elig_liq7")
+            else:
+                missing.add(("liq7", ep.key, ep.entry.ts))
+        if dd90 is not None:
+            last90 = daily[-90:]
+            if len(last90) >= 20:
+                hi = max(b[2] for b in last90)
+                if hi > 0 and last90[-1][4] / hi - 1.0 <= dd90:
+                    codes.append("elig_collapse90")
+            else:
+                missing.add(("dd90", ep.key, ep.entry.ts))
+        if chase is not None:
+            hourly = ctx.engine.candles_1h(ep.symbol)
+            lows = [b[3] for b in hourly if sig - 48 * 3600 <= b[0] and b[0] + 3600 <= sig]
+            pump = pump_pct_from_lows(lows, ep.entry.price)
+            if pump is None:
+                missing.add(("chase", ep.key, ep.entry.ts))
+            elif pump > chase:
+                codes.append("elig_chase48")
+        for c in codes:
+            hits.setdefault(c, set()).add((ep.key, ep.entry.ts))
+        return not codes
+
+    return ok
+
+
+def scenario_k(ctx: Context) -> ScenarioResult:
+    missing: set = set()
+    hits: dict = {}
+
+    def _p(name: str, liq7, dd90, chase, sink: dict) -> Policy:
+        return policy(name, ref=None, escalate=True, entry_filter=_elig(ctx, liq7, dd90, chase, missing, sink))
+
+    variants = [
+        (policy("baseline", ref=None, escalate=True), "all recorded entries"),
+        (_p("elig_primary", 100_000, -0.80, 15.0, hits),
+         "E1 7d median quote vol >= 100k + E2 close > 20 % of 90d high + G15 no-chase"),
+        (_p("elig_min", None, -0.80, 15.0, {}), "E2 + G15 only"),
+        (_p("elig_liq50k", 50_000, -0.80, 15.0, {}), "E1 50k + E2 + G15"),
+        (_p("elig_liq500k", 500_000, -0.80, 15.0, {}), "E1 500k + E2 + G15"),
+        (_p("collapse_only", None, -0.80, None, {}), "E2 only"),
+    ]
+    res = _evaluate(
+        ctx,
+        key="k",
+        title="Criteria eligibility (no coin names)",
+        question="Does a feature-based eligibility filter beat staging with real exits/DCA?",
+        mode="entries",
+        windows=ENTRY_WINDOWS,
+        variants=variants,
+        baseline="baseline",
+        primary="elig_primary",
+        notes=["N_TRIALS = 55 (50 before + 5 new eligibility variants)."],
+    )
+    res.notes.append(
+        f"Primary hits: { {k: len(v) for k, v in hits.items()} }; entries kept for missing data: {len(missing)}"
+    )
+    return res
+
+
+SCENARIOS["k"] = scenario_k

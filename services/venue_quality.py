@@ -1267,6 +1267,239 @@ def check_venue_for_buy(
     )
 
 
+# ---------------------------------------------------------------------------
+# Criteria eligibility (#643 extension, kauf_setup report section 10).
+#
+# Additional checks in the #641 guard, after L3 -> L2 -> L1 (-> S1 -> F1 when
+# built), in this fixed order, each with its own code (#643 R5):
+#   elig_liq7       median of the last 7 closed daily quote volumes >= 100k USDT
+#   elig_collapse90 last closed daily close > 20 % of the 90d high
+#   elig_chase48    order price <= 15 % above the lowest 1h low of the closed
+#                   bars in the 48 h before the decision (#747 helper)
+#   elig_mcap       #563 long mcap floor (5M / 20M) for DCA adds on an open lot
+# No coin names (#643 R1). Only bars closed at decision time are inputs.
+# Per-tenant mode off | shadow | enforce (rule_switches.elig_*), default off.
+# Buys only: sells, stops and exits never call this.
+
+ELIG_LIQ7 = "elig_liq7"
+ELIG_COLLAPSE90 = "elig_collapse90"
+ELIG_CHASE48 = "elig_chase48"
+ELIG_MCAP = "elig_mcap"
+ELIG_ORDER = (ELIG_LIQ7, ELIG_COLLAPSE90, ELIG_CHASE48, ELIG_MCAP)
+
+_DAY = 86400
+
+
+@dataclass
+class EligibilityCheck:
+    code: str
+    mode: str
+    verdict: str  # pass | block | missing
+    value: float | None = None
+    threshold: float | None = None
+    blocks: bool = False
+    message: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "mode": self.mode,
+            "verdict": self.verdict,
+            "value": self.value,
+            "threshold": self.threshold,
+            "blocks": self.blocks,
+            "message": self.message,
+        }
+
+
+@dataclass
+class EligibilityResult:
+    checks: list[EligibilityCheck] = field(default_factory=list)
+    decision_unix: int | None = None
+
+    @property
+    def enforced_codes(self) -> list[str]:
+        return [c.code for c in self.checks if c.blocks and c.mode == "enforce"]
+
+    @property
+    def shadow_codes(self) -> list[str]:
+        return [c.code for c in self.checks if c.blocks and c.mode == "shadow"]
+
+    @property
+    def messages(self) -> list[str]:
+        return [c.message for c in self.checks if c.blocks and c.mode != "off"]
+
+    def to_record(self) -> dict[str, Any]:
+        """Row for the buy decision tape (#628): reason codes plus feature values."""
+        values = {c.code: c.value for c in self.checks}
+        return {
+            "decision_unix": self.decision_unix,
+            "enforced": self.enforced_codes,
+            "shadow_would_block": self.shadow_codes,
+            "modes": {c.code: c.mode for c in self.checks},
+            "values": {
+                "qv7_median_usdt": values.get(ELIG_LIQ7),
+                "close_to_90d_high": values.get(ELIG_COLLAPSE90),
+                "above_48h_low_pct": values.get(ELIG_CHASE48),
+                "market_cap_usd": values.get(ELIG_MCAP),
+            },
+            "checks": [c.to_dict() for c in self.checks],
+        }
+
+
+def _closed_daily(daily_bars: Any, now_unix: int) -> list[tuple]:
+    from risk.rule_switches import closed_bars
+
+    return closed_bars(daily_bars, int(now_unix), _DAY)
+
+
+def median_daily_quote_volume(
+    daily_closed: list[tuple], *, days: int = 7, min_days: int = 3
+) -> float | None:
+    """Median of the last *days* closed daily quote volumes (base volume x close).
+
+    Same rule as harness scenario (k): fewer than *min_days* bars -> None.
+    """
+    window = list(daily_closed or [])[-int(days):]
+    if len(window) < int(min_days):
+        return None
+    vols = sorted(float(b[5]) * float(b[4]) for b in window)
+    n = len(vols)
+    mid = n // 2
+    return vols[mid] if n % 2 else 0.5 * (vols[mid - 1] + vols[mid])
+
+
+def close_to_high_ratio(
+    daily_closed: list[tuple], *, days: int = 90, min_days: int = 20
+) -> float | None:
+    """Last closed daily close / highest high of the last *days* closed bars."""
+    window = list(daily_closed or [])[-int(days):]
+    if len(window) < int(min_days):
+        return None
+    hi = max(float(b[2]) for b in window)
+    if hi <= 0:
+        return None
+    return float(window[-1][4]) / hi
+
+
+def _num(cfg: dict, key: str, default: float) -> float:
+    try:
+        out = float(cfg.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+    return out if math.isfinite(out) else float(default)
+
+
+def _missing_blocks(cfg: dict) -> bool:
+    return str(cfg.get("on_missing") or "keep").strip().lower() == "block"
+
+
+def evaluate_eligibility(
+    *,
+    modes: dict[str, str],
+    cfgs: dict[str, dict],
+    price: float,
+    now_unix: int,
+    daily_bars: Any = None,
+    hourly_bars: Any = None,
+    market_cap_usd: float | None = None,
+    mcap_floor_usd: float | None = None,
+    check_mcap: bool = False,
+) -> EligibilityResult:
+    """Pure criteria checks for one BUY. No I/O; the caller fetches the bars.
+
+    A rule whose mode is ``off`` is skipped. ``blocks`` is true when the feature
+    fails its threshold, or when it is missing and the rule's ``on_missing`` is
+    ``block``. The caller rejects only on ``enforce`` codes.
+    """
+    from services.shadow_rules import pump_pct_48h
+
+    res = EligibilityResult(decision_unix=int(now_unix))
+    daily = None
+
+    def _daily() -> list[tuple]:
+        nonlocal daily
+        if daily is None:
+            daily = _closed_daily(daily_bars, now_unix)
+        return daily
+
+    for code in ELIG_ORDER:
+        mode = str(modes.get(code) or "off")
+        if mode == "off":
+            continue
+        cfg = dict(cfgs.get(code) or {})
+        if code == ELIG_LIQ7:
+            thr = _num(cfg, "min_median_quote_volume_usdt", 100_000.0)
+            val = median_daily_quote_volume(
+                _daily(),
+                days=int(_num(cfg, "days", 7)),
+                min_days=int(_num(cfg, "min_days", 3)),
+            )
+            if val is None:
+                chk = EligibilityCheck(code, mode, "missing", None, thr, _missing_blocks(cfg),
+                                       "elig_liq7: daily volume history missing")
+            elif val < thr:
+                chk = EligibilityCheck(code, mode, "block", val, thr, True,
+                                       f"elig_liq7: 7d median quote vol {val:.0f} < min {thr:.0f}")
+            else:
+                chk = EligibilityCheck(code, mode, "pass", val, thr, False, "")
+        elif code == ELIG_COLLAPSE90:
+            thr = _num(cfg, "min_close_to_high", 0.20)
+            val = close_to_high_ratio(
+                _daily(),
+                days=int(_num(cfg, "days", 90)),
+                min_days=int(_num(cfg, "min_days", 20)),
+            )
+            if val is None:
+                chk = EligibilityCheck(code, mode, "missing", None, thr, _missing_blocks(cfg),
+                                       "elig_collapse90: daily price history missing")
+            elif val <= thr:
+                chk = EligibilityCheck(
+                    code, mode, "block", val, thr, True,
+                    f"elig_collapse90: close {val * 100:.1f}% of 90d high (min > {thr * 100:.0f}%)",
+                )
+            else:
+                chk = EligibilityCheck(code, mode, "pass", val, thr, False, "")
+        elif code == ELIG_CHASE48:
+            thr = _num(cfg, "max_above_48h_low_pct", 15.0)
+            val = None
+            try:
+                px = float(price or 0)
+            except (TypeError, ValueError):
+                px = 0.0
+            if hourly_bars is not None and px > 0:
+                from risk.rule_switches import normalize_bars
+
+                val = pump_pct_48h(normalize_bars(hourly_bars), px, int(now_unix))
+            if val is None:
+                chk = EligibilityCheck(code, mode, "missing", None, thr, _missing_blocks(cfg),
+                                       "elig_chase48: 48h hourly history missing")
+            elif val > thr:
+                chk = EligibilityCheck(
+                    code, mode, "block", val, thr, True,
+                    f"elig_chase48: price {val:.1f}% above 48h low (max {thr:.0f}%)",
+                )
+            else:
+                chk = EligibilityCheck(code, mode, "pass", val, thr, False, "")
+        else:  # ELIG_MCAP
+            if not check_mcap:
+                continue
+            floor = float(mcap_floor_usd or 0)
+            if floor <= 0:
+                continue
+            val = _as_finite(market_cap_usd)
+            if val is None or val <= 0:
+                chk = EligibilityCheck(code, mode, "missing", None, floor, _missing_blocks(cfg),
+                                       f"elig_mcap: market cap unknown (min {floor:.0f})")
+            elif val < floor:
+                chk = EligibilityCheck(code, mode, "block", val, floor, True,
+                                       f"elig_mcap: market cap {val:.0f} < min {floor:.0f}")
+            else:
+                chk = EligibilityCheck(code, mode, "pass", val, floor, False, "")
+        res.checks.append(chk)
+    return res
+
+
 def stamp_venue_for_fill(
     symbol: str,
     *,
