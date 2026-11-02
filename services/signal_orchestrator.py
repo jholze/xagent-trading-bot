@@ -285,6 +285,62 @@ class SignalOrchestrator:
             idempotency_key=idem,
         )
 
+    def _try_age_loss_exit(self, symbol: str, current_price: float, tf: str):
+        """Rule E: sell the whole lot when it is old enough and deep enough in loss.
+
+        Off unless ``rule_switches.age_loss_exit.enabled``. Locked lots are skipped
+        unless ``include_locked``; the risk manager re-checks the condition before
+        it lets the sell past a lock. Returns the trade result or None.
+        """
+        from risk import rule_switches as rs
+
+        raw = self.config.raw if hasattr(self.config, "raw") else {}
+        cfg = rs.rule_config(raw, "age_loss_exit")
+        if not cfg["enabled"]:
+            return None
+        found = find_open_position_for_symbol(symbol, preferred_timeframe=tf)
+        if not found:
+            return None
+        lot_tf, pos = found
+        due, info = rs.age_loss_exit_due(cfg, pos, float(current_price or 0))
+        if not due:
+            return None
+        if not rs._as_bool(cfg.get("include_locked")):
+            from strategies.position_lock import attach_lock_from_ledger, auto_sell_blocked
+
+            lock_pos = attach_lock_from_ledger(dict(pos), symbol, lot_tf) or pos
+            locked, _msg = auto_sell_blocked(lock_pos, rs.AGE_LOSS_EXIT_SOURCE, config=raw)
+            if locked:
+                return None
+        amount = float(pos.get("amount") or 0)
+        if amount <= 0:
+            return None
+        source = rs.AGE_LOSS_EXIT_SOURCE
+        order = TradeOrder(
+            type="SELL",
+            symbol=symbol,
+            price=float(current_price),
+            amount=amount,
+            signal=SELL_FULL,
+            source=source,
+            exit_source=source,
+            exit_rationale=(
+                f"age_loss_exit: lot {info.get('age_days')}d old, "
+                f"pnl {info.get('pnl_pct')}%"
+            )[:240],
+        )
+        from bus.trade_intents import make_idempotency_key
+        from core.tenant_context import resolve_tenant_scope
+
+        idem = make_idempotency_key(symbol, lot_tf, SELL_FULL, source, resolve_tenant_scope())
+        order.idempotency_key = idem
+        log(
+            f"age_loss_exit {symbol} tf={lot_tf} age={info.get('age_days')}d "
+            f"pnl={info.get('pnl_pct')}% -> full sell",
+            "INFO",
+        )
+        return self.trading.execute_order(order, lot_tf, source=source, idempotency_key=idem)
+
     def _cycle_short_cover(self, pos: dict, analysis, current_price: float):
         """Cycle fallback for paper shorts (WS is primary). Fail-closed on errors.
 
@@ -491,6 +547,14 @@ class SignalOrchestrator:
             else:
                 trade_result = self.execute_if_needed(analysis, coin, current_price)
         self.audit.record(coin, analysis, trade_result, current_price)
+
+        # Rule E (per-tenant, off by default): full exit of an old lot deep in loss.
+        # Runs only when this cycle did not already trade the symbol. Never raises.
+        if not (trade_result is not None and getattr(trade_result, "executed", False)):
+            try:
+                self._try_age_loss_exit(coin["symbol"], current_price, analysis.timeframe)
+            except Exception as exc:
+                log(f"age_loss_exit skipped {coin.get('symbol')}: {exc}", "WARNING")
 
         symbol = coin["symbol"]
         tf = analysis.timeframe
