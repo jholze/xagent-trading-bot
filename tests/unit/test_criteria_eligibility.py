@@ -214,6 +214,16 @@ def test_leftover_dust_lot_707_is_checked_like_a_new_entry():
     assert not d.approved and d.code == "elig_liq7"
 
 
+def test_mcap_rule_skips_707_dust_lot():
+    # A #707 dust lot is not an open position, so elig_mcap (DCA adds only) does not apply;
+    # the always-on #563 floor in _evaluate_impl stays the only mcap check on that path.
+    dust = {"amount": 0.001, "average_entry": 1.0, "symbol": SYM}
+    small = [patch("data.cmc_market_cap.resolve_market_cap_usd", return_value=1_000_000.0)]
+    d = _evaluate(rm(sw(elig_mcap="enforce")), _order(price=1.0), position=dust, extra=small)
+    assert d.code != "elig_mcap"
+    assert "elig_mcap" not in str((d.details or {}).get("eligibility") or "")
+
+
 def test_mcap_floor_extends_to_dca_adds():
     pos = {"amount": 10.0, "average_entry": 1.0, "dca_rounds": 0, "symbol": SYM, "strategy_tier": "main"}
     order = _order(price=1.0, signal="BUY_DCA", source="dca")
