@@ -17,6 +17,25 @@ from logger import log
 from core.models import AllocationDecision  # noqa: F401
 
 
+_FALLBACK_WARNED: set = set()
+
+
+def _warn_code_fallback(missing: list, grid_w, mom_w) -> None:
+    """CS-R1-ALLOC: the config applies; the code fallback (0.6/0.4) is only a last resort and must be visible."""
+    from core.tenant_context import resolve_tenant_id
+
+    tid = resolve_tenant_id(None) or "default"
+    key = (tid, tuple(missing))
+    if key in _FALLBACK_WARNED:
+        return
+    _FALLBACK_WARNED.add(key)
+    log(  # CS-R1-ALLOC-LOG
+        f"strategy_allocator: code fallback used tenant={tid} missing={','.join(missing)} "
+        f"default_grid_weight={grid_w} default_momentum_weight={mom_w} (config strategy_allocator applies when set)",
+        "WARNING",
+    )
+
+
 class StrategyAllocator:
     """
     Entscheidet die Kapitalallokation und Strategie-Gewichtung pro Coin.
@@ -49,6 +68,9 @@ class StrategyAllocator:
 
         default_grid_w = self.allocator_cfg.get("default_grid_weight", 0.6)
         default_mom_w = self.allocator_cfg.get("default_momentum_weight", 0.4)
+        _missing = [k for k in ("default_grid_weight", "default_momentum_weight") if k not in self.allocator_cfg]
+        if _missing:
+            _warn_code_fallback(_missing, default_grid_w, default_mom_w)
 
         weights = {"grid": 0.0, "momentum": 1.0}
         exposure_mult = 1.0

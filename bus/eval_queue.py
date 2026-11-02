@@ -173,18 +173,29 @@ def enqueue_eval(
             existing_pri = int(existing // _SCORE_SLOT)
             if priority >= existing_pri and (now - prev_at) < debounce:
                 return False
+        meta_reason = reason
+        if existing is not None and raw_meta and _is_entry_reason(reason):
+            # CS-F2: never replace a PENDING heartbeat with an entry job (the worker would return HOLD for the
+            # open lot before analyze). Coalesce: keep the heartbeat reason, take the better priority.
+            try:
+                prev_meta = json.loads(raw_meta)
+            except Exception:
+                prev_meta = {}
+            if str(prev_meta.get("reason") or "") == HEARTBEAT_REASON:  # CS-F2-KEEP
+                meta_reason = HEARTBEAT_REASON
+                existing_pri = int(existing // _SCORE_SLOT)
+                if existing_pri <= priority:
+                    new_score = float(existing)
 
         pipe = client.pipeline()
         pipe.zadd(queue_key, {member: new_score})
         max_len = int(cfg.get("eval_queue_max_len", 500))
-        if max_len > 0:
-            pipe.zremrangebyrank(queue_key, max_len, -1)
         pipe.hset(
             meta_key,
             member,
             json.dumps(
                 {
-                    "reason": reason,
+                    "reason": meta_reason,
                     "priority": priority,
                     "enqueued_at": now,
                     "tenant_id": tid,
@@ -193,10 +204,118 @@ def enqueue_eval(
             ),
         )
         pipe.execute()
+        if max_len > 0:
+            _trim_queue(client, queue_key, meta_key, max_len)  # CS-F3
         return True
     except Exception as e:
         log(f"eval_queue enqueue failed {member}: {e}", "WARNING")
         return False
+
+
+HEARTBEAT_REASON = "position_heartbeat"
+
+
+def _is_entry_reason(reason: str) -> bool:
+    r = str(reason or "")
+    return r.startswith("entry_15m") or r == "15m_watch"
+
+
+def _is_protected_member(client, meta_key: str, member) -> bool:
+    """CS-F3: a pending position heartbeat is never trimmed (it is the only path to analyze for a held lot)."""
+    try:
+        raw = client.hget(meta_key, member)
+        return _is_protected_meta(raw)
+    except Exception:
+        return False
+
+
+def _is_protected_meta(raw) -> bool:
+    try:
+        return bool(raw) and str(json.loads(raw).get("reason") or "") == HEARTBEAT_REASON  # CS-F3-PROTECT
+    except Exception:
+        return False
+
+
+_TRIM_FIRST_CHUNK = 64
+_TRIM_BLOCKED_BACKOFF_SEC = 30.0
+_TRIM_WARN_INTERVAL_SEC = 60.0
+# (id(client), queue_key) -> monotonic time of the last trim that found only protected heartbeats left
+_trim_blocked_at: dict[tuple, float] = {}
+# (id(client), queue_key) -> monotonic time of the last over-cap warning
+_trim_warned_at: dict[tuple, float] = {}
+
+
+def _reset_trim_state_for_tests() -> None:
+    _trim_blocked_at.clear()
+    _trim_warned_at.clear()
+
+
+def _trim_queue(client, queue_key: str, meta_key: str, max_len: int) -> int:
+    """CS-F3: trim the worst-ranked NON-heartbeat members until len <= max_len (or only heartbeats are left).
+
+    Cost per call is bounded and independent of queue length in the common case:
+    - ZCARD first; nothing else happens while the queue is at or under the cap.
+    - The worst end is read in chunks (64, then doubling) with one ZREVRANGE + one HMGET per chunk,
+      and the scan stops as soon as enough victims are found. The old code did one HGET + one ZREM
+      round trip per member over the whole queue.
+    - Victims are removed with one ZREM and their meta entries with one HDEL (the old code left the
+      meta hash entries behind, so a trimmed member stayed debounced and the hash grew).
+    - When only protected heartbeats are left above the cap, further scans are skipped for
+      _TRIM_BLOCKED_BACKOFF_SEC, and the warning is logged at most once per _TRIM_WARN_INTERVAL_SEC.
+    """
+    state_key = (id(client), queue_key)
+    excess = int(client.zcard(queue_key)) - int(max_len)
+    if excess <= 0:
+        _trim_blocked_at.pop(state_key, None)
+        return 0
+    now = time.monotonic()
+    blocked_at = _trim_blocked_at.get(state_key)
+    if blocked_at is not None and (now - blocked_at) < _TRIM_BLOCKED_BACKOFF_SEC:
+        return 0
+
+    victims: list = []
+    start = 0
+    chunk = max(_TRIM_FIRST_CHUNK, 2 * excess)
+    while len(victims) < excess:
+        members = client.zrevrange(queue_key, start, start + chunk - 1)
+        if not members:
+            break
+        metas = _hmget(client, meta_key, members)
+        for member, raw in zip(members, metas):
+            if _is_protected_meta(raw):
+                continue
+            victims.append(member)
+            if len(victims) >= excess:
+                break
+        if len(members) < chunk:
+            break
+        start += chunk
+        chunk *= 2
+
+    if victims:
+        client.zrem(queue_key, *victims)
+        try:
+            client.hdel(meta_key, *victims)  # CS-F3-META: no stale meta for trimmed members
+        except Exception as e:
+            log(f"eval_queue trim meta cleanup failed: {e}", "WARNING")
+    removed = len(victims)
+    if removed < excess:
+        _trim_blocked_at[state_key] = now
+        last = _trim_warned_at.get(state_key)
+        if last is None or (now - last) >= _TRIM_WARN_INTERVAL_SEC:
+            _trim_warned_at[state_key] = now
+            log(f"eval_queue over cap by {excess - removed} protected heartbeat(s) (max_len={max_len})", "WARNING")
+    else:
+        _trim_blocked_at.pop(state_key, None)
+    return removed
+
+
+def _hmget(client, meta_key: str, members: list) -> list:
+    """One round trip for the meta of a chunk; falls back to HGET per member for clients without HMGET."""
+    try:
+        return list(client.hmget(meta_key, members))
+    except AttributeError:
+        return [client.hget(meta_key, m) for m in members]
 
 
 def pop_eval_batch(
@@ -351,6 +470,7 @@ def reset_eval_queue_for_tests(config_raw: dict | None = None) -> None:
     arch = _arch(config_raw)
     prefix = str(arch.get("key_prefix", "aria:"))
     queue_key, meta_key, processed_key = _keys(prefix)
+    _reset_trim_state_for_tests()
     try:
         client.delete(queue_key, meta_key, processed_key)
     except Exception:
