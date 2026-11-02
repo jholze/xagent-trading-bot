@@ -142,7 +142,7 @@ class CostModel:
 
 `tests/unit/test_portfolio_service_costs.py`: Sequenz Buy→Sell im Sim → `Σ usdt_received − Σ usdt_spent == Σ pnl` (auf 1e-9). Record enthält `cost_model`.
 
-`tests/unit/test_backtester_costs.py`: `CostModel` mit fee 0/slip 0 → Ergebnis identisch zur naiven Rechnung; fee 0,2 % → `pnl` sinkt um erwarteten Betrag; **kein Test ändert bestehende Backtest-Erwartungswerte** — neue Tests, alte bleiben (siehe CLAUDE.md „Tests are the spec"). Existierende Backtest-Tests, die auf Brutto-`pnl` bauen, gehen dadurch möglicherweise rot → **melden, nicht anpassen**; Claude entscheidet pro Test.
+`tests/unit/test_backtester_costs.py`: `CostModel` mit fee 0/slip 0 → Ergebnis identisch zur naiven Rechnung; fee 0,2 % → `pnl` sinkt um erwarteten Betrag; **kein Test ändert bestehende Backtest-Erwartungswerte** — neue Tests, alte bleiben (siehe AGENTS.md „Tests are the spec"). Existierende Backtest-Tests, die auf Brutto-`pnl` bauen, gehen dadurch möglicherweise rot → **melden, nicht anpassen**; Claude entscheidet pro Test.
 
 ## 7. Nicht in diesem Ticket
 Fill-Status / Teilfüllung / `filled` fehlt (#313) · Slippage-Kalibrierung aus Venue-Daten (#307) · Hermes-Neubewertung (#316) · Börsen-Rundung im Modell (Phase 2).

@@ -4,7 +4,7 @@
 **Ziel der Phase:** Der Bot gibt echte Orders auf, versteht die Antwort der Börse, rechnet Kosten korrekt, und Paper läuft auf demselben Code wie Live.
 **Kein neues Feature in dieser Phase.** Jede Aufgabe ist Härtung.
 
-Delegation nach `CLAUDE.md`: **C** = Claude direkt (Urteil nötig, geldrelevant), **G** = an Grok delegierbar (mechanisch, gut spezifiziert), danach Review + `pytest`.
+Delegation nach dem früheren `CLAUDE.md` (heute: `AGENTS.md`): **C** = Claude direkt (Urteil nötig, geldrelevant), **G** = an Grok delegierbar (mechanisch, gut spezifiziert), danach Review + `pytest`.
 
 ---
 
