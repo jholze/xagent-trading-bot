@@ -1,3 +1,4 @@
+import hashlib
 import os
 import threading
 import time
@@ -283,12 +284,27 @@ def round_usdt_to_price_precision(value: float, limits: dict | None) -> float:
     return round(float(value), int(places))
 
 
+_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+# Over-long structured keys keep a readable head plus a digest of the full key.
+_GATE_CLIENT_ID_DIGEST_CHARS = 14
+_GATE_CLIENT_ID_HEAD_CHARS = _GATE_TEXT_PAYLOAD_MAX_BYTES - _GATE_CLIENT_ID_DIGEST_CHARS - 1
+
+
 def _clamp_gate_client_order_id(key: str) -> str:
     """Deterministic Gate clientOrderId payload (no `t-` prefix).
 
-    Empty / all-illegal → ccxt-style uuid16 (16 hex). Over-long keys
-    drop hyphens then truncate so a retry of the same intent stays
-    stable. Already-legal short keys (``abc-key``) are a no-op.
+    Empty / all-illegal → ccxt-style uuid16 (16 hex). Already-legal short
+    keys (``abc-key``) are a no-op. Over-long keys drop hyphens first.
+
+    - Random hex tokens (uuid4, uuid4().hex) are still cut to 26 chars: their
+      head is random, and in-flight orders persisted with that payload must
+      keep matching after a deploy.
+    - Any other over-long key (structured keys such as
+      ``autoshort|SYM|tf|source|price``) becomes ``<head 11>.<sha256 14 hex>``
+      of the full key. A plain cut dropped the source tail and the price, so
+      two different intents shared one clientOrderId and the uncertain-create
+      recovery could pick up an older order. A retry of the same key stays
+      stable.
     """
     raw = (key or "").strip()
     if not raw:
@@ -302,8 +318,11 @@ def _clamp_gate_client_order_id(key: str) -> str:
         encoded = compact.encode("utf-8")
         legal = compact
     if len(encoded) > _GATE_TEXT_PAYLOAD_MAX_BYTES:
-        # Charset is ASCII, so a byte cut is a character cut.
-        legal = encoded[:_GATE_TEXT_PAYLOAD_MAX_BYTES].decode("ascii")
+        if set(legal) <= _HEX_CHARS:
+            # Charset is ASCII, so a byte cut is a character cut.
+            return encoded[:_GATE_TEXT_PAYLOAD_MAX_BYTES].decode("ascii")
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:_GATE_CLIENT_ID_DIGEST_CHARS]
+        legal = f"{legal[:_GATE_CLIENT_ID_HEAD_CHARS]}.{digest}"
     return legal
 
 
