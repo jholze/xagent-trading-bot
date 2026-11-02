@@ -172,11 +172,13 @@ A_RISK_GUARDS = (
 
 
 class TestFailClosedSwitch:
-    def test_default_log_when_key_absent(self):
-        assert _fail_closed_guards_mode(None) == "log"
-        assert _fail_closed_guards_mode({}) == "log"
-        assert _fail_closed_guards_mode({"risk": {}}) == "log"
-        assert _fail_closed_guards_mode(_risk_cfg(None)) == "log"
+    def test_default_deny_when_key_absent(self):
+        # Default flipped from "log" (fail-open) to "deny" (fail-closed); see
+        # docs/evidence for the PR. Only an explicit "log" keeps the old mode.
+        assert _fail_closed_guards_mode(None) == "deny"
+        assert _fail_closed_guards_mode({}) == "deny"
+        assert _fail_closed_guards_mode({"risk": {}}) == "deny"
+        assert _fail_closed_guards_mode(_risk_cfg(None)) == "deny"
 
     def test_guard_failed_log_returns_none_and_errors(self):
         cfg = _risk_cfg("log")

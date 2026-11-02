@@ -58,6 +58,8 @@ def _raw(*, enhanced: bool, cap: int = 11, size_pct: int = 50) -> dict:
             "cmc_trending_fusion": {"trending_trade_size_pct": size_pct},
         },
         "risk": {
+            # Pinned: written for the old implicit "log" default.
+            "fail_closed_guards": "log",
             "min_trade_usdt": 5,
             "venue_quality": {"min_volume_to_order_multiple": 20},
             "liquidity_guard": {
