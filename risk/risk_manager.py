@@ -516,6 +516,8 @@ class RiskManager:
                 raw_cfg = self.config.raw if hasattr(self.config, "raw") else None
                 sell_src = source or getattr(order, "source", None) or ""
                 locked, lock_msg = auto_sell_blocked(pos, sell_src, config=raw_cfg)
+                if locked and self._age_loss_exit_lock_override(order, pos, sell_src):
+                    locked = False
                 if locked:
                     log_lock_block(order.symbol, lock_msg, source=str(sell_src))
                     return RiskDecision(
@@ -1033,6 +1035,20 @@ class RiskManager:
         if buy_limit:
             return buy_limit
 
+        # Per-tenant rule switches (T, G, V, limits). All off by default: a tenant
+        # without ``rule_switches`` gets (None, {}) and nothing changes. Buys only.
+        try:
+            rule_block, rule_ctx = self._rule_switch_buy_gate(
+                order, source, has_position=has_position, is_dca=is_dca
+            )
+        except Exception as e:
+            dec = self._guard_failed("rule_switches", e, order)
+            if dec:
+                return dec
+            rule_block, rule_ctx = None, {}
+        if rule_block is not None:
+            return rule_block
+
         if not has_position:
             slot_block = self._open_slot_cap_blocked(order, source)
             if slot_block:
@@ -1179,6 +1195,14 @@ class RiskManager:
         # The cap is the final notional: original and capped size are logged.
         pre_ticket_usdt = float(sized)
         ticket_cap = float(self._base_usdt_cap() or 0)
+        tenant_order_cap = rule_ctx.get("max_usdt_per_order")
+        if tenant_order_cap is not None:
+            ticket_cap = (
+                min(ticket_cap, float(tenant_order_cap))
+                if ticket_cap > 0
+                else float(tenant_order_cap)
+            )
+            factors["tenant_max_usdt_per_order"] = float(tenant_order_cap)
         if ticket_cap > 0 and pre_ticket_usdt > ticket_cap:
             sized = ticket_cap
             factors["ticket_capped"] = True
@@ -1195,15 +1219,26 @@ class RiskManager:
             except Exception:
                 pass
 
+        vol_mult = rule_ctx.get("vol_mult")
+        if vol_mult is not None and float(vol_mult) < 1.0:
+            factors["vol_sizing_mult"] = round(float(vol_mult), 4)
+            factors["vol_sizing_rv"] = rule_ctx.get("vol_rv")
+            sized = float(sized) * float(vol_mult)
+
         equity = self._equity_for_sizing(order.price, order.symbol)
         pos_value = float(pos.get("amount", 0)) * order.price
-        max_position_value = equity * (self.config.max_position_percent / 100.0)
+        max_pct = float(self.config.max_position_percent)
+        tenant_pct = rule_ctx.get("max_position_pct")
+        if tenant_pct is not None and float(tenant_pct) < max_pct:
+            max_pct = float(tenant_pct)
+            factors["tenant_max_position_pct"] = max_pct
+        max_position_value = equity * (max_pct / 100.0)
         room = max_position_value - pos_value
 
         if room <= 0:
             return RiskDecision(
                 approved=False,
-                message=f"Max position concentration ({self.config.max_position_percent}% of portfolio)",
+                message=f"Max position concentration ({max_pct:g}% of portfolio)",
                 code="max_position_percent",
             )
 
@@ -2909,6 +2944,178 @@ class RiskManager:
             )
         except Exception:
             return 0, 0, 0
+
+    # --- per-tenant rule switches (risk/rule_switches.py) -----------------------------
+
+    def _age_loss_exit_lock_override(self, order, pos, sell_src) -> bool:
+        """Rule E with ``include_locked``: a locked lot may be closed by the age/loss exit.
+
+        Only for source ``age_loss_exit``, only when the tenant switched it on, and only
+        when the age/loss condition still holds now. Anything else keeps the lock.
+        """
+        from risk import rule_switches as rs
+
+        if str(sell_src or "").strip().lower() != rs.AGE_LOSS_EXIT_SOURCE:
+            return False
+        raw = self.config.raw if hasattr(self.config, "raw") else {}
+        cfg = rs.rule_config(raw, "age_loss_exit")
+        if not (cfg["enabled"] and rs._as_bool(cfg.get("include_locked"))):
+            return False
+        due, _ = rs.age_loss_exit_due(
+            cfg, pos, float(getattr(order, "price", 0) or 0), now_unix=self._rule_switch_now()
+        )
+        return bool(due)
+
+
+    def _rule_switch_now(self) -> int:
+        import time as _time
+
+        return int(_time.time())
+
+    def _rule_switch_bars(self, symbol: str, timeframe: str, limit: int):
+        try:
+            return self.market.fetch_ohlcv(symbol, timeframe, limit)
+        except Exception:
+            return None
+
+    def _rule_switch_drawdown_pct(self, order) -> float | None:
+        """Equity drawdown vs. peak in %. None when equity is unknown."""
+        if is_live_dry_run(self.config.raw):
+            history = load_live_trade_history()
+            initial = simulated_balance_usdt(self.config.raw)
+        else:
+            history = load_trade_history()
+            initial = self._initial_capital()
+        equity = self._portfolio_equity(order.price, order.symbol)
+        if equity is None:
+            return None
+        try:
+            peak = float((history or {}).get("peak_equity", initial))
+        except (TypeError, ValueError, AttributeError):
+            peak = float(initial or 0)
+        peak = max(peak, float(equity), float(initial or 0))
+        if peak <= 0:
+            return 0.0
+        return max(0.0, (peak - float(equity)) / peak * 100.0)
+
+    def _rule_switch_buy_gate(
+        self, order, source: str, *, has_position: bool, is_dca: bool
+    ) -> tuple[RiskDecision | None, dict]:
+        """Tenant rule switches for one BUY. Returns (reject or None, sizing context).
+
+        Off by default. Never called for sells, so exits and stops are untouched.
+        New entry = no open lot on the symbol and not a DCA add.
+        T / G / brake: new entries, not manual. V: every non-manual buy.
+        Limits (order cap, max open, % per coin, lots per coin): every buy.
+        """
+        from risk import rule_switches as rs
+
+        raw = self.config.raw if hasattr(self.config, "raw") else {}
+        ctx: dict = {}
+        if str(getattr(order, "type", "") or "").upper() != "BUY":
+            return None, ctx
+        limits = rs.limits_config(raw)
+        trend_cfg = rs.rule_config(raw, "trend_filter")
+        chase_cfg = rs.rule_config(raw, "no_chase")
+        vol_cfg = rs.rule_config(raw, "vol_sizing")
+        if not (limits.active or trend_cfg["enabled"] or chase_cfg["enabled"] or vol_cfg["enabled"]):
+            return None, ctx
+
+        manual = rs.is_manual_source(source)
+        new_entry = (not has_position) and (not is_dca)
+        sym = order.symbol
+
+        if limits.max_usdt_per_order is not None:
+            ctx["max_usdt_per_order"] = limits.max_usdt_per_order
+        if limits.max_position_pct is not None:
+            ctx["max_position_pct"] = limits.max_position_pct
+
+        if new_entry:
+            if limits.max_lots_per_coin is not None:
+                lots = [
+                    p
+                    for _tf, p in (find_open_positions_for_symbol(sym) or [])
+                    if str((p or {}).get("side") or "long").lower() != "short"
+                ]
+                if len(lots) >= limits.max_lots_per_coin:
+                    return RiskDecision(
+                        approved=False,
+                        message=(
+                            f"Tenant limit: {len(lots)} open lot(s) on {sym} "
+                            f"(max {limits.max_lots_per_coin})"
+                        ),
+                        code="tenant_max_lots_per_coin",
+                        size_multiplier=0.0,
+                    ), ctx
+            if limits.max_open_positions is not None:
+                open_slots = count_open_full_slots(raw)
+                if open_slots >= limits.max_open_positions:
+                    return RiskDecision(
+                        approved=False,
+                        message=(
+                            f"Tenant limit: {open_slots} open positions "
+                            f"(max {limits.max_open_positions})"
+                        ),
+                        code="tenant_max_open_positions",
+                        size_multiplier=0.0,
+                    ), ctx
+            if limits.drawdown_brake_pct is not None and not manual:
+                dd = self._rule_switch_drawdown_pct(order)
+                if dd is None:
+                    return RiskDecision(
+                        approved=False,
+                        message="Drawdown brake: equity unknown, new entries paused",
+                        code="tenant_drawdown_brake",
+                        size_multiplier=0.0,
+                    ), ctx
+                if dd >= limits.drawdown_brake_pct:
+                    return RiskDecision(
+                        approved=False,
+                        message=(
+                            f"Drawdown brake: equity {dd:.1f}% below peak "
+                            f"(brake at {limits.drawdown_brake_pct:g}%)"
+                        ),
+                        code="tenant_drawdown_brake",
+                        size_multiplier=0.0,
+                    ), ctx
+
+        if manual:
+            return None, ctx
+        want_entry = new_entry and (trend_cfg["enabled"] or chase_cfg["enabled"])
+        if not (want_entry or vol_cfg["enabled"]):
+            return None, ctx
+
+        now = self._rule_switch_now()
+        hourly = rs.closed_bars(self._rule_switch_bars(sym, "1h", 72), now, rs.HOUR)
+
+        if new_entry and trend_cfg["enabled"]:
+            sma_days = int(trend_cfg.get("sma_days") or 50)
+            daily = rs.closed_bars(
+                self._rule_switch_bars(sym, "1d", sma_days + 10), now, rs.DAY
+            )
+            check = rs.evaluate_trend_filter(trend_cfg, daily, hourly)
+            if check.block_code:
+                return RiskDecision(
+                    approved=False,
+                    message=check.message,
+                    code=check.block_code,
+                    size_multiplier=0.0,
+                ), ctx
+        if new_entry and chase_cfg["enabled"]:
+            check = rs.evaluate_no_chase(chase_cfg, hourly, float(order.price or 0), now)
+            if check.block_code:
+                return RiskDecision(
+                    approved=False,
+                    message=check.message,
+                    code=check.block_code,
+                    size_multiplier=0.0,
+                ), ctx
+        if vol_cfg["enabled"]:
+            target = float(vol_cfg.get("target_daily_vol") or 0.05)
+            rv = rs.realized_daily_vol(hourly)
+            ctx["vol_rv"] = round(rv, 6) if rv is not None else None
+            ctx["vol_mult"] = rs.vol_multiplier(rv, target)
+        return None, ctx
 
     def _open_slot_cap_blocked(self, order, source: str) -> RiskDecision | None:
         """Reject a new buy or short open when the book has no free slot.
