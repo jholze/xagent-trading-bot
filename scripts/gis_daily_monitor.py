@@ -105,6 +105,37 @@ def load_recognized_from_gainer_state(
         return None, f"gainer_state_error:{e}"
 
 
+def load_recognized_from_buy_tape(
+    *,
+    day_key: str,
+    tenant_id: str | None = None,
+) -> tuple[set[str] | None, str]:
+    """Fallback recognized set: symbols on the #628 buy decision tape for the day.
+
+    Reads Mongo ``obs_buy_decision_tape`` (mirror of buy_decision_tape.jsonl).
+    Fail-open: (None, reason) when Mongo is not configured or unreachable.
+    """
+    from services.gis_monitor.pure import recognized_from_buy_tape
+
+    uri = (os.environ.get("MONGO_URL") or os.environ.get("MONGODB_URI") or "").strip()
+    dbn = (os.environ.get("MONGODB_DB") or os.environ.get("MONGODB_TEST_DB") or "").strip() or "xagent_test"
+    if not uri:
+        return None, "buy_tape_unavailable:MONGO_URL unset"
+    try:
+        from pymongo import MongoClient
+
+        cli = MongoClient(uri, serverSelectionTimeoutMS=8000)
+        cli.admin.command("ping")
+        q: dict[str, Any] = {"ts": {"$regex": f"^{day_key}"}}
+        if tenant_id:
+            q["tenant_id"] = tenant_id
+        rows = list(cli[dbn]["obs_buy_decision_tape"].find(q, {"symbol": 1, "ts": 1}))
+        syms = recognized_from_buy_tape(rows, day_key)
+        return syms, f"buy_tape:{dbn}.obs_buy_decision_tape n_rows={len(rows)}"
+    except Exception as e:
+        return None, f"buy_tape_error:{str(e)[:120]}"
+
+
 def load_fills_from_mongo(
     *,
     day_key: str,
@@ -454,6 +485,11 @@ def main(argv: list[str] | None = None) -> int:
         recognized, rec_src = None, "disabled"
     else:
         recognized, rec_src = load_recognized_from_gainer_state()
+        if not recognized and not args.fills_json:
+            # Cron has no local gainer state: fall back to the #628 buy tape.
+            tape_rec, tape_src = load_recognized_from_buy_tape(day_key=day_key, tenant_id=args.tenant)
+            if tape_rec is not None:
+                recognized, rec_src = tape_rec, tape_src
         print(f"  recognized: {rec_src} n={len(recognized) if recognized else 0}", flush=True)
 
     report = build_report(

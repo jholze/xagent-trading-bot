@@ -20,6 +20,12 @@ and ``tools/entry_filter_replay.py``; see docs/domain/rule_switches_spec.md):
   ``include_locked``.
 * ``limits``          — per-order USDT cap, max open positions, max % capital per
   coin, max lots per coin, drawdown brake on new entries.
+* ``elig_*``          — criteria eligibility (#643 extension) inside the #641
+  liquidity guard, ``services/venue_quality.evaluate_eligibility``. Each has a
+  ``mode`` of ``off`` | ``shadow`` | ``enforce`` (default ``off``) and applies
+  to every BUY incl. DCA adds: ``elig_liq7`` (7d median daily quote volume),
+  ``elig_collapse90`` (close vs. 90d high), ``elig_chase48`` (price vs. 48h low),
+  ``elig_mcap`` (the #563 long mcap floor, extended to DCA adds on an open lot).
 
 Only bars that are closed at decision time are used (no lookahead).
 Nothing here ever blocks a sell or a stop.
@@ -38,6 +44,13 @@ HOUR = 3600
 DAY = 86400
 
 RULES = ("trend_filter", "no_chase", "vol_sizing", "age_loss_exit", "limits")
+
+# Criteria eligibility (#643 extension). Mode switch instead of ``enabled``.
+ELIG_RULES = ("elig_liq7", "elig_collapse90", "elig_chase48", "elig_mcap")
+MODE_OFF = "off"
+MODE_SHADOW = "shadow"
+MODE_ENFORCE = "enforce"
+MODES = (MODE_OFF, MODE_SHADOW, MODE_ENFORCE)
 
 _DEFAULTS: dict[str, dict[str, Any]] = {
     "trend_filter": {
@@ -69,6 +82,34 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "max_position_pct": None,
         "max_lots_per_coin": None,
         "drawdown_brake_pct": None,
+    },
+    # Thresholds: kauf_setup report section 10, harness scenario (k) "elig_primary".
+    # ``on_missing``: "keep" (harness parity, default) or "block" (#643 R3).
+    "elig_liq7": {
+        "mode": MODE_OFF,
+        "min_median_quote_volume_usdt": 100_000.0,
+        "days": 7,
+        "min_days": 3,
+        "on_missing": "keep",
+    },
+    "elig_collapse90": {
+        "mode": MODE_OFF,
+        "min_close_to_high": 0.20,
+        "days": 90,
+        "min_days": 20,
+        "on_missing": "keep",
+    },
+    "elig_chase48": {
+        "mode": MODE_OFF,
+        "max_above_48h_low_pct": 15.0,
+        "on_missing": "keep",
+    },
+    # #563 floor (5M volatile / 20M stable via resolve_long_market_cap_min_usd).
+    # New long entries keep the always-on #563 check; this switch adds DCA adds
+    # on an open lot. Unknown mcap blocks, as in #563.
+    "elig_mcap": {
+        "mode": MODE_OFF,
+        "on_missing": "block",
     },
 }
 
@@ -126,6 +167,38 @@ def rule_config(config: Any, rule: str) -> dict[str, Any]:
         out.update({k: v for k, v in sub.items() if not str(k).startswith("_")})
     out["enabled"] = _as_bool(out.get("enabled", False))
     return out
+
+
+def rule_mode(config: Any, rule: str) -> str:
+    """``off`` | ``shadow`` | ``enforce`` for an ``elig_*`` rule. Missing = off.
+
+    Booleans map true -> enforce, false -> off. Any other unknown value is
+    malformed and maps to ``enforce`` (#643 R4: a malformed value must not
+    silently lift a guard the tenant meant to set).
+    """
+    if rule not in ELIG_RULES:
+        raise KeyError(rule)
+    block = _raw_of(config).get("rule_switches")
+    sub = block.get(rule) if isinstance(block, dict) else None
+    if not isinstance(sub, dict) or "mode" not in sub:
+        return MODE_OFF
+    value = sub.get("mode")
+    if value is None:
+        return MODE_OFF
+    if isinstance(value, bool):
+        return MODE_ENFORCE if value else MODE_OFF
+    text = str(value).strip().lower()
+    if text in MODES:
+        return text
+    return MODE_ENFORCE
+
+
+def elig_modes(config: Any) -> dict[str, str]:
+    return {rule: rule_mode(config, rule) for rule in ELIG_RULES}
+
+
+def any_elig_rule_on(config: Any) -> bool:
+    return any(mode != MODE_OFF for mode in elig_modes(config).values())
 
 
 def rule_enabled(config: Any, rule: str) -> bool:

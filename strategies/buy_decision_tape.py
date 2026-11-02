@@ -43,6 +43,7 @@ ROW_KEYS = (
     "filter_codes",
     "book",
     "macro_stress",
+    "eligibility",
     "correlation_id",
 )
 
@@ -179,6 +180,13 @@ def _book_fields(
     return book
 
 
+def _eligibility_field(eligibility: Any, details: dict | None) -> dict[str, Any] | None:
+    rec = eligibility
+    if not isinstance(rec, dict) and isinstance(details, dict):
+        rec = details.get("eligibility")
+    return dict(rec) if isinstance(rec, dict) else None
+
+
 def emit_buy_decision_tape(
     order: TradeOrder,
     decision: RiskDecision,
@@ -186,8 +194,14 @@ def emit_buy_decision_tape(
     source: str | None = None,
     timeframe: str = "4h",
     config: dict | None = None,
+    eligibility: dict | None = None,
 ) -> None:
-    """Append one observe-only row. Never mutates *decision* or *order*."""
+    """Append one observe-only row. Never mutates *decision* or *order*.
+
+    ``eligibility`` is the criteria record of the #641 guard (#643 extension):
+    enforced codes, shadow would-blocks and feature values. None when every
+    ``rule_switches.elig_*`` mode is off or the buy never reached the guard.
+    """
     if str(getattr(order, "type", "") or "").upper() != "BUY":
         return
     if not tape_enabled(config):
@@ -237,6 +251,7 @@ def emit_buy_decision_tape(
             has_position=has_position,
             action=signal_name or "BUY",
         ),
+        "eligibility": _eligibility_field(eligibility, details),
         "correlation_id": _correlation_id(order),
     }
     if _file_write_allowed():

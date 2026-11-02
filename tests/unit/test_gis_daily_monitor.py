@@ -17,8 +17,15 @@ from services.gis_monitor.pure import (
     join_leaders_to_fills,
     normalize_symbol,
     rank_leaders_from_tickers,
+    recognized_from_buy_tape,
 )
-from scripts.gis_daily_monitor import build_report, parse_day_arg, render_markdown, write_report
+from scripts.gis_daily_monitor import (
+    build_report,
+    load_recognized_from_buy_tape,
+    parse_day_arg,
+    render_markdown,
+    write_report,
+)
 
 
 class TestNormalizeAndFlags(unittest.TestCase):
@@ -207,6 +214,43 @@ class TestReportBuilder(unittest.TestCase):
 class TestParseDay(unittest.TestCase):
     def test_parse_iso(self):
         self.assertEqual(parse_day_arg("2026-08-01"), "2026-08-01")
+
+
+class TestRecognizedFromBuyTape(unittest.TestCase):
+    def test_symbols_for_the_day_any_outcome(self):
+        from datetime import UTC, datetime
+
+        rows = [
+            {"ts": "2026-11-01T03:00:00Z", "symbol": "A_USDT", "outcome": "accepted"},
+            {"ts": "2026-11-01T23:59:59Z", "symbol": "B/USDT", "outcome": "rejected"},
+            {"ts": "2026-10-31T23:59:59Z", "symbol": "OLD/USDT", "outcome": "accepted"},
+            {"timestamp": datetime(2026, 11, 1, 5, tzinfo=UTC), "symbol": "C/USDT"},
+            {"ts": "2026-11-01T04:00:00Z", "symbol": ""},
+            "junk",
+        ]
+        self.assertEqual(recognized_from_buy_tape(rows, "2026-11-01"), {"A/USDT", "B/USDT", "C/USDT"})
+        self.assertEqual(recognized_from_buy_tape(rows, ""), set())
+        self.assertEqual(recognized_from_buy_tape(None, "2026-11-01"), set())
+
+    def test_recall_from_tape_set(self):
+        leaders = [
+            {"symbol": "A/USDT", "rank": 1, "eligible": True, "pct_24h": 30},
+            {"symbol": "B/USDT", "rank": 2, "eligible": True, "pct_24h": 20},
+        ]
+        rec = recognized_from_buy_tape([{"ts": "2026-11-01T01:00:00Z", "symbol": "A/USDT"}], "2026-11-01")
+        join = join_leaders_to_fills(leaders, [], recognized_symbols=rec)
+        kpis = compute_kpis(leaders, join, [], recognized_symbols=rec, top_k=20)
+        self.assertEqual(kpis["recall_proxy_reason"], "ok")
+        self.assertAlmostEqual(kpis["recall_proxy"], 0.5)
+
+    def test_loader_fail_open_without_mongo(self):
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"MONGO_URL": "", "MONGODB_URI": ""}):
+            rec, src = load_recognized_from_buy_tape(day_key="2026-11-01")
+        self.assertIsNone(rec)
+        self.assertIn("buy_tape_unavailable", src)
 
 
 if __name__ == "__main__":

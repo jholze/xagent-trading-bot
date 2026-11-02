@@ -280,6 +280,31 @@ def join_leaders_to_fills(
     return joined
 
 
+def recognized_from_buy_tape(rows: list[dict[str, Any]] | None, day_key: str) -> set[str]:
+    """Symbols the bot evaluated a BUY for on *day_key* (UTC), from #628 tape rows.
+
+    Any outcome counts (approved, rejected, shadow): the symbol was recognized by
+    a scanner and reached the risk manager. Rows from other days are ignored.
+    """
+    out: set[str] = set()
+    day = str(day_key or "")
+    if not day:
+        return out
+    for row in rows or ():
+        if not isinstance(row, dict):
+            continue
+        ts = row.get("ts")
+        if ts is None and row.get("timestamp") is not None:
+            stamp = row.get("timestamp")
+            ts = stamp.strftime("%Y-%m-%d") if hasattr(stamp, "strftime") else stamp
+        if not str(ts or "").startswith(day):
+            continue
+        sym = normalize_symbol(row.get("symbol") or "")
+        if sym:
+            out.add(sym)
+    return out
+
+
 def compute_kpis(
     leaders: list[dict[str, Any]],
     join_rows: list[dict[str, Any]],

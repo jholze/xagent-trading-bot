@@ -334,7 +334,9 @@ class RiskManager:
         # outer snapshot — it starts pending again and the outer is restored.
         scope = self._eval_scope()
         previous = getattr(scope, "doc", None)
+        previous_elig = getattr(scope, "eligibility", None)
         scope.doc = _EVAL_DOC_PENDING
+        scope.eligibility = None
         try:
             decision = self._evaluate_impl(
                 order,
@@ -376,6 +378,7 @@ class RiskManager:
                         source=source,
                         timeframe=timeframe,
                         config=raw,
+                        eligibility=getattr(scope, "eligibility", None),
                     )
             except Exception as exc:
                 try:
@@ -406,6 +409,7 @@ class RiskManager:
             return decision
         finally:
             scope.doc = previous
+            scope.eligibility = previous_elig
 
     def _eval_scope(self) -> threading.local:
         tls = self.__dict__.get("_eval_tls")
@@ -2018,6 +2022,44 @@ class RiskManager:
             if liq.code and liq.code not in codes:
                 codes.append(liq.code)
 
+        # Criteria eligibility (#643 extension) after L3 -> L2 -> L1, same guard,
+        # every BUY incl. DCA adds and the #707 leftover-lot path. Per-tenant
+        # mode off | shadow | enforce; all off by default (no fetch, no change).
+        elig = None
+        try:
+            elig = self._eligibility_check(order, pos=pos, has_position=bool(has_position))
+        except Exception as exc:
+            elig = None
+            try:
+                from logger import log
+
+                log(f"eligibility check failed {order.symbol}: {exc}", "WARNING")
+            except Exception:
+                pass
+        elig_msgs: list[str] = []
+        if elig is not None:
+            self._eval_scope().eligibility = elig.to_record()
+            if elig.shadow_codes or elig.enforced_codes:
+                try:
+                    from logger import log
+
+                    log(
+                        f"eligibility {getattr(order, 'symbol', '')} src={src} "
+                        f"enforce={','.join(elig.enforced_codes) or '-'} "
+                        f"shadow={','.join(elig.shadow_codes) or '-'} "
+                        f"{'; '.join(elig.messages)}"[:400],
+                        "INFO",
+                    )
+                except Exception:
+                    pass
+            if not human:
+                for code in elig.enforced_codes:
+                    if code not in codes:
+                        codes.append(code)
+                elig_msgs = [
+                    c.message for c in elig.checks if c.blocks and c.mode == "enforce"
+                ]
+
         fields = self._liq_lock_fields(liq, planned_usdt)
         if human:
             # Logged only. No cap, and the lot sum stays below this return
@@ -2027,7 +2069,8 @@ class RiskManager:
 
                 log(
                     f"manual_buy_guard {getattr(order, 'symbol', '')} "
-                    f"blocked={bool(codes)} codes={','.join(codes) or '-'}",
+                    f"blocked={bool(codes) or bool(elig and elig.enforced_codes)} "
+                    f"codes={','.join(codes + (elig.enforced_codes if elig else [])) or '-'}",
                     "INFO",
                 )
             except Exception:
@@ -2084,6 +2127,10 @@ class RiskManager:
             bits.append("gate_error")
         if liq is not None and liq.reasons:
             bits.append("; ".join(str(r) for r in liq.reasons)[:240])
+        if elig_msgs:
+            bits.append("; ".join(elig_msgs)[:240])
+        if elig is not None:
+            details["eligibility"] = elig.to_record()
         decision = RiskDecision(
             approved=False,
             message=" ".join(str(b) for b in bits)[:400],
@@ -2092,6 +2139,59 @@ class RiskManager:
             details=details,
         )
         return BuyLockResult(decision=decision, apply_cap=False, **fields)
+
+    def _eligibility_check(self, order: TradeOrder, *, pos: dict, has_position: bool):
+        """Criteria eligibility for one BUY (``services.venue_quality``).
+
+        Returns None when every ``rule_switches.elig_*`` mode is off, so a tenant
+        without the switches fetches nothing and decides exactly as before.
+        Bars come from the market service; only bars closed at the decision time
+        are used. ``elig_mcap`` checks DCA adds on an open lot (``has_position``);
+        new entries and the #707 leftover-lot path keep the always-on #563 floor.
+        """
+        if str(getattr(order, "type", "") or "").upper() != "BUY":
+            return None
+        from risk import rule_switches as rs
+        from services.venue_quality import evaluate_eligibility
+
+        raw = self.config.raw if hasattr(self.config, "raw") else {}
+        modes = rs.elig_modes(raw)
+        if all(m == rs.MODE_OFF for m in modes.values()):
+            return None
+        cfgs = {rule: rs.rule_config(raw, rule) for rule in rs.ELIG_RULES}
+        sym = order.symbol
+        now = self._rule_switch_now()
+        daily = hourly = None
+        if modes["elig_liq7"] != rs.MODE_OFF or modes["elig_collapse90"] != rs.MODE_OFF:
+            daily = self._rule_switch_bars(sym, "1d", 100)
+        if modes["elig_chase48"] != rs.MODE_OFF:
+            hourly = self._rule_switch_bars(sym, "1h", 72)
+        mcap = None
+        floor = None
+        check_mcap = bool(has_position) and modes["elig_mcap"] != rs.MODE_OFF
+        if check_mcap:
+            from strategies.short_policy import _tier_key, resolve_long_market_cap_min_usd
+
+            tier = _tier_key(pos.get("strategy_tier") if isinstance(pos, dict) else None)
+            floor = float(resolve_long_market_cap_min_usd(tier, raw) or 0)
+            if floor > 0:
+                try:
+                    from data.cmc_market_cap import resolve_market_cap_usd
+
+                    mcap = resolve_market_cap_usd(sym)
+                except Exception:
+                    mcap = None
+        return evaluate_eligibility(
+            modes=modes,
+            cfgs=cfgs,
+            price=float(getattr(order, "price", 0) or 0),
+            now_unix=now,
+            daily_bars=daily,
+            hourly_bars=hourly,
+            market_cap_usd=mcap,
+            mcap_floor_usd=floor,
+            check_mcap=check_mcap,
+        )
 
     @staticmethod
     def _is_dca_buy(source: str, order: TradeOrder) -> bool:
