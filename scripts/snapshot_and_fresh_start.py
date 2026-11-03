@@ -6,10 +6,10 @@ Backs up:
   - tenants registry, tenant_configs, tenant_watchlists
   - All *.demo.json under repo root + data/*.json
 
-Reset (--apply):
-  - Empty ledgers for each active tenant (default + henry by default)
-  - Remove legacy scope-only Mongo docs (demo)
-  - Rewrite ledger *.demo.json to match fresh cash balance
+Reset (--apply-reset): REFUSED. It only covered the demo scope and left the
+live-scope high-water mark (peak_equity) behind. Use ``scripts/ledger_epoch.py``
+(backup -> verify -> reset/restore, epoch marker). ``--tenant`` is mandatory;
+``all``/``*`` is refused.
 """
 
 from __future__ import annotations
@@ -75,15 +75,10 @@ def _fresh_ledger_bundle(balance: float, tenant_id: str) -> dict:
 
 
 def _active_tenants(explicit: list[str]) -> list[str]:
-    if explicit:
-        return [t.strip().lower() for t in explicit if t.strip()]
-    from storage.tenant_registry import list_active_tenants
+    """Explicit tenants only. No implicit "all active tenants" (reset_vorschlag gap B)."""
+    from scripts.ledger_epoch import parse_tenants
 
-    active = [t["tenant_id"] for t in list_active_tenants()]
-    for tid in DEFAULT_TENANTS:
-        if tid not in active:
-            active.append(tid)
-    return sorted(set(active))
+    return parse_tenants(explicit)
 
 
 def _export_tenant_ledger(store, tenant_id: str) -> dict:
@@ -289,7 +284,7 @@ def main() -> int:
         "--tenant",
         action="append",
         default=[],
-        help="Tenant id (repeatable; default: active registry + default/henry)",
+        help="Tenant id (repeatable, mandatory; 'all' is refused)",
     )
     parser.add_argument(
         "--balance",
@@ -305,7 +300,7 @@ def main() -> int:
     parser.add_argument(
         "--apply-reset",
         action="store_true",
-        help="After snapshot, reset Mongo + ledger JSON to empty start",
+        help="REFUSED: use scripts/ledger_epoch.py reset (covers the live scope)",
     )
     parser.add_argument(
         "--yes",
@@ -314,6 +309,22 @@ def main() -> int:
     )
     parser.add_argument("--mongo-url", default=None)
     args = parser.parse_args()
+
+    from scripts.ledger_epoch import EpochError
+
+    try:
+        _active_tenants(args.tenant)
+    except EpochError as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 2
+    if args.apply_reset:
+        print(
+            "REFUSED: --apply-reset no longer runs here (demo scope only, peak_equity in "
+            "the live scope stayed). Use: python scripts/ledger_epoch.py backup|verify|reset "
+            "--tenant <id> ...",
+            file=sys.stderr,
+        )
+        return 2
 
     os.environ.setdefault("MULTI_TENANT_ENABLED", "1")
     os.environ.setdefault("DEMO_MODE", "1")

@@ -540,6 +540,21 @@ def set_process_lease_for_tests(lease: WriterLease | None) -> None:
     _process_lease = lease
 
 
+def swap_process_lease(lease: WriterLease | None) -> WriterLease | None:
+    """Install ``lease`` as the process lease and return the previous one.
+
+    For one-shot operator tools (scripts/ledger_epoch.py) that write several
+    (tenant, scope) ledgers from one process while the bot is stopped. They
+    acquire one lease per (tenant, scope) and install it around each write so
+    every document carries the fence of its own ledger.
+    """
+    global _process_lease
+    with _hold_lock:
+        previous = _process_lease
+        _process_lease = lease
+    return previous
+
+
 def require_lease_for_order() -> None:
     """Raise WriterLeaseLost when the feature is on and we do not hold the lease."""
     if not lease_enabled():
