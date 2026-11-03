@@ -24,8 +24,8 @@ Non-money-path change (scripts/, bus/writer_lease.py helper, tests). No trading 
 
 | metric | before | after |
 | --- | --- | --- |
-| tests in `tests/unit/test_ledger_epoch.py` | 0 | 32 |
-| full unit suite passed (before = after minus the 32 new tests; after measured on staging 23831074 + branch) | 6577 | 6609 |
+| tests in `tests/unit/test_ledger_epoch.py` | 0 | 36 |
+| full unit suite passed (before = after minus the new tests; after measured on staging 23831074 + branch, 32 tests at that point) | 6577 | 6609 |
 | skipped / xfailed | 6 / 1 | 6 / 1 |
 | suite exit code | 0 | 0 |
 | ruff E9,F821,F823 on changed files | n/a | clean |
@@ -45,3 +45,14 @@ Seven hand mutants of `ledger_epoch.py` / the old scripts (refusals, live scope,
 | `snapshot_and_fresh_start.py --apply-reset` / `reset_demo_ledger.py --yes` / `reset_railway_test_ledger.sh` (no tenant) | `REFUSED`, exit 2 |
 
 A first smoke run before the lease change showed that outside pytest the store refuses every ledger write without the writer lease (`LedgerWriteFailed: no writer lease`); restore put the scratch DB back. That is why reset/restore now take the lease first and fail before any write.
+
+## Review follow-up (DeepSeek, REQUEST_CHANGES -> fixed)
+
+| finding | fix | test |
+| --- | --- | --- |
+| MEDIUM restore did not run the fence preflight | `restore --apply` runs `check_fences` under the lease and stamps our lease fence on every raw write | `test_restore_refuses_when_redis_fence_is_behind_mongo`, `test_restore_with_lease_stamps_our_fence` |
+| LOW tenant meta export unverified | collections key by `tenant_id` (storage/tenant_meta_store.py, tenant_registry.py) | `test_backup_exports_tenant_meta_for_named_tenants_only` |
+| LOW live `orders_archive` parts not cleared | live orders are reset when live archive parts exist; leftover check covers demo and live | `test_reset_clears_live_archive_parts` |
+| NIT `--balance` with different capitals | help text says to run such tenants separately | n/a |
+
+Two mutants (drop the restore fence check; skip live archive reset) each fail one of the new tests. 36/36 in `test_ledger_epoch.py`.

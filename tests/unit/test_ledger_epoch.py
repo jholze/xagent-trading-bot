@@ -430,3 +430,54 @@ def test_reset_failure_midway_points_to_restore(env, tmp_path, monkeypatch):
                  confirm_writers_stopped=True, now=NOW)
     le.restore(db, out, ["henry"], apply=True, confirm_writers_stopped=True, now=NOW)
     assert len(store.load_orders("demo", tenant_id="henry")["orders"]) == 9
+
+
+# ---------------------------------------------------------------- review #759 follow-ups
+
+
+def test_restore_refuses_when_redis_fence_is_behind_mongo(env, lease_on, tmp_path):
+    db, _ = env
+    wl, redis = lease_on
+    out, _ = _backup(db, tmp_path)
+    db.orders.update_one({"_id": "henry:demo"}, {"$set": {"orders": []}})
+    with pytest.raises(le.EpochError, match="fence 7 > our lease fence"):
+        le.restore(db, out, ["henry"], apply=True, confirm_writers_stopped=True, now=NOW, redis=redis)
+    assert db.orders.find_one({"_id": "henry:demo"})["orders"] == []
+    for scope in ("demo", "live"):
+        assert redis.get(wl.lease_redis_key("henry", scope)) is None
+
+
+def test_restore_with_lease_stamps_our_fence(env, lease_on, tmp_path):
+    db, _ = env
+    wl, redis = lease_on
+    out, _ = _backup(db, tmp_path)
+    redis.kv[wl.fence_redis_key("henry", "demo")] = "7"
+    db.orders.update_one({"_id": "henry:demo"}, {"$set": {"orders": []}})
+    le.restore(db, out, ["henry"], apply=True, confirm_writers_stopped=True, now=NOW, redis=redis)
+    doc = db.orders.find_one({"_id": "henry:demo"})
+    assert len(doc["orders"]) == 5 and doc["fence"] == 8
+
+
+def test_backup_exports_tenant_meta_for_named_tenants_only(env, tmp_path):
+    db, _ = env
+    for tid in ("henry", "ctexp"):
+        db.tenants.insert_one({"tenant_id": tid, "status": "active"})
+        db.tenant_configs.insert_one({"tenant_id": tid, "body": {"rule_switches": {}}})
+        db.tenant_watchlists.insert_one({"tenant_id": tid, "coins": []})
+    _out, manifest = _backup(db, tmp_path)
+    for coll in ("tenants", "tenant_configs", "tenant_watchlists"):
+        assert manifest["files"][f"extra/{coll}.jsonl"]["count"] == 1
+
+
+def test_reset_clears_live_archive_parts(env, tmp_path):
+    db, store = env
+    db.orders_archive.insert_one(
+        {"_id": "henry:live:part:0000", "tenant_id": "henry", "ledger_scope": "live",
+         "kind": "orders_archive", "part_index": 0, "orders": [_order(500)]}
+    )
+    out, manifest = _backup(db, tmp_path, tenants=("henry",))
+    assert manifest["summary"]["henry"]["live"]["archive_parts"] == 1
+    le.reset(db, store, out, ["henry"], balance=100000, apply=True, confirm_writers_stopped=True, now=NOW)
+    assert db.orders_archive.count_documents({"_id": {"$regex": "^henry:live:part:"}}) == 0
+    le.restore(db, out, ["henry"], apply=True, confirm_writers_stopped=True, now=NOW)
+    assert db.orders_archive.find_one({"_id": "henry:live:part:0000"})

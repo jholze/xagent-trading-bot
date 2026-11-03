@@ -490,6 +490,13 @@ class _OperatorLeases:
                         "(Redis fence counter behind Mongo). Nothing was written."
                     )
 
+    def stamp(self, doc: dict, tenant_id: str, scope: str) -> dict:
+        """Carry our lease fence on a raw restore write, like the store does."""
+        lease = self.leases.get((tenant_id, scope))
+        if self.enabled and lease is not None and lease.fence is not None:
+            doc["fence"] = int(lease.fence)
+        return doc
+
     @contextmanager
     def use(self, tenant_id: str, scope: str):
         if not self.enabled:
@@ -619,13 +626,15 @@ def _apply_reset(db, store, out_dir, tenants, balance, report, leases, now):
             store.save_trade_history(dict(fresh[TRADE_HISTORY]), "demo", tenant_id=tid)
         with leases.use(tid, "live"):
             store.save_trade_history(dict(fresh[TRADE_HISTORY]), "live", tenant_id=tid)
-            if db[ORDERS].find_one({"_id": _ledger_id(tid, "live")}):
+            live_parts = db[ORDERS_ARCHIVE].count_documents(_archive_filter(tid, "live"))
+            if db[ORDERS].find_one({"_id": _ledger_id(tid, "live")}) or live_parts:
                 store.save_orders(dict(fresh[ORDERS]), "live", tenant_id=tid)
             if db[POSITIONS].find_one({"_id": _ledger_id(tid, "live")}):
                 store.save_positions(dict(fresh[POSITIONS]), "live", tenant_id=tid)
-        leftover = db[ORDERS_ARCHIVE].count_documents(_archive_filter(tid, "demo"))
-        if leftover:
-            raise EpochError(f"{tid}: {leftover} orders_archive parts survived the reset")
+        for scope in LEDGER_SCOPES:
+            leftover = db[ORDERS_ARCHIVE].count_documents(_archive_filter(tid, scope))
+            if leftover:
+                raise EpochError(f"{tid}:{scope}: {leftover} orders_archive parts survived the reset")
         db[EPOCH_COLLECTION].replace_one(
             {"_id": f"{tid}:{epoch_id}"},
             {
@@ -698,7 +707,8 @@ def restore(
     from storage.mongo_client import assert_safe_dev_db_mutation
 
     assert_safe_dev_db_mutation(db.name, action="ledger epoch restore")
-    with _OperatorLeases(tenants, redis=redis):
+    with _OperatorLeases(tenants, redis=redis) as leases:
+        leases.check_fences(db)
         restored = {}
         for tid in tenants:
             for scope in LEDGER_SCOPES:
@@ -706,7 +716,7 @@ def restore(
                     rel = f"ledger/{tid}/{scope}/{coll}.jsonl"
                     docs = _read_jsonl(out_dir / rel)
                     if docs:
-                        doc = _strip_fence(docs[0])
+                        doc = leases.stamp(_strip_fence(docs[0]), tid, scope)
                         db[coll].replace_one({"_id": doc["_id"]}, doc, upsert=True)
                     else:
                         db[coll].delete_one({"_id": _ledger_id(tid, scope)})
@@ -830,7 +840,12 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("reset", help="fresh start from a verified backup (dry run by default)")
     r.add_argument("--dir", required=True)
     r.add_argument("--tenant", action="append", default=[])
-    r.add_argument("--balance", type=float, default=None)
+    r.add_argument(
+        "--balance",
+        type=float,
+        default=None,
+        help="start capital; must equal every named tenant's config capital (run tenants with different capital separately)",
+    )
     r.add_argument("--apply", action="store_true")
     r.add_argument("--confirm-writers-stopped", action="store_true")
     r.add_argument("--allow-balance-mismatch", action="store_true")
