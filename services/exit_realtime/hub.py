@@ -8,6 +8,7 @@ import ssl
 import threading
 import time
 from collections import deque
+from contextlib import nullcontext
 from typing import Any, Callable
 
 from logger import log
@@ -61,6 +62,161 @@ def tick_age_label(time_ms: Any, now: float | None = None) -> str:
     if age is None:
         return "missing"
     return f"{age:.3f}"
+
+
+_HARD_STOP_ACTIONS = frozenset({"SELL_STOP_FULL", "SELL_STOP_PARTIAL"})
+
+
+def _rejected_partial_escalates_to_full(action: str, source: str, message: str) -> bool:
+    """#709: retry a rejected hard partial once as SELL_STOP_FULL.
+
+    ``already sold …`` and ``position $… below minimum`` are risk-guard
+    rejects. ``below Gate minimum`` is the venue pause and is not this path.
+    """
+    if source != "stop_loss" or action != "SELL_STOP_PARTIAL":
+        return False
+    msg = message or ""
+    if "already sold" in msg:
+        return True
+    if "position $" in msg and "below minimum" in msg:
+        return True
+    return False
+
+
+def _rejection_class(message: str) -> str | None:
+    """The two reasons that may follow up a rejected hard partial."""
+    msg = message or ""
+    if "already sold" in msg:
+        return "already_sold"
+    if "position $" in msg and "below minimum" in msg:
+        return "below_minimum"
+    return None
+
+
+def counted_stop_rejection(action: str, source: str, message: str) -> bool:
+    """Hub counter: hard stop, and only the two risk-guard reasons."""
+    if source != "stop_loss" or action not in _HARD_STOP_ACTIONS:
+        return False
+    return _rejection_class(message) is not None
+
+
+# Once per lot and kind. Survives a new hub in this process (WS reconnect /
+# hub rebuild). Not written onto the lot.
+_STOP_ONCE: dict[tuple, str] = {}
+
+
+def reset_stop_retry_memory_for_tests() -> None:
+    _STOP_ONCE.clear()
+
+
+def _lot_token(pos: dict | None) -> str:
+    if not isinstance(pos, dict):
+        return ""
+    return str(pos.get("first_buy_at") or pos.get("entry_at") or "")
+
+
+def _once_key(
+    tenant: str | None,
+    symbol: str,
+    timeframe: str,
+    pos: dict | None,
+    kind: str,
+) -> tuple:
+    return (
+        str(tenant or "").strip(),
+        str(symbol or ""),
+        str(timeframe or ""),
+        _lot_token(pos),
+        kind,
+    )
+
+
+def _once_done(key: tuple) -> bool:
+    return key in _STOP_ONCE
+
+
+def _claim_once(key: tuple, reason: str) -> bool:
+    if key in _STOP_ONCE:
+        return False
+    _STOP_ONCE[key] = str(reason or "")
+    return True
+
+
+def _remember_once(key: tuple, reason: str) -> None:
+    if key in _STOP_ONCE:
+        _STOP_ONCE[key] = str(reason or "")
+
+
+def _partial_amount_on_current(held: float, fraction: float) -> float:
+    """Stop fraction of the current amount, capped at that amount."""
+    try:
+        held_f = float(held)
+        frac = float(fraction or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if held_f <= 0 or frac <= 0:
+        return 0.0
+    if frac > 1.0:
+        frac = 1.0
+    sized = held_f * frac
+    if sized > held_f:
+        sized = held_f
+    return sized
+
+
+def _partial_respecting_exchange_minimum(
+    symbol: str,
+    sized: float,
+    held: float,
+    price: float,
+) -> tuple[float, bool]:
+    """Raise a too-small partial up to a known exchange minimum, still below the lot.
+
+    Unknown minimums are not a floor. If the lot itself cannot meet the
+    minimum, the partial is not sent. That is the venue case, not a full sell.
+    """
+    try:
+        from execution.gate_adapter import gate_pair_minimums
+
+        mins = gate_pair_minimums(symbol)
+    except Exception:
+        return sized, True
+    if mins is None:
+        return sized, True
+    min_amount, min_cost = mins
+    amount = float(sized)
+    held_f = float(held)
+    price_f = float(price or 0)
+
+    def _needs_raise(qty: float) -> float | None:
+        floor = qty
+        if min_amount > 0 and qty < min_amount:
+            floor = max(floor, min_amount)
+        if min_cost > 0 and price_f > 0 and qty * price_f < min_cost:
+            floor = max(floor, min_cost / price_f)
+        if floor <= qty:
+            return None
+        return floor
+
+    raised = _needs_raise(amount)
+    if raised is None:
+        return amount, True
+    if raised >= held_f:
+        return amount, False
+    return min(held_f, raised), True
+
+
+def _positive_amount(*sources: dict | None) -> float:
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        try:
+            amount = float(src.get("amount") or 0)
+        except (TypeError, ValueError):
+            continue
+        if amount > 0:
+            return amount
+    return 0.0
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -147,6 +303,8 @@ class ExitRealtimeHub:
             "ws_stop_skip_no_bid": 0,
             "ws_stop_skip_no_base": 0,
             "ws_stop_below_min": 0,
+            "rejected_stops": 0,
+            "rejected_stops_by_tenant": {},
         }
         self.sync_correlated_tier_watch()
         self._liq_stream: Any = None
@@ -527,6 +685,48 @@ class ExitRealtimeHub:
             except Exception:
                 pass
 
+    def _count_rejected_stop(
+        self,
+        tenant: str | None,
+        action: str,
+        source: str,
+        message: str,
+    ) -> bool:
+        """Count one hard stop rejected for the two risk-guard reasons.
+
+        Per tenant. Inflight, exchange, and other messages are not counted.
+        ``stats()['rejected_stops']`` is the total. ``rejected_stops_by_tenant``
+        is the split. Both are on exit-radar ``GET /health``.
+        """
+        if not counted_stop_rejection(action, source, message):
+            return False
+        tid = str(tenant or "").strip() or "default"
+        by = self._stats.get("rejected_stops_by_tenant")
+        if not isinstance(by, dict):
+            by = {}
+        by[tid] = int(by.get(tid) or 0) + 1
+        self._stats["rejected_stops_by_tenant"] = by
+        self._stats["rejected_stops"] = sum(int(v) for v in by.values())
+        return True
+
+    def _lot_is_locked(self, pos: dict | None, symbol: str, timeframe: str) -> tuple[bool, str]:
+        """Existing auto-sell lock. Fail closed when the check itself breaks."""
+        try:
+            from strategies.position_lock import attach_lock_from_ledger, auto_sell_blocked
+
+            live = pos if isinstance(pos, dict) else {}
+            live = attach_lock_from_ledger(live, symbol, timeframe) or live
+            return auto_sell_blocked(live if isinstance(live, dict) else {}, "exit_ws")
+        except Exception as exc:
+            return True, f"position_lock_check_error: {exc}"[:200]
+
+    def _warn_locked_stop(self, symbol: str, tenant: str | None, reason: str) -> None:
+        log(
+            f"exit_ws stop locked symbol={symbol} tenant={tenant or ''} "
+            f"no order reason={reason}",
+            "WARNING",
+        )
+
     def _debounce_ok(
         self,
         symbol: str,
@@ -743,8 +943,12 @@ class ExitRealtimeHub:
 
             live_pos = get_position(sym, tf) or pos
             live_pos = attach_lock_from_ledger(live_pos, sym, tf) or live_pos
-            locked, _ = auto_sell_blocked(live_pos, "exit_ws")
+            locked, lock_msg = auto_sell_blocked(live_pos, "exit_ws")
             if locked:
+                if self._debounce_ok(
+                    sym, "position_locked", cooldown, tenant_id=row_tenant
+                ):
+                    self._warn_locked_stop(sym, row_tenant, lock_msg)
                 return
         except Exception:
             # Fail-closed on lock-check errors: do not evaluate trail sells
@@ -947,6 +1151,41 @@ class ExitRealtimeHub:
             ):
                 continue
 
+            from risk.risk_manager import peak_amount_usable
+
+            lot_pos = live_for_side if isinstance(live_for_side, dict) else pos
+            partial_key = _once_key(row_tenant, sym, tf, lot_pos, "partial_current")
+            dust_key = _once_key(row_tenant, sym, tf, lot_pos, "dust")
+            no_peak_repeat = (
+                src == "stop_loss"
+                and action == "SELL_STOP_PARTIAL"
+                and peak_amount_usable(lot_pos) is None
+                and _once_done(partial_key)
+            )
+            # The current-amount partial already ran. One dust full may still
+            # be owed. After that flag is set, a later window only warns.
+            dust_only = False
+            repeat_reason = ""
+            if no_peak_repeat:
+                repeat_reason = _STOP_ONCE.get(partial_key) or ""
+                dust_still_owed = (
+                    not _once_done(dust_key) and _rejection_class(repeat_reason) is not None
+                )
+                if not dust_still_owed:
+                    counted_reason = repeat_reason or _STOP_ONCE.get(dust_key) or ""
+                    if _rejection_class(counted_reason):
+                        self._count_rejected_stop(
+                            row_tenant, action, src, counted_reason
+                        )
+                        log(
+                            f"exit_ws stop repeat suppressed symbol={sym} "
+                            f"tenant={row_tenant or ''} signal={action} "
+                            f"reason={counted_reason[:160]}",
+                            "WARNING",
+                        )
+                    continue
+                dust_only = True
+
             ev["mode"] = mode
             ev["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             self._stats["fires"] += 1
@@ -957,6 +1196,7 @@ class ExitRealtimeHub:
                 continue
 
             sell_amount = None
+            held = 0.0
             if src == "stop_loss":
                 from strategies.positions import sell_fraction_for_signal
 
@@ -965,24 +1205,162 @@ class ExitRealtimeHub:
                     action, sym, tf, float(price), params
                 )
                 sell_amount = held * float(fraction or 0)
-                log(
-                    f"exit_ws stop fire symbol={sym} tenant={row_tenant or ''} "
-                    f"signal={action} source=exit_ws exit_source=stop_loss "
-                    f"last={price} tick_age={age_label}",
-                    "INFO",
+                if action == "SELL_STOP_PARTIAL":
+                    sell_amount = _partial_amount_on_current(held, float(fraction or 0))
+                if not dust_only:
+                    log(
+                        f"exit_ws stop fire symbol={sym} tenant={row_tenant or ''} "
+                        f"signal={action} source=exit_ws exit_source=stop_loss "
+                        f"last={price} tick_age={age_label}",
+                        "INFO",
+                    )
+
+            from risk.risk_manager import (
+                ignoring_unreliable_sold_percent,
+                peak_amount_usable,
+                rejected_stop_event,
+            )
+
+            lot_pos = live_for_side if isinstance(live_for_side, dict) else pos
+            no_peak = (
+                src == "stop_loss"
+                and action == "SELL_STOP_PARTIAL"
+                and peak_amount_usable(lot_pos) is None
+            )
+            partial_key = _once_key(row_tenant, sym, tf, lot_pos, "partial_current")
+            dust_key = _once_key(row_tenant, sym, tf, lot_pos, "dust")
+
+            send_partial = True
+            if no_peak and sell_amount is not None:
+                sell_amount, send_partial = _partial_respecting_exchange_minimum(
+                    sym, float(sell_amount), held, float(price)
                 )
 
-            result = try_execute_trail_exit(
-                symbol=sym,
-                timeframe=tf,
-                price=price,
-                action=action,
-                exit_source=src,
-                rationale=str(ev.get("rationale") or ""),
-                tenant_id=row_tenant,
-                sell_amount=sell_amount,
-                strategy_params=params if src == "stop_loss" else None,
-            )
+            event_counted = False
+
+            def _count_once(act: str, message: str) -> None:
+                nonlocal event_counted
+                if event_counted:
+                    return
+                if self._count_rejected_stop(row_tenant, act, src, message):
+                    event_counted = True
+
+            with rejected_stop_event():
+                if dust_only:
+                    # Partial already ran on an earlier window. This window
+                    # only pays the one owed dust full, and only if that flag
+                    # is still open.
+                    result = {
+                        "ok": True,
+                        "executed": False,
+                        "message": repeat_reason,
+                    }
+                elif no_peak and not send_partial:
+                    _claim_once(partial_key, "Order value below Gate minimum")
+                    result = {
+                        "ok": True,
+                        "executed": False,
+                        "message": "Order value below Gate minimum",
+                    }
+                else:
+                    if no_peak:
+                        _claim_once(partial_key, "partial_current")
+                    ignore_cm = (
+                        ignoring_unreliable_sold_percent()
+                        if no_peak
+                        else nullcontext()
+                    )
+                    with ignore_cm:
+                        result = try_execute_trail_exit(
+                            symbol=sym,
+                            timeframe=tf,
+                            price=price,
+                            action=action,
+                            exit_source=src,
+                            rationale=str(ev.get("rationale") or ""),
+                            tenant_id=row_tenant,
+                            sell_amount=sell_amount,
+                            strategy_params=params if src == "stop_loss" else None,
+                        )
+                    if no_peak:
+                        if result.get("executed"):
+                            _remember_once(partial_key, "filled")
+                        else:
+                            _remember_once(
+                                partial_key, str(result.get("message") or "")
+                            )
+                if not result.get("executed"):
+                    reject_msg = str(result.get("message") or "")
+                    _count_once(action, reject_msg)
+                    if _rejected_partial_escalates_to_full(action, src, reject_msg):
+                        held_now = _positive_amount(live_for_side, pos)
+                        locked_now, lock_msg = self._lot_is_locked(lot_pos, sym, tf)
+                        if locked_now:
+                            # Lock wins over the partial retry and the full sell.
+                            self._warn_locked_stop(sym, row_tenant, lock_msg)
+                        elif held_now <= 0:
+                            pass
+                        elif no_peak:
+                            # One partial on the current amount already ran.
+                            # One dust/remainder full, then no further order.
+                            if _claim_once(dust_key, reject_msg):
+                                log(
+                                    f"exit_ws stop escalate symbol={sym} "
+                                    f"tenant={row_tenant or ''} from={action} "
+                                    f"to=SELL_STOP_FULL reason={reject_msg[:160]}",
+                                    "INFO",
+                                )
+                                result = try_execute_trail_exit(
+                                    symbol=sym,
+                                    timeframe=tf,
+                                    price=price,
+                                    action="SELL_STOP_FULL",
+                                    exit_source=src,
+                                    rationale=(
+                                        str(ev.get("rationale") or "")
+                                        + " escalated_to=SELL_STOP_FULL"
+                                    )[:240],
+                                    tenant_id=row_tenant,
+                                    sell_amount=held_now,
+                                    strategy_params=params if src == "stop_loss" else None,
+                                )
+                                action = "SELL_STOP_FULL"
+                                if not result.get("executed"):
+                                    _count_once(action, str(result.get("message") or reject_msg))
+                        else:
+                            reason_key = _once_key(
+                                row_tenant,
+                                sym,
+                                tf,
+                                lot_pos,
+                                f"full:{_rejection_class(reject_msg)}",
+                            )
+                            if _claim_once(reason_key, reject_msg):
+                                log(
+                                    f"exit_ws stop escalate symbol={sym} "
+                                    f"tenant={row_tenant or ''} from={action} "
+                                    f"to=SELL_STOP_FULL reason={reject_msg[:160]}",
+                                    "INFO",
+                                )
+                                result = try_execute_trail_exit(
+                                    symbol=sym,
+                                    timeframe=tf,
+                                    price=price,
+                                    action="SELL_STOP_FULL",
+                                    exit_source=src,
+                                    rationale=(
+                                        str(ev.get("rationale") or "")
+                                        + " escalated_to=SELL_STOP_FULL"
+                                    )[:240],
+                                    tenant_id=row_tenant,
+                                    sell_amount=held_now,
+                                    strategy_params=params if src == "stop_loss" else None,
+                                )
+                                action = "SELL_STOP_FULL"
+                                if not result.get("executed"):
+                                    _count_once(
+                                        action, str(result.get("message") or reject_msg)
+                                    )
             ev["executed"] = bool(result.get("executed"))
             ev["message"] = result.get("message")
             if result.get("executed"):
