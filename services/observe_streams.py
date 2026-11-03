@@ -17,6 +17,11 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 TTL_DAYS = 120
+# BSON stores integers as signed 64-bit. Python ints outside this range
+# (e.g. the unsigned 64-bit ``control_seed`` of ``shadow_control`` rows) make
+# ``insert_one`` raise "MongoDB can only handle up to 8-byte ints".
+BSON_INT64_MIN = -(2**63)
+BSON_INT64_MAX = 2**63 - 1
 TTL_SECONDS = TTL_DAYS * 24 * 60 * 60
 _QUEUE_MAX = 8192
 
@@ -101,9 +106,34 @@ def _timestamp_source(record: dict) -> Any:
     return None
 
 
+def bson_safe_value(value: Any) -> Any:
+    """Return ``value`` with every int outside BSON int64 replaced by its decimal string.
+
+    Recurses into dicts, lists and tuples (tuples become lists, as BSON has no
+    tuple). ``bool`` is left alone. Ints inside the int64 range stay ints, so
+    the stored type only changes for values Mongo cannot store at all. The
+    string keeps the exact value (a float would round a 64-bit seed).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        if BSON_INT64_MIN <= value <= BSON_INT64_MAX:
+            return value
+        return str(value)
+    if isinstance(value, dict):
+        return {k: bson_safe_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [bson_safe_value(v) for v in value]
+    return value
+
+
 def build_observe_document(record: dict) -> dict:
-    """Copy the JSONL object and add ``tenant_id`` plus a BSON ``timestamp``."""
-    doc = dict(record)
+    """Copy the JSONL object and add ``tenant_id`` plus a BSON ``timestamp``.
+
+    Ints that do not fit BSON int64 are stored as decimal strings
+    (``bson_safe_value``). The JSONL file keeps the original number.
+    """
+    doc = bson_safe_value(dict(record))
     doc["tenant_id"] = _resolve_tenant(doc)
     doc["timestamp"] = _as_datetime(_timestamp_source(doc))
     return doc

@@ -199,3 +199,109 @@ def test_docs_name_every_collection_and_a_read_only_query():
     assert "find(" in text
     assert "120" in text
     assert "read-only" in text.lower() or "read only" in text.lower()
+
+
+# --- BSON int64 overflow (obs_shadow_control "can only handle up to 8-byte ints") ---
+
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from services.observe_streams import BSON_INT64_MAX, BSON_INT64_MIN, bson_safe_value
+
+
+def _bson_encode(doc: dict) -> bytes:
+    bson = pytest.importorskip("bson")
+    return bson.encode(doc)
+
+
+def test_control_seed_above_int64_is_stored_as_exact_string():
+    seed = 2**64 - 1
+    doc = build_observe_document(
+        {"type": "shadow_control", "ts_utc": "2026-11-02T20:59:26Z", "control_seed": seed}
+    )
+    assert doc["control_seed"] == str(seed)
+    assert int(doc["control_seed"]) == seed
+    _bson_encode(doc)  # raised OverflowError before the fix
+
+
+def test_int64_boundaries_stay_ints_and_one_past_becomes_string():
+    doc = build_observe_document(
+        {
+            "max": BSON_INT64_MAX,
+            "min": BSON_INT64_MIN,
+            "over": BSON_INT64_MAX + 1,
+            "under": BSON_INT64_MIN - 1,
+            "flag": True,
+            "price": 1.5,
+        }
+    )
+    assert doc["max"] == BSON_INT64_MAX and isinstance(doc["max"], int)
+    assert doc["min"] == BSON_INT64_MIN and isinstance(doc["min"], int)
+    assert doc["over"] == str(BSON_INT64_MAX + 1)
+    assert doc["under"] == str(BSON_INT64_MIN - 1)
+    assert doc["flag"] is True
+    assert doc["price"] == 1.5
+    _bson_encode(doc)
+
+
+def test_nested_big_ints_are_converted_and_record_is_not_mutated():
+    record = {"ts": "2026-11-02T00:00:00Z", "outer": {"seeds": [2**63, (2**70, 3)]}}
+    doc = build_observe_document(record)
+    assert doc["outer"]["seeds"] == [str(2**63), [str(2**70), 3]]
+    assert record["outer"]["seeds"][0] == 2**63  # JSONL row keeps the number
+    _bson_encode(doc)
+
+
+def test_real_shadow_control_seed_reaches_the_insert_hook_as_bson():
+    """A signal UUID with the high bit set gives a seed >= 2**63 (the prod failure)."""
+    from services.shadow_signal_log import control_seed_from_signal_id
+
+    signal_id = "ffffffff-ffff-4fff-bfff-ffffffffffff"
+    seed = control_seed_from_signal_id(signal_id)
+    assert seed > BSON_INT64_MAX
+    saved: list[tuple[str, dict]] = []
+    set_insert_hook_for_tests(lambda c, d: saved.append((c, d)))
+    mirror_jsonl_record(
+        "/app/logs/shadow_control.jsonl",
+        {"type": "shadow_control", "signal_id": signal_id, "control_seed": seed, "ts_utc": "2026-11-03T07:07:33Z"},
+    )
+    assert _wait(lambda: len(saved) == 1)
+    collection, doc = saved[0]
+    assert collection == "obs_shadow_control"
+    assert doc["control_seed"] == str(seed)
+    _bson_encode(doc)
+
+
+_json_like = st.recursive(
+    st.none() | st.booleans() | st.integers(min_value=-(2**80), max_value=2**80) | st.floats(allow_nan=False) | st.text(max_size=5),
+    lambda children: st.lists(children, max_size=4) | st.dictionaries(st.text(min_size=1, max_size=4).filter(lambda k: "\x00" not in k and not k.startswith("$") and "." not in k), children, max_size=4),
+    max_leaves=20,
+)
+
+
+@settings(max_examples=200, deadline=None)
+@given(_json_like)
+def test_property_bson_safe_value_always_encodes_and_keeps_in_range_ints(value):
+    safe = bson_safe_value({"v": value})
+    _bson_encode(safe)
+
+    def check(orig, new):
+        if isinstance(orig, bool):
+            assert new is orig
+        elif isinstance(orig, int):
+            if BSON_INT64_MIN <= orig <= BSON_INT64_MAX:
+                assert new == orig and isinstance(new, int)
+            else:
+                assert new == str(orig)
+        elif isinstance(orig, dict):
+            assert set(new) == set(orig)
+            for k in orig:
+                check(orig[k], new[k])
+        elif isinstance(orig, (list, tuple)):
+            assert len(new) == len(orig)
+            for a, b in zip(orig, new):
+                check(a, b)
+        else:
+            assert new == orig
+
+    check(value, safe["v"])
