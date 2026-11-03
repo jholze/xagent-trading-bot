@@ -39,6 +39,8 @@ Shadow link: `type` `shadow_link`, `signal_id`, `shadow_signal_id`, `symbol`, `o
 
 Shadow control: `type` `shadow_control`, `signal_id`, `control`, `control_symbol`, `price_at_signal`, `exit_hours`.
 
+`control_seed` is an unsigned 64-bit number (first 8 bytes of the signal UUID), so about half of the seeds do not fit BSON int64. Any integer outside the signed 64-bit range, in any stream and at any depth, is stored in Mongo as its exact decimal string; the JSONL line keeps the number. Query such a seed as a string, e.g. `{control_seed: "13835058055282163712"}`. Before this fix those inserts failed with "MongoDB can only handle up to 8-byte ints" and the row was missing from `obs_shadow_control` (JSONL was complete).
+
 Macro stress observe (#625) is not its own file. It is a log line and, when a buy reaches the tape, the `macro_stress` object on `obs_buy_decision_tape`. Observe defaults on. `fire_enabled` defaults off and is not applied to an order.
 
 ## Read-only queries
