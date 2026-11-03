@@ -23,6 +23,7 @@ from typing import Callable
 from tools import entry_filter_replay as efr
 
 from . import stats
+from .benchmark import BenchmarkConfig, benchmark_report
 from .costs import CostModel
 from .data import CandleCache, load_book, load_fills, load_tenant_params
 from .engine import Engine, Episode, Policy, build_episodes
@@ -65,6 +66,7 @@ class Context:
     cache: CandleCache
     notes: list[str] = field(default_factory=list)
     sources: dict = field(default_factory=dict)
+    benchmark: BenchmarkConfig | None = None  # None = no Buy & Hold section
 
 
 def build_context(data_dir: Path, candle_dir: Path, *, cost_tier: str = "base") -> Context:
@@ -139,6 +141,7 @@ class VariantResult:
     full: RunMetrics
     windows: dict[str, RunMetrics]
     daily: list[float]
+    benchmark: dict | None = None  # strategy vs Buy & Hold (backtest.harness.benchmark)
 
 
 @dataclass
@@ -168,6 +171,22 @@ def _day_keys(a: datetime, b: datetime) -> list[int]:
     return list(range(s, e, DAY))
 
 
+def benchmark_for(ctx: Context, run, start: datetime, end: datetime) -> dict | None:
+    """Strategy vs Buy & Hold for one run, with the engine's fee and slippage model."""
+    if ctx.benchmark is None:
+        return None
+    eng = ctx.engine
+    return benchmark_report(
+        run,
+        eng.candles_1h,
+        start,
+        end,
+        config=ctx.benchmark,
+        fee_pct=eng.costs.fee_pct,
+        slippage_pct=lambda sym: eng.costs.slippage_pct(sym, eng.default_tier),
+    )
+
+
 def _evaluate(
     ctx: Context,
     *,
@@ -192,7 +211,8 @@ def _evaluate(
         per = {}
         for label, a, b in windows:
             per[label] = summarize(eng.run(pol, eps, a, b, carry_in=carry, horizon_end=TAPE_END))
-        results.append(VariantResult(pol.name, desc, summarize(full), per, daily_returns(full, days)))
+        bench = benchmark_for(ctx, full, start, end if carry else TAPE_END)
+        results.append(VariantResult(pol.name, desc, summarize(full), per, daily_returns(full, days), bench))
     by = {r.name: r for r in results}
     base, cand = by[baseline], by[primary]
     wins = [cand.windows[w].pnl_pct > base.windows[w].pnl_pct for w, _a, _b in windows]

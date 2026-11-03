@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from .benchmark import render_markdown as render_benchmark
 from .scenarios import N_TRIALS, ScenarioResult
 
 BERLIN = ZoneInfo("Europe/Berlin")
@@ -78,6 +79,11 @@ def render(results: list[ScenarioResult], sources: dict, started: datetime) -> s
         for n in r.notes:
             lines.append(f"- {n}")
         lines.append("")
+        benched = [vr for vr in r.variants if vr.benchmark]
+        if benched:
+            lines += ["### Buy & Hold comparison", ""]
+            for vr in benched:
+                lines += render_benchmark(vr.name, vr.benchmark)
     return "\n".join(lines) + "\n"
 
 

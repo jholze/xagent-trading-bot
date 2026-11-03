@@ -72,6 +72,48 @@ and keeps the statistics small and auditable. Methods borrowed from the
 literature, not the libraries: walk-forward / OOS, CSCV-PBO, deflated Sharpe,
 block bootstrap, explicit cost tiers.
 
+## Buy & Hold benchmark, monthly returns, entry timing (2026-11-03)
+
+Idea from Jesse 3.6 ("did your strategy really beat buy and hold?"). Module
+`backtest/harness/benchmark.py`; every variant of a scenario run by
+`python -m backtest.harness` gets a "Buy & Hold comparison" section in the
+markdown report and a `benchmark` block in the JSON. Informational only: it
+does not change the GO / OBSERVE / KILL rules above.
+
+Acceptance criteria (pinned in `tests/unit/test_backtest_benchmark.py`):
+
+* AC1 Capital base = peak deployed capital of the run (same denominator as
+  `max_dd_pct`), or a fixed `--benchmark-capital`.
+* AC2 Strategy equity = capital base + cumulative PnL, sampled at every UTC day
+  boundary and at the window end; PnL booked at the horizon (final
+  liquidation) lands in the last sample.
+* AC3 Buy & Hold splits the capital base equally across the basket at the open
+  of the first 1h bar at or after the window start; entry pays the engine's
+  fee + slippage, every mark is liquidation value net of fee + slippage.
+  Symbols without a bar within one day of the start are excluded and listed.
+* AC4 Baskets are configurable: fixed symbols (`--benchmark-symbols`, default
+  BTC only) and an equal-weight basket of the symbols the run traded
+  (`--no-traded-basket` turns it off). Per-symbol returns are kept.
+* AC5 Per series: return %, PnL, max drawdown % (peak-to-trough of equity over
+  peak equity), Sharpe (daily equity returns, x sqrt(365)), excess return in
+  percentage points, "beats on Sharpe".
+* AC6 Positive / negative / flat calendar months (UTC), partial first and last
+  month flagged.
+* AC7 Entry timing: lots entered inside the window by hour of day and weekday,
+  in UTC and Europe/Berlin, with count, hit rate, mean lot return and PnL.
+  Naive timestamps are rejected.
+
+Read the comparison with care:
+
+* Buy & Hold is fully invested from the first hour; the bot usually is not.
+  The capital base is the bot's peak deployment, so a bot that sits in cash
+  most of the time is compared with a fully invested basket of the same size.
+* The traded basket has hindsight: it holds every coin the bot traded at any
+  time in the window, from the window start. It is a reference for "the
+  bot's universe", not a tradable alternative.
+* Max DD here is on daily samples of capital + PnL; `RunMetrics.max_dd_pct`
+  (hourly, over peak deployed capital) is unchanged and stays the guardrail.
+
 ## Known limits
 
 * Tape mode keeps recorded adds and non-stop sells; a policy that changes
