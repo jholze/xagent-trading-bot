@@ -176,7 +176,7 @@ def test_benchmark_report_compares_strategy_and_both_baskets():
     assert traded["beats_return"] and traded["lower_dd"]
     assert rep["entry_timing"]["entries"] == 1
     md = "\n".join(bm.render_markdown("variant", rep))
-    assert "B&H REF/USDT" in md and "Beats on Sharpe" in md and "Europe/Berlin" in md and "UTC" in md
+    assert "B&H REF/USDT" in md and "Beats on Sharpe" in md and "Beats on return" in md and "Europe/Berlin" in md and "UTC" in md
 
 
 def test_fixed_capital_and_empty_run():

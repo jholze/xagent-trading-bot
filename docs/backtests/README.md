@@ -86,7 +86,8 @@ Acceptance criteria (pinned in `tests/unit/test_backtest_benchmark.py`):
   `max_dd_pct`), or a fixed `--benchmark-capital`.
 * AC2 Strategy equity = capital base + cumulative PnL, sampled at every UTC day
   boundary and at the window end; PnL booked at the horizon (final
-  liquidation) lands in the last sample.
+  liquidation) lands in the last sample. The engine PnL curve is
+  mark-to-market at liquidation value, the same marking as the B&H legs.
 * AC3 Buy & Hold splits the capital base equally across the basket at the open
   of the first 1h bar at or after the window start; entry pays the engine's
   fee + slippage, every mark is liquidation value net of fee + slippage.

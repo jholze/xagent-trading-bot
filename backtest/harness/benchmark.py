@@ -7,7 +7,9 @@ with the same capital and the same cost model.
 * Capital base: peak deployed capital of the run (the same denominator as
   ``RunMetrics.max_dd_pct``) unless ``BenchmarkConfig.capital`` is set.
 * Strategy equity = capital base + cumulative PnL of the run, sampled at every
-  UTC day boundary and at the window end.
+  UTC day boundary and at the window end. The engine's ``pnl_curve`` is
+  mark-to-market (realised proceeds + open amount at liquidation value net of
+  fee + slippage, every 1h bar), so both sides use the same marking.
 * Buy & Hold: the capital base is split equally across the basket symbols at
   the open of the first 1h bar at or after the window start, held to the last
   bar that closed before the window end. Entry pays fee + slippage, every mark
@@ -78,6 +80,7 @@ def sample_points(start_ts: int, end_ts: int) -> list[int]:
 
 
 def peak_deployed(capital_curve: dict[int, float]) -> float:
+    """Peak of the running sum of ``capital_curve`` (engine deltas of cost basis, not absolute values)."""
     cap = peak = 0.0
     for ts in sorted(capital_curve):
         cap += capital_curve[ts]
@@ -186,7 +189,13 @@ def buy_and_hold(
     bar_seconds: int = HOUR,
     max_entry_lag_s: int = DAY,
 ) -> dict:
-    """Equal-weight buy and hold of ``symbols`` with ``capital`` over ``points``."""
+    """Equal-weight buy and hold of ``symbols`` with ``capital`` over ``points``.
+
+    Entry at the open of the first bar whose open is at or after the window
+    start (the same causal convention as the engine: no bar that opened
+    before the start is used). Every mark, including the first, is the
+    liquidation value net of fee + slippage, as the engine marks open lots.
+    """
     start, end = points[0], points[-1]
     legs = []
     excluded: dict[str, str] = {}
@@ -242,7 +251,8 @@ def entry_timing(lots: Iterable, start_ts: int, end_ts: int, local_tz: str) -> d
                 b["n"] += 1
                 b["pnl_usdt"] += lot.pnl
                 b["wins"] += 1 if lot.pnl > 0 else 0
-                b["_ret"].append(100.0 * lot.ret)
+                if lot.ret is not None:
+                    b["_ret"].append(100.0 * lot.ret)
     for z in out.values():
         for part in z.values():
             for b in part.values():
@@ -325,23 +335,23 @@ def render_markdown(name: str, rep: dict, *, timing: bool = True, per_symbol_top
         f"Window {w0[:16]} to {w1[:16]} UTC. Capital base {_f(rep['capital_base_usdt'], 0)} USDT ({rep['capital_base_rule']}). "
         f"Sharpe = daily equity returns, annualised x sqrt({_f(rep['sharpe_periods_per_year'], 0)}).",
         "",
-        "| Series | Symbols | Return % | PnL USDT | Max DD % | Sharpe | Months +/- (flat) | Excess return pp | Beats on Sharpe |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| Series | Symbols | Return % | PnL USDT | Max DD % | Sharpe | Months +/- (flat) | Excess return pp | Beats on return | Beats on Sharpe | Lower max DD |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     s = rep["strategy"]
     mc = s["month_counts"]
     lines.append(f"| strategy | - | {_f(s['return_pct'])} | {_f(s['pnl_usdt'], 0)} | {_f(s['max_dd_pct'])} | {_f(s['sharpe'])} | "
-                 f"{mc['positive']}/{mc['negative']} ({mc['flat']}) | - | - |")
+                 f"{mc['positive']}/{mc['negative']} ({mc['flat']}) | - | - | - | - |")
     for bname, b in rep["benchmarks"].items():
         m = b["metrics"]
         if m is None:
-            lines.append(f"| B&H {bname} | 0/{b['requested']} | n/a | n/a | n/a | n/a | n/a | n/a | n/a |")
+            lines.append(f"| B&H {bname} | 0/{b['requested']} | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |")
             continue
         bc = m["month_counts"]
         lines.append(
             f"| B&H {bname} | {len(b['symbols'])}/{b['requested']} | {_f(m['return_pct'])} | {_f(m['pnl_usdt'], 0)} | {_f(m['max_dd_pct'])} | "
             f"{_f(m['sharpe'])} | {bc['positive']}/{bc['negative']} ({bc['flat']}) | {_f(b['excess_return_pp'])} | "
-            f"{'yes' if b['beats_sharpe'] else 'NO'} |"
+            f"{'yes' if b['beats_return'] else 'NO'} | {'yes' if b['beats_sharpe'] else 'NO'} | {'yes' if b['lower_dd'] else 'NO'} |"
         )
     lines.append("")
     months = [m["month"] for m in s["months"]]
@@ -377,7 +387,8 @@ def render_markdown(name: str, rep: dict, *, timing: bool = True, per_symbol_top
 
 def render_timing(et: dict) -> list[str]:
     zones = et["zones"]
-    lines = [f"Entry timing ({et['entries']} entries in the window). n = entries, avg = mean lot return %, PnL = USDT.", ""]
+    lines = [f"Entry timing ({et['entries']} entries in the window). n = entries, avg = mean lot return %, PnL = USDT; "
+             "a win is PnL > 0.", ""]
     lines += ["| Hour | " + " | ".join(f"{z}: n / avg % / PnL" for z in zones) + " |", "|---|" + "---|" * len(zones)]
     for h in range(24):
         cells = []
