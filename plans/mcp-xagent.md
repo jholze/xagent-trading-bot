@@ -86,6 +86,7 @@ Owner bootstrap: env `MCP_OWNER_TOKEN` (SHA-256 at rest in process memory, `hmac
 | `xagent_snapshot` | `read` | Desk snapshot (lots, HUD, next_edge, badges) |
 | `xagent_lots` | `read` | Open lots, tenant-scoped (ledger fallback if RAM empty) |
 | `xagent_orders` | `read` | Filled/rejected/failed: `source`, `signal`, risk, size |
+| `xagent_nav` | `read` | NAV, cash, peak NAV (max of daily NAV curve, initial capital, `trade_history` `peak_equity` `:demo`/`:live`), current and max drawdown, open positions, locked lots; `curve=true` adds the daily curve (`curve_from`/`curve_to`). Mongo `find` only |
 | `xagent_memory` | `read` | CoinProfile, FactFlags, events, trade memory, lessons, RAG (no embeddings) |
 | `xagent_why` | `read` | Per-coin pack: lot + HUD + orders/signals + memory + facts + RAG |
 | `xagent_buy` | `trade` | `symbol`, `usdt`, `timeframe` — bot sizes or blocks |
