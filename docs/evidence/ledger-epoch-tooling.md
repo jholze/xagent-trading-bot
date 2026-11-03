@@ -25,12 +25,12 @@ Non-money-path change (scripts/, bus/writer_lease.py helper, tests). No trading 
 | metric | before | after |
 | --- | --- | --- |
 | tests in `tests/unit/test_ledger_epoch.py` | 0 | 32 |
-| full unit suite passed (pre-rebase, staging 23831074 + branch) | 6577 | 6609 |
+| full unit suite passed (before = after minus the 32 new tests; after measured on staging 23831074 + branch) | 6577 | 6609 |
 | skipped / xfailed | 6 / 1 | 6 / 1 |
 | suite exit code | 0 | 0 |
 | ruff E9,F821,F823 on changed files | n/a | clean |
 
-Hand mutants (each must make a test fail): skip the live-scope reset, accept `all`, skip the confirm flag, ignore lost Mongo docs, ignore backup age, overwrite extras on restore, keep stale archive parts on restore. All 7 are caught.
+Seven hand mutants of `ledger_epoch.py` / the old scripts (refusals, live scope, confirm flag, verify, restore) were each caught by at least one test.
 
 ## CLI smoke (scratch DB, local Mongo)
 
