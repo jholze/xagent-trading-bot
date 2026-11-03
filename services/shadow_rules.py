@@ -205,13 +205,9 @@ def _naive_to_utc(dt: datetime) -> datetime:
     runs on Europe/Berlin, so ``first_buy_at`` / ``entry_at`` written there are
     Berlin time. Reading them as UTC made lot ages ~1 h (CET) / 2 h (CEST) short.
     """
-    try:
-        from core.time_utils import process_local_tz
+    from core.time_utils import to_utc
 
-        tz = process_local_tz()
-    except Exception:
-        tz = timezone.utc
-    return dt.replace(tzinfo=tz).astimezone(timezone.utc)
+    return to_utc(dt)
 
 
 def _parse_ts(value: Any) -> datetime | None:
