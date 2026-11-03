@@ -15,6 +15,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .benchmark import DEFAULT_BENCHMARK_SYMBOLS, BenchmarkConfig
 from .policy import REPO_ROOT
 
 UTC = timezone.utc
@@ -29,22 +30,32 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, default=REPO_ROOT / "docs" / "backtests")
     ap.add_argument("--stem", default=None)
     ap.add_argument("--fetch", action="store_true", help="fetch missing public OHLCV first")
+    ap.add_argument("--benchmark-symbols", default=",".join(DEFAULT_BENCHMARK_SYMBOLS),
+                    help="comma-separated fixed Buy & Hold basket, equal weight (empty = none)")
+    ap.add_argument("--no-traded-basket", action="store_true", help="skip the equal-weight basket of traded symbols")
+    ap.add_argument("--benchmark-capital", type=float, default=None, help="capital base in USDT (default: peak deployed)")
+    ap.add_argument("--no-benchmark", action="store_true", help="no Buy & Hold section")
     args = ap.parse_args(argv)
 
     from .scenarios import SCENARIOS, build_context
 
     started = datetime.now(UTC)
+    bench_syms = tuple(x.strip() for x in args.benchmark_symbols.split(",") if x.strip())
     if args.fetch:
         from .data import CandleCache, fetch_public_ohlcv, load_book, load_fills
 
         fills = load_fills(args.data / "orders_v2_filled_alltime.jsonl")
         book = load_book(args.data / "positions_current.jsonl")
-        syms = sorted({f.symbol for f in fills} | {k[1] for k in book} | {"BTC/USDT"})
+        syms = sorted({f.symbol for f in fills} | {k[1] for k in book} | set(bench_syms))
         cache = CandleCache(args.candles)
         fetch_public_ohlcv(cache, syms, "1d", datetime(2026, 3, 1, tzinfo=UTC), datetime.now(UTC))
         fetch_public_ohlcv(cache, syms, "1h", datetime(2026, 7, 20, tzinfo=UTC), datetime.now(UTC))
 
     ctx = build_context(args.data, args.candles, cost_tier=args.cost_tier)
+    if not args.no_benchmark:
+        ctx.benchmark = BenchmarkConfig(
+            symbols=bench_syms, include_traded_basket=not args.no_traded_basket, capital=args.benchmark_capital
+        )
     keys = [k.strip() for k in args.scenarios.split(",") if k.strip()]
     unknown = [k for k in keys if k not in SCENARIOS]
     if unknown:
