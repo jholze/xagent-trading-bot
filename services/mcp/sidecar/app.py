@@ -19,6 +19,7 @@ from services.mcp.tools import (
     tool_lock,
     tool_lots,
     tool_memory,
+    tool_nav,
     tool_orders,
     tool_sell,
     tool_short,
@@ -150,6 +151,14 @@ def invoke_tool(
             limit=kwargs.get("limit"),
             statuses=kwargs.get("statuses"),
         )
+    if name == "xagent_nav":
+        return tool_nav(
+            actor,
+            tenant=tenant,
+            curve=kwargs.get("curve") or False,
+            curve_from=kwargs.get("curve_from"),
+            curve_to=kwargs.get("curve_to"),
+        )
     if name == "xagent_memory":
         return tool_memory(
             actor,
@@ -269,6 +278,24 @@ def xagent_orders(
         hours=hours,
         limit=limit,
         statuses=statuses,
+    )
+
+
+def xagent_nav(
+    ctx: Context,
+    tenant: str = "default",
+    curve: bool = False,
+    curve_from: str | None = None,
+    curve_to: str | None = None,
+) -> dict:
+    """Read-only NAV, peak NAV (high-water mark incl. trade_history :live), current and max drawdown, cash, open positions, locked lots. curve=true adds the daily NAV curve (optional curve_from/curve_to YYYY-MM-DD, max 400 points)."""
+    return _call(
+        "xagent_nav",
+        ctx,
+        tenant=tenant,
+        curve=curve,
+        curve_from=curve_from,
+        curve_to=curve_to,
     )
 
 
@@ -417,6 +444,7 @@ def _register_tools(mcp: FastMCP) -> None:
     mcp.tool()(xagent_snapshot)
     mcp.tool()(xagent_lots)
     mcp.tool()(xagent_orders)
+    mcp.tool()(xagent_nav)
     mcp.tool()(xagent_memory)
     mcp.tool()(xagent_why)
     mcp.tool()(xagent_buy)

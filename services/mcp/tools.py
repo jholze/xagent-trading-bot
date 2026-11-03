@@ -441,3 +441,36 @@ def tool_why(
         snapshot_fn=snapshot_fn,
         live=True,
     )
+
+
+def tool_nav(
+    actor,
+    tenant=None,
+    curve=False,
+    curve_from=None,
+    curve_to=None,
+    nav_fn=None,
+):
+    """Read-only NAV, peak, drawdown, cash and lot counts for one tenant."""
+    tenant_id = _effective_tenant(actor, tenant)
+    ok, err = authorize(actor, "read", tenant_id)
+    if not ok:
+        return {"ok": False, "error": err}
+    fn = nav_fn
+    if fn is None:
+        from services.mcp.nav import nav_pack
+
+        fn = nav_pack
+    try:
+        out = fn(
+            tenant_id,
+            curve=bool(curve),
+            curve_from=curve_from,
+            curve_to=curve_to,
+        )
+    except Exception:
+        return {"ok": False, "error": "nav_failed", "tenant_id": tenant_id}
+    if not isinstance(out, dict):
+        return {"ok": False, "error": "nav_failed", "tenant_id": tenant_id}
+    out.setdefault("tenant_id", tenant_id)
+    return out
