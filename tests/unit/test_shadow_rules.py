@@ -521,3 +521,48 @@ def test_default_sink_mirrors_to_obs_shadow_rules(monkeypatch):
     doc = observe_streams.build_observe_document(calls[0][1])
     assert doc["tenant_id"] == "anne"
     assert doc["timestamp"] == out[0]["timestamp"]
+
+
+# ---------------------------------------------------------------------------
+# Naive lot stamps are process-local wall clock (Europe/Berlin on the paper
+# deploy), not UTC – same contract as core.time_utils.to_utc.
+
+
+@pytest.mark.parametrize(
+    "tz, naive, expected_utc",
+    [
+        ("Europe/Berlin", "2026-11-03T10:00:00", datetime(2026, 11, 3, 9, 0, tzinfo=timezone.utc)),  # CET
+        ("Europe/Berlin", "2026-07-03T10:00:00", datetime(2026, 7, 3, 8, 0, tzinfo=timezone.utc)),  # CEST
+        ("UTC", "2026-11-03T10:00:00", datetime(2026, 11, 3, 10, 0, tzinfo=timezone.utc)),
+    ],
+)
+def test_parse_ts_naive_is_process_local(monkeypatch, tz, naive, expected_utc):
+    monkeypatch.setenv("TZ", tz)
+    assert sr._parse_ts(naive) == expected_utc
+    assert sr._parse_ts(datetime.fromisoformat(naive)) == expected_utc
+
+
+def test_parse_ts_aware_values_unchanged(monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/Berlin")
+    assert sr._parse_ts("2026-11-03T10:00:00Z") == datetime(2026, 11, 3, 10, 0, tzinfo=timezone.utc)
+    assert sr._parse_ts("2026-11-03T10:00:00+01:00") == datetime(2026, 11, 3, 9, 0, tzinfo=timezone.utc)
+    assert sr._parse_ts(1_793_700_000) == datetime.fromtimestamp(1_793_700_000, tz=timezone.utc)
+
+
+def test_h_oracle_age_uses_berlin_wall_clock_for_naive_entry(monkeypatch):
+    """Naive Berlin entry 72.5 h ago is outside the 72 h window (UTC read made it 71.5 h)."""
+    monkeypatch.setenv("TZ", "Europe/Berlin")
+    _shadow_on(monkeypatch, oracle="RISK_OFF")
+    from zoneinfo import ZoneInfo
+
+    now = datetime(2026, 11, 3, 9, 0, tzinfo=timezone.utc)
+    entry_local = (now - timedelta(hours=72.5)).astimezone(ZoneInfo("Europe/Berlin")).replace(tzinfo=None)
+    job = {"kind": "lot", "tenant_id": "henry", "symbol": "X/USDT", "timeframe": "4h",
+           "lot_id": "X|4h|n", "price": 0.85, "average_entry": 1.0, "amount": 1.0,
+           "entry_at": entry_local.isoformat(), "observed_at": now.isoformat()}
+    assert sr.process_lot_job(job) == []
+    entry_local = (now - timedelta(hours=71.5)).astimezone(ZoneInfo("Europe/Berlin")).replace(tzinfo=None)
+    job.update(entry_at=entry_local.isoformat(), lot_id="X|4h|m")
+    out = sr.process_lot_job(job)
+    assert [d["rule"] for d in out] == [sr.RULE_ORACLE_EARLY_EXIT]
+    assert out[0]["lot_age_hours"] == pytest.approx(71.5, abs=0.01)
