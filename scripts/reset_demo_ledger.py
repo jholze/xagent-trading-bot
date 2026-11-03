@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Reset demo Mongo ledger to a clean cash balance (no orders/positions)."""
+"""Reset demo Mongo ledger to a clean cash balance (no orders/positions).
+
+UNSAFE: no backup, default tenant only, live-scope peak_equity untouched.
+Refuses unless ``--unsafe-no-backup``. Use ``scripts/ledger_epoch.py`` instead.
+"""
 
 from __future__ import annotations
 
@@ -66,7 +70,7 @@ def reset_demo_ledger(balance_usdt: float) -> dict:
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Reset demo ledger to empty $100k-style start")
     parser.add_argument(
         "--balance",
@@ -79,7 +83,21 @@ def main() -> int:
         action="store_true",
         help="Skip confirmation prompt",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--unsafe-no-backup",
+        action="store_true",
+        help="Run anyway without backup (default tenant, demo scope only)",
+    )
+    args = parser.parse_args(argv)
+
+    if not args.unsafe_no_backup:
+        print(
+            "REFUSED: reset_demo_ledger.py makes no backup and resets only the default "
+            "tenant's demo scope. Use scripts/ledger_epoch.py (backup -> verify -> reset), "
+            "or pass --unsafe-no-backup.",
+            file=sys.stderr,
+        )
+        return 2
 
     if not args.yes:
         from data_manager import get_config
