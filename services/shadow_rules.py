@@ -198,11 +198,23 @@ def rule_params() -> dict[str, dict]:
     }
 
 
+def _naive_to_utc(dt: datetime) -> datetime:
+    """Naive ledger stamps are process-local wall clock (``datetime.now()``), not UTC.
+
+    Same contract as ``core.time_utils.to_utc``: on the paper deploy the process
+    runs on Europe/Berlin, so ``first_buy_at`` / ``entry_at`` written there are
+    Berlin time. Reading them as UTC made lot ages ~1 h (CET) / 2 h (CEST) short.
+    """
+    from core.time_utils import to_utc
+
+    return to_utc(dt)
+
+
 def _parse_ts(value: Any) -> datetime | None:
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else _naive_to_utc(value)
     if isinstance(value, (int, float)):
         v = float(value)
         if v > 10_000_000_000:
@@ -212,7 +224,7 @@ def _parse_ts(value: Any) -> datetime | None:
         parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else _naive_to_utc(parsed)
 
 
 def lot_id(symbol: str, timeframe: str, entry_at: Any) -> str:
