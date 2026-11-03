@@ -226,3 +226,31 @@ def test_sidecar_registers_and_routes_xagent_nav(monkeypatch):
     assert out["ok"] is True and out["tenant_id"] == "ctexp"
     assert out["kw"] == {"curve": True, "curve_from": "2026-11-01", "curve_to": None}
     assert invoke_tool("xagent_nav", authorization="", config_raw=_ENABLED)["error"] == "unauthorized"
+
+
+def test_pick_scope_ignores_null_as_of():
+    from services.mcp.nav import _pick_scope
+
+    pts = [
+        {"as_of": None, "date": "2026-11-03", "ledger_scope": "live"},
+        {"as_of": "2026-11-02T10:00:00+00:00", "date": "2026-11-02", "ledger_scope": "demo"},
+    ]
+    assert _pick_scope(pts) == "demo"
+
+
+def test_lot_locked_fallback_skips_expiring_lock(monkeypatch):
+    import builtins
+
+    from services.mcp import nav as navmod
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **kw):
+        if name == "strategies.position_lock":
+            raise ImportError("x")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert navmod._lot_locked({"lock": {"enabled": True}}) is True
+    assert navmod._lot_locked({"lock": {"enabled": True, "until": "2020-01-01T00:00:00Z"}}) is False
+    assert navmod._lot_locked({"lock": {"enabled": False}}) is False

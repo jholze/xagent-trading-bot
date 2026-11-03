@@ -97,8 +97,9 @@ def _lot_locked(lot: dict) -> bool:
 
         return bool(lock_is_active(get_lock(lot)))
     except Exception:
+        # Degraded path: only count locks that are enabled and carry no expiry.
         lock = lot.get("lock") if isinstance(lot, dict) else None
-        return isinstance(lock, dict) and bool(lock.get("enabled", True))
+        return isinstance(lock, dict) and bool(lock.get("enabled", True)) and not lock.get("until")
 
 
 def _pick_scope(points: list[dict]) -> str | None:
@@ -106,7 +107,10 @@ def _pick_scope(points: list[dict]) -> str | None:
     best = None
     best_key = ("", "")
     for p in points:
-        key = (str(p.get("as_of") or ""), str(p.get("date") or ""))
+        if not isinstance(p, dict):
+            continue
+        as_of = p.get("as_of")
+        key = ("" if as_of is None else str(as_of), str(p.get("date") or ""))
         if best is None or key > best_key:
             best, best_key = p, key
     return None if best is None else str(best.get("ledger_scope") or "")
@@ -233,6 +237,9 @@ def nav_pack(
             "max_drawdown_pct = max(daily-curve drawdown seeded at initial_capital, current drawdown vs peak_nav)."
         ),
     }
+    if scope and peak_source and peak_source.startswith("trade_history_") and not peak_source.endswith(scope):
+        # HWM comes from the other ledger scope than nav/cash (e.g. a paper tenant with a :live peak).
+        out["peak_scope_mismatch"] = True
     if not points:
         errors.append("no_nav_points")
     if curve:
