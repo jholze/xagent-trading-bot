@@ -82,9 +82,21 @@ def main(argv=None) -> int:
     for fee, row in res.items():
         print(f"{fee:8.2f} " + " ".join(f"{row[n]:18.0f}" for n in names))
     be = {n: break_even(res, n) for n in names}
+    sc_ = {n: sign_changes(res, n) for n in names}
     print("break-even fee/side:", json.dumps(be))
+    print("sign changes over the grid (>1 = non-monotonic, break-even is not meaningful):", json.dumps(sc_))
     if args.json:
-        args.json.write_text(json.dumps({"cost_tier": args.cost_tier, "excess_pnl_usdt": {str(k): v for k, v in res.items()}, "break_even_fee_pct": be}, indent=2))
+        args.json.write_text(
+            json.dumps(
+                {
+                    "cost_tier": args.cost_tier,
+                    "excess_pnl_usdt": {str(k): v for k, v in res.items()},
+                    "break_even_fee_pct": be,
+                    "sign_changes": sc_,
+                },
+                indent=2,
+            )
+        )
     return 0
 
 
