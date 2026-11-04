@@ -844,7 +844,7 @@ def scenario_m(ctx: Context) -> ScenarioResult:
         baseline="baseline",
         primary="m_hist",
         notes=[
-            "N_TRIALS = 60 (55 before + 5 new memory-gate variants).",
+            f"N_TRIALS = {N_TRIALS} (central register, m adds {trials.SCENARIO_TRIALS['m'].trials} memory-gate variants).",
             "History = tape episodes closed before the signal (no lookahead); facts and DCA trend rule not replayed.",
         ],
     )
