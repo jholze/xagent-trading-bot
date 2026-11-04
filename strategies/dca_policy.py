@@ -47,6 +47,12 @@ class DcaContext:
     # P6: DCA lesson memory (advisory observability)
     dca_lesson_count: int = 0
     dca_lesson_summary: str = ""
+    # Direction of lessons / RAG hits (intelligence/memory/lesson_polarity.py).
+    # A warning lesson ("Avoid chasing DCA") must never count as support.
+    dca_lesson_negative_count: int = 0
+    dca_lesson_positive_count: int = 0
+    rag_negative_count: int = 0
+    rag_positive_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

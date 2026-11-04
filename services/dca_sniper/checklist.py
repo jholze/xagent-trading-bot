@@ -139,25 +139,49 @@ def build_layers_from_snapshot(cand: dict[str, Any], cash: dict[str, Any] | None
     elif entry_bias == "prefer":
         mem_score = 4.0
         mem_bits.append("prefer")
-    rag_hits = 0
-    try:
-        rag_hits = int(cand.get("rag_hit_count") or 0)
-    except (TypeError, ValueError):
-        rag_hits = 0
-    if rag_hits > 0:
-        mem_score = min(5.0, mem_score + min(1.5, 0.4 * rag_hits))
+    # RAG hits and DCA lessons count by direction (lesson_polarity): a warning
+    # ("Avoid chasing DCA", "weak live history", "sells often lost") lowers
+    # the score, a measured win raises it, unknown direction is neutral.
+    # Before this fix every hit and every lesson added score (sign error).
+    def _int(key: str) -> int:
+        try:
+            return max(0, int(cand.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    rag_hits = _int("rag_hit_count")
+    rag_neg = _int("rag_negative_count")
+    rag_pos = _int("rag_positive_count")
+    if rag_hits:
+        rag_neg = min(rag_hits, rag_neg)
+        rag_pos = min(rag_hits - rag_neg, rag_pos)
+    if rag_hits > 0 or rag_neg or rag_pos:
         mem_bits.append(f"rag_hits={rag_hits}")
-    lesson_n = 0
-    try:
-        lesson_n = int(cand.get("dca_lesson_count") or 0)
-    except (TypeError, ValueError):
-        lesson_n = 0
-    if lesson_n > 0:
-        mem_score = min(5.0, mem_score + min(1.0, 0.25 * lesson_n))
-        mem_bits.append(f"dca_lessons={lesson_n}")
+    if rag_neg:
+        mem_score -= min(1.5, 0.4 * rag_neg)
+        mem_bits.append(f"rag_neg={rag_neg}")
+    if rag_pos:
+        mem_score += min(1.0, 0.3 * rag_pos)
+        mem_bits.append(f"rag_pos={rag_pos}")
+    lesson_n = _int("dca_lesson_count")
+    les_neg = _int("dca_lesson_negative_count")
+    les_pos = _int("dca_lesson_positive_count")
+    if lesson_n:
+        les_neg = min(lesson_n, les_neg)
+        les_pos = min(lesson_n - les_neg, les_pos)
+    if lesson_n > 0 or les_neg or les_pos:
+        mem_bits.append(f"dca_lessons={max(lesson_n, les_neg + les_pos)}")
+    if les_neg:
+        mem_score -= min(1.5, 0.5 * les_neg)
+        mem_bits.append(f"lessons_neg={les_neg}")
+    if les_pos:
+        mem_score += min(1.0, 0.25 * les_pos)
+        mem_bits.append(f"lessons_pos={les_pos}")
+    if lesson_n > 0 or les_neg or les_pos:
         summary = str(cand.get("dca_lesson_summary") or "").strip()
         if summary:
             mem_bits.append(summary[:40])
+    mem_score = max(0.0, min(5.0, mem_score))
     layers["memory"] = {
         "pass": not mem_hard,
         "hard": mem_hard,
