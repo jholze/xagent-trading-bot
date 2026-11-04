@@ -114,7 +114,9 @@ class TestEntrySnapshot600(unittest.TestCase):
             symbol="TIER/USDT",
             strategy_tier="volatile",
         )
-        self.assertIsNone(pos["strategy_tier"])
+        # #711: the stale lot value is reset and the passed tier is frozen at
+        # the first fill (before #711 the lot tier stayed None here).
+        self.assertEqual(pos["strategy_tier"], "volatile")
         self.assertEqual(pos["entry_snapshot"]["strategy_tier"], "volatile")
 
     def test_missing_inputs_are_null_rationale_codes_empty(self):

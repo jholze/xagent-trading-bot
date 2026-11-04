@@ -20,6 +20,19 @@ from notifications.user_explain import (
 )
 
 
+def _entry_tier_from_analysis(analysis) -> str | None:
+    """#711: the tier the cycle analysis resolved for this coin (no lot yet)."""
+    try:
+        from strategies.entry_tier import normalize_tier, tier_from_params
+
+        tier = tier_from_params(getattr(analysis, "strategy_params", None))
+        if tier:
+            return tier
+        return normalize_tier(getattr(analysis, "volatility_tier", None))
+    except Exception:
+        return None
+
+
 class SignalOrchestrator:
     """Coordinates analysis, execution, and notification without strategy↔telegram coupling."""
 
@@ -187,6 +200,7 @@ class SignalOrchestrator:
                 ctx_coin_regime=(getattr(analysis, "regime", "") or None),
                 ctx_volume_rel=getattr(analysis, "ctx_volume_rel", None),
                 ctx_volume_window_days=getattr(analysis, "ctx_volume_window_days", None),
+                strategy_tier=_entry_tier_from_analysis(analysis),
             )
         else:
             # Size and execute against the open lot TF (may differ from analysis TF

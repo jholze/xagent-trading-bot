@@ -601,6 +601,20 @@ def process_gainer_signal(
                 source=src,
                 signal=sig,
             )
+            # #711: no cycle analysis ran for this lot, so classify the tier now
+            # with the cycle's classifier; it is stamped at the first fill.
+            try:
+                from strategies.entry_tier import resolve_entry_tier_live
+
+                order.strategy_tier = resolve_entry_tier_live(
+                    kwargs["symbol"],
+                    kwargs.get("timeframe") or "1h",
+                    float(kwargs["price"]),
+                    coin={"source": src},
+                    config=conf,
+                )
+            except Exception:
+                order.strategy_tier = None
             # Reuse spike channel so slot-eviction can score RelVol demand (factor≥5 → +2)
             if src == "gainer_relvol":
                 try:

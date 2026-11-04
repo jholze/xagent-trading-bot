@@ -200,6 +200,56 @@ def _replay_result(symbol: str, typ: str, order_id: str, rows: list[dict]) -> Tr
     return result
 
 
+def _entry_tier_fields(symbol, strategy_tier, config, cm, fill, source) -> dict:
+    """#711: tier + cost provenance for update_position. Used only on a new lot.
+
+    ``strategy_tier``: the hint the buy path resolved (cycle analysis, RelVol
+    live classify, mcap floor), else the coin-class shortcut. Never a guess.
+    ``cost_tier`` / ``slippage_pct``: what CostModel actually charged this fill.
+    """
+    out: dict = {}
+    tier = strategy_tier
+    try:
+        from strategies.entry_tier import classify_entry_tier, normalize_tier
+
+        tier = normalize_tier(strategy_tier) or classify_entry_tier(symbol, config=config)
+    except Exception:
+        tier = None
+    out["strategy_tier"] = _stampable_tier(tier, config)
+    try:
+        from core.costs import _tier_for_symbol
+        from intelligence.strategy_backtest import classify_coin
+
+        raw = config.raw if hasattr(config, "raw") else config
+        out["cost_tier"] = _tier_for_symbol(symbol, raw if isinstance(raw, dict) else {})
+        out["coin_class"] = classify_coin(symbol)
+    except Exception:
+        pass
+    try:
+        out["slippage_pct"] = float(cm.params.slippage_pct)
+    except Exception:
+        pass
+    try:
+        out["fee"] = float(fill.fee_usdt)
+    except Exception:
+        pass
+    out["snapshot_source"] = source
+    return out
+
+
+def _stampable_tier(strategy_tier, config) -> str | None:
+    """#711: valid tier, and only when the tenant freezes tiers on entry."""
+    try:
+        from strategies.entry_tier import freeze_on_entry_enabled, normalize_tier
+
+        tier = normalize_tier(strategy_tier)
+        if tier and freeze_on_entry_enabled(config):
+            return tier
+    except Exception:
+        pass
+    return None
+
+
 class PortfolioService:
     """Single entry point for position and trade ledger updates."""
 
@@ -221,6 +271,7 @@ class PortfolioService:
         ctx: dict | None = None,
         fee_unknown: bool = False,
         order_type: str | None = None,
+        strategy_tier: str | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "BUY", symbol, message="Invalid price")
@@ -267,6 +318,7 @@ class PortfolioService:
             entry_source=effective_entry_source,
             entry_15m_vol_ratio=entry_15m_vol_ratio,
             fee_estimated=bool(fee_unknown),
+            **_entry_tier_fields(symbol, strategy_tier, self.config, cm, f, source),
         )
         try:
             # The fill is a fresh mark. A merged lot at or above the lift
@@ -665,6 +717,7 @@ class PortfolioService:
                 order_id=oid,
                 entry_15m_vol_ratio=order.entry_15m_vol_ratio,
                 ctx=ctx,
+                strategy_tier=getattr(order, "strategy_tier", None),
             )
         if order.type == "SHORT":
             return self.execute_short(
