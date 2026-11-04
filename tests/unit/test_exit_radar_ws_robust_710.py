@@ -344,3 +344,45 @@ def test_run_loop_resets_backoff_after_a_long_connection():
     ), patch("services.exit_realtime.hub.time.sleep"), patch.object(h, "_broadcast_gui"), _logs():
         h._run_loop()
     assert waits == [4.5, 6.75, 3.0, 4.5]
+
+
+def test_run_loop_sends_no_protocol_ping_timeout_by_default():
+    """Staging 04.11.: ping_timeout=10 dropped the Gate WS every ~37 s. Default is off."""
+    import sys
+    import types
+
+    seen = []
+
+    class FakeApp:
+        def __init__(self, url, on_open=None, on_message=None, on_error=None, on_close=None):
+            pass
+
+        def run_forever(self, **kw):
+            seen.append(kw)
+
+    fake_ws = types.ModuleType("websocket")
+    fake_ws.WebSocketApp = FakeApp
+
+    class Stop:
+        def __init__(self):
+            self.n = 0
+
+        def is_set(self):
+            return False
+
+        def wait(self, _t):
+            self.n += 1
+            return self.n >= 1
+
+    for cfg, expect in (({}, None), ({"ws_ping_timeout_sec": 8}, 8.0)):
+        seen.clear()
+        h = _hub()
+        h._raw["exit_realtime"].update(cfg)
+        h.update_book([_row("AAA/USDT")])
+        h._stop = Stop()
+        with patch.dict(sys.modules, {"websocket": fake_ws}), patch(
+            "services.exit_realtime.hub.time.sleep"
+        ), patch.object(h, "_broadcast_gui"), _logs():
+            h._run_loop()
+        assert seen and seen[0]["ping_interval"] == 20
+        assert seen[0].get("ping_timeout") == expect

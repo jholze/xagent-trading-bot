@@ -1276,9 +1276,14 @@ class ExitRealtimeHub:
                 self._app = ws
                 self._stats["reconnects"] += 1
                 self._connected_since = 0.0
-                ws.run_forever(
-                    sslopt={"context": _ssl_context()}, ping_interval=20, ping_timeout=10
-                )
+                # No protocol ping_timeout by default: on staging (04.11.2026 21:57 MEZ)
+                # ping_timeout=10 dropped the Gate WS every ~37 s ("ping/pong timed out").
+                # Silent/half-open streams are caught by the #710 watchdog instead.
+                run_kw: dict[str, Any] = {"sslopt": {"context": _ssl_context()}, "ping_interval": 20}
+                pto = _cfg_float(exit_realtime_config(self._raw), "ws_ping_timeout_sec", 0.0)
+                if pto > 0:
+                    run_kw["ping_timeout"] = pto
+                ws.run_forever(**run_kw)
             except Exception as exc:
                 log(f"exit_realtime run_forever: {exc}", "WARNING")
             finally:
