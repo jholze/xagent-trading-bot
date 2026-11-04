@@ -88,6 +88,8 @@ def item_polarity(item: Any) -> int:
         meta = meta if isinstance(meta, dict) else {}
     if not tags and meta:
         tags = meta.get("tags")
+    if isinstance(tags, str):
+        tags = [tags]  # a single tag stored as a bare string
     return lesson_polarity(text, tags if isinstance(tags, (list, tuple, set)) else None)
 
 
