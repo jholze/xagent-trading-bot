@@ -72,6 +72,22 @@ class TestSplit:
         assert lev.point_in_epoch({"date": "2026-11-05"}, START)
         assert not lev.point_in_epoch({"date": "2026-11-04"}, START)
 
+    def test_point_without_as_of_compares_berlin_day(self):
+        # 23:30 UTC on 2026-11-04 is 00:30 Berlin on 2026-11-05: the reset day
+        # (Berlin) is 11-05, so the 11-05 point without as_of is not "after" it.
+        late = datetime(2026, 11, 4, 23, 30, tzinfo=timezone.utc)
+        assert not lev.point_in_epoch({"date": "2026-11-05"}, late, tz=BERLIN)
+        assert lev.point_in_epoch({"date": "2026-11-06"}, late, tz=BERLIN)
+
+    def test_unresolvable_tenant_returns_no_epoch(self, monkeypatch):
+        import core.tenant_context as tc
+
+        def boom(*_a, **_k):
+            raise RuntimeError("no tenant context")
+
+        monkeypatch.setattr(tc, "resolve_tenant_id", boom)
+        assert lev.load_current_epoch() == {}
+
     def test_no_epoch_keeps_everything(self):
         cur, pre = lev.split_points(_history(), None)
         assert len(cur) == 60 and pre == []

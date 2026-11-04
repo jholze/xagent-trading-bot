@@ -2,11 +2,9 @@
 
 Same source order as the MCP ``xagent_nav`` fix (PR #768):
 
-1. ``ledger_epoch`` marker in the tenant's ``trade_history`` document
-   (written by ``ledger_epoch.py reset``/``restore``),
-2. else the newest ``ledger_epochs`` doc of the tenant.
-
-The newest ``started_at`` of both wins. Nothing here writes. Reports use this
+candidates are the ``ledger_epoch`` marker in the tenant's ``trade_history``
+document (written by ``ledger_epoch.py reset``/``restore``) and all
+``ledger_epochs`` docs of the tenant; the newest ``started_at`` across both wins. Nothing here writes. Reports use this
 to start their windows (plan start, BTC HODL baseline, KPI windows) at the
 current epoch while keeping older rows available as ``pre`` data.
 """
@@ -60,7 +58,11 @@ def load_current_epoch(tenant_id: str | None = None, scope: str | None = None) -
         tenant_id = str(resolve_tenant_id(tenant_id) or "default")
         scope = scope or str(resolve_ledger_scope() or "demo")
     except Exception:
-        tenant_id, scope = tenant_id or "default", scope or "demo"
+        if not tenant_id:
+            # Never guess a tenant: without a resolvable tenant there is no
+            # epoch, and reports fall back to their legacy (pre-epoch) windows.
+            return {}
+        scope = scope or "demo"
     th: dict = {}
     try:
         from data_manager import load_trade_history_document
@@ -104,12 +106,14 @@ def epoch_start_date(epoch: dict | None, tz=None) -> date | None:
     return start.astimezone(tz).date()
 
 
-def point_in_epoch(point: dict, start: datetime | None) -> bool:
+def point_in_epoch(point: dict, start: datetime | None, tz=None) -> bool:
     """A daily NAV point belongs to the epoch when last written at/after the start.
 
     The bot overwrites today's point every cycle, so the reset day's point holds
     post-reset NAV once ``as_of`` is past the start. Without ``as_of`` fall back
-    to the day (strictly after the start day). Same rule as PR #768.
+    to the day (strictly after the start day). ``date`` is a display-time
+    (Berlin) day, so the start is compared as a Berlin day too. Same rule as
+    PR #768 otherwise.
     """
     if start is None:
         return True
@@ -120,16 +124,18 @@ def point_in_epoch(point: dict, start: datetime | None) -> bool:
         day = date.fromisoformat(str(point.get("date") or "")[:10])
     except ValueError:
         return False
-    return day > start.date()
+    return day > epoch_start_date({"started_at": start}, tz)
 
 
-def split_points(points: Iterable[dict] | None, start: datetime | None) -> tuple[list[dict], list[dict]]:
+def split_points(
+    points: Iterable[dict] | None, start: datetime | None, tz=None
+) -> tuple[list[dict], list[dict]]:
     """``(current_epoch_points, pre_epoch_points)``, input order kept."""
     cur: list[dict] = []
     pre: list[dict] = []
     for p in points or []:
         if isinstance(p, dict):
-            (cur if point_in_epoch(p, start) else pre).append(p)
+            (cur if point_in_epoch(p, start, tz) else pre).append(p)
     return cur, pre
 
 
