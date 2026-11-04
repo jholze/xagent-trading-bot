@@ -30,6 +30,26 @@ from services.exit_realtime.shadow_eval import (
 
 WS_URL = "wss://api.gateio.ws/ws/v4/"
 CHANNEL = "spot.tickers"
+PING_CHANNEL = "spot.ping"
+
+# #710 robustness defaults (exit_realtime config keys of the same name win).
+DEFAULT_MAX_TICK_AGE_SEC = 30.0  # stale-price guard: no exit eval on an older tick
+DEFAULT_WATCHDOG_INTERVAL_SEC = 5.0
+DEFAULT_APP_PING_SEC = 15.0  # Gate app-level spot.ping, on top of the WS ping frame
+DEFAULT_SILENT_RECONNECT_SEC = 90.0  # connected but no tick on any pair -> force reconnect
+DEFAULT_STALE_RESUBSCRIBE_SEC = 300.0  # open-lot pair without a tick -> resubscribe it
+DEFAULT_FORCED_RECONNECT_MIN_GAP_SEC = 300.0  # no reconnect storm on a genuinely quiet stream
+DEFAULT_STABLE_CONNECTION_SEC = 60.0  # a connection this long resets the reconnect backoff
+DEFAULT_ATR_TTL_SEC = 900.0
+DEFAULT_ATR_FETCH_MAX_PER_REFRESH = 10
+
+
+def _cfg_float(cfg: dict, key: str, default: float) -> float:
+    try:
+        val = float(cfg.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return val if val == val else default
 
 
 def book_key(tenant_id: str | None, symbol: str) -> tuple[str, str]:
@@ -147,7 +167,26 @@ class ExitRealtimeHub:
             "ws_stop_skip_no_bid": 0,
             "ws_stop_skip_no_base": 0,
             "ws_stop_below_min": 0,
+            "ws_stale_tick_skip": 0,
+            "watchdog_reconnects": 0,
+            "watchdog_resubscribes": 0,
+            "app_pings": 0,
+            "last_disconnect_sec": 0.0,
         }
+        # #710 watchdog state (monotonic clock)
+        self._pair_last_tick: dict[str, float] = {}
+        self._pair_last_resub: dict[str, float] = {}
+        self._last_any_tick: float = 0.0
+        self._connected_since: float = 0.0
+        self._disconnected_at: float = 0.0
+        self._last_app_ping: float = 0.0
+        self._watchdog_thread: threading.Thread | None = None
+        self._last_forced_reconnect: float = 0.0
+        # Smallest (local now - Gate time_ms) seen on this connection: clock
+        # skew plus base latency. The stale guard measures age above it, so a
+        # host clock that runs ahead of Gate never mutes every tick (fail-open).
+        self._tick_lag_min: float | None = None
+        self._ws_send_lock = threading.Lock()
         self.sync_correlated_tier_watch()
         self._liq_stream: Any = None
         self._cascade_detector: Any = None
@@ -497,6 +536,11 @@ class ExitRealtimeHub:
             target=self._run_loop, name="exit-realtime-ws", daemon=True
         )
         self._thread.start()
+        if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog_loop, name="exit-realtime-watchdog", daemon=True
+            )
+            self._watchdog_thread.start()
         self._start_liq_cascade()
         mode = exit_realtime_mode(self._raw)
         log(f"exit_realtime hub started mode={mode}", "INFO")
@@ -576,6 +620,15 @@ class ExitRealtimeHub:
             return
         self._stats["ticks"] += 1
         self._stats["last_tick_at"] = time.time()
+        mono = time.monotonic()
+        # #710 review: only a tick that passes the stale guard proves the stream
+        # is alive. A stream that keeps delivering late frames must not keep the
+        # watchdog quiet while every WS stop on it is skipped as stale.
+        _max_age = _cfg_float(exit_realtime_config(self._raw), "max_tick_age_sec", DEFAULT_MAX_TICK_AGE_SEC)
+        _age = self.stale_tick_age(time_ms)
+        if not (_max_age > 0 and _age is not None and _age > _max_age):
+            self._last_any_tick = mono
+            self._pair_last_tick[gate_pair] = mono
         with self._pos_lock:
             sym = (
                 self._gate_to_symbol.get(gate_pair)
@@ -730,6 +783,20 @@ class ExitRealtimeHub:
             or 15
             or 15
         )
+        # #710 stale-price guard: never decide an exit on a tick older than
+        # max_tick_age_sec (backlog after a reconnect, a stuck stream). A tick
+        # without a usable time stays allowed: the cycle path is the backstop.
+        max_age = _cfg_float(cfg, "max_tick_age_sec", DEFAULT_MAX_TICK_AGE_SEC)
+        age = self.stale_tick_age(time_ms)
+        if max_age > 0 and age is not None and age > max_age:
+            self._stats["ws_stale_tick_skip"] = int(self._stats.get("ws_stale_tick_skip") or 0) + 1
+            if self._debounce_ok(sym, "ws_stale_tick_skip", cooldown, tenant_id=row_tenant):
+                log(
+                    f"ws_stale_tick_skip symbol={sym} tenant={row_tenant or ''} "
+                    f"last={price} tick_age={age:.1f}s max={max_age:g}s",
+                    "WARNING",
+                )
+            return
         atr = float(snapshot.get("atr_pct") or cfg.get("default_atr_pct", 3.0) or 3.0)
         params = dict(snapshot.get("strategy_params") or {})
         tf = str(snapshot.get("timeframe") or "1h")
@@ -1109,7 +1176,7 @@ class ExitRealtimeHub:
             pct_24h=pct,
             quote_volume=qv,
             highest_bid=result.get("highest_bid"),
-            time_ms=result.get("time_ms"),
+            time_ms=result.get("time_ms") if result.get("time_ms") is not None else data.get("time_ms"),
         )
 
     def _run_loop(self) -> None:
@@ -1124,8 +1191,10 @@ class ExitRealtimeHub:
             return
 
         cfg = exit_realtime_config(self._raw)
-        backoff = float(cfg.get("reconnect_backoff_sec", 3) or 3)
+        base_backoff = float(cfg.get("reconnect_backoff_sec", 3) or 3)
+        backoff = base_backoff
         max_backoff = float(cfg.get("reconnect_max_sec", 60) or 60)
+        stable_sec = _cfg_float(cfg, "stable_connection_sec", DEFAULT_STABLE_CONNECTION_SEC)
 
         while not self._stop.is_set():
             pairs = self._desired_gate_pairs()
@@ -1142,26 +1211,41 @@ class ExitRealtimeHub:
                 self._connected = True
                 self._stats["connected"] = True
                 self._subscribed = set()
+                now_m = time.monotonic()
+                self._connected_since = now_m
+                self._last_any_tick = now_m  # silent-stream clock starts at connect
+                self._pair_last_tick = {}
+                self._pair_last_resub = {}
+                self._tick_lag_min = None
+                down = (now_m - self._disconnected_at) if self._disconnected_at else 0.0
+                self._stats["last_disconnect_sec"] = round(down, 1)
+                failed: list[str] = []
                 self._broadcast_gui(
                     {"type": "stage", "stage": "connect", "msg": "Gate WSS connected"}
                 )
                 live_pairs = self._desired_gate_pairs()
                 for gp in live_pairs:
                     try:
-                        ws.send(
-                            json.dumps(
-                                {
-                                    "time": int(time.time()),
-                                    "channel": CHANNEL,
-                                    "event": "subscribe",
-                                    "payload": [gp],
-                                }
-                            )
+                        self._ws_send(
+                            ws,
+                            {
+                                "time": int(time.time()),
+                                "channel": CHANNEL,
+                                "event": "subscribe",
+                                "payload": [gp],
+                            },
                         )
                         self._subscribed.add(gp)
                         time.sleep(0.05)
                     except Exception as exc:
+                        failed.append(gp)
                         log(f"exit_realtime subscribe {gp}: {exc}", "DEBUG")
+                log(
+                    f"exit_realtime ws connected: down_for={down:.1f}s "
+                    f"subscribed={len(self._subscribed)} failed={len(failed)}"
+                    + (f" failed_pairs={','.join(failed[:10])}" if failed else ""),
+                    "INFO",
+                )
                 self._broadcast_gui(
                     {
                         "type": "stage",
@@ -1175,6 +1259,7 @@ class ExitRealtimeHub:
                 self._broadcast_gui({"type": "error", "msg": str(err)[:160]})
 
             def on_close(_ws, *_a) -> None:
+                self._disconnected_at = time.monotonic()
                 self._connected = False
                 self._stats["connected"] = False
                 self._ws = None
@@ -1190,10 +1275,15 @@ class ExitRealtimeHub:
                 )
                 self._app = ws
                 self._stats["reconnects"] += 1
-                ws.run_forever(sslopt={"context": _ssl_context()}, ping_interval=20)
+                self._connected_since = 0.0
+                ws.run_forever(
+                    sslopt={"context": _ssl_context()}, ping_interval=20, ping_timeout=10
+                )
             except Exception as exc:
                 log(f"exit_realtime run_forever: {exc}", "WARNING")
             finally:
+                lasted = self.connection_lasted()
+                self._disconnected_at = time.monotonic()
                 self._connected = False
                 self._stats["connected"] = False
                 self._ws = None
@@ -1202,9 +1292,135 @@ class ExitRealtimeHub:
 
             if self._stop.is_set():
                 break
+            # #710: a connection that held for stable_sec resets the backoff, so
+            # a drop every ~12 min reconnects after base_backoff, not after 60 s.
+            backoff = next_backoff(backoff, lasted, base=base_backoff, cap=max_backoff, stable_sec=stable_sec)
             if self._stop.wait(backoff):
                 break
-            backoff = min(max_backoff, backoff * 1.5)
+
+    def connection_lasted(self, now: float | None = None) -> float:
+        """Seconds the current/last connection held (0 when on_open never ran).
+
+        ``_connected_since`` is cleared before ``run_forever`` and stamped by
+        ``on_open`` (which runs inside ``run_forever``), so after a drop this
+        is the real connection length that decides the backoff reset.
+        """
+        if not self._connected_since:
+            return 0.0
+        now_m = time.monotonic() if now is None else float(now)
+        return max(0.0, now_m - self._connected_since)
+
+    def stale_tick_age(self, time_ms: Any, now: float | None = None) -> float | None:
+        """Tick age above the connection's minimum observed lag (skew-corrected).
+
+        The raw age (``tick_age_seconds``) includes any host/Gate clock skew.
+        A host clock 60 s ahead would make every fresh tick look 60 s old and
+        mute all stops. The minimum lag on this connection absorbs that skew,
+        so only a tick that is late *relative to the stream* counts as stale.
+        """
+        raw = tick_age_seconds(time_ms, now=now)
+        if raw is None:
+            return None
+        lag_min = self._tick_lag_min
+        if lag_min is None or raw < lag_min:
+            self._tick_lag_min = lag_min = raw
+        return raw - lag_min
+
+    def _ws_send(self, ws: Any, payload: dict) -> None:
+        with self._ws_send_lock:
+            ws.send(json.dumps(payload))
+
+    # ------------------------------------------------------------------ #710 watchdog
+    def _watchdog_loop(self) -> None:
+        while not self._stop.is_set():
+            cfg = exit_realtime_config(self._raw)
+            interval = _cfg_float(cfg, "watchdog_interval_sec", DEFAULT_WATCHDOG_INTERVAL_SEC)
+            try:
+                self.watchdog_check()
+            except Exception as exc:
+                log(f"exit_realtime watchdog: {exc}", "DEBUG")
+            if self._stop.wait(max(1.0, interval)):
+                break
+
+    def watchdog_check(self, now: float | None = None) -> dict[str, Any]:
+        """One watchdog pass. Returns what it did (for tests and logs).
+
+        * app-level ``spot.ping`` every ``app_ping_sec``;
+        * connected, but no tick on any pair for ``silent_reconnect_sec`` ->
+          close the socket so ``_run_loop`` reconnects;
+        * an open-lot pair without a tick for ``stale_resubscribe_sec`` ->
+          send its subscribe again (at most once per window per pair).
+        """
+        cfg = exit_realtime_config(self._raw)
+        now_m = time.monotonic() if now is None else float(now)
+        out: dict[str, Any] = {"pinged": False, "reconnect": False, "resubscribed": []}
+        ws = self._ws
+        if ws is None or not self._connected:
+            return out
+        ping_sec = _cfg_float(cfg, "app_ping_sec", DEFAULT_APP_PING_SEC)
+        if ping_sec > 0 and now_m - self._last_app_ping >= ping_sec:
+            try:
+                self._ws_send(ws, {"time": int(time.time()), "channel": PING_CHANNEL})
+                self._last_app_ping = now_m
+                self._stats["app_pings"] = int(self._stats.get("app_pings") or 0) + 1
+                out["pinged"] = True
+            except Exception as exc:
+                log(f"exit_realtime app ping: {exc}", "DEBUG")
+        silent = _cfg_float(cfg, "silent_reconnect_sec", DEFAULT_SILENT_RECONNECT_SEC)
+        since = max(self._last_any_tick, self._connected_since)
+        min_gap = _cfg_float(cfg, "forced_reconnect_min_gap_sec", DEFAULT_FORCED_RECONNECT_MIN_GAP_SEC)
+        with self._pos_lock:
+            has_book = bool(self._gate_to_symbol)
+        if (
+            silent > 0
+            and since > 0
+            and now_m - since >= silent
+            and (self._subscribed or has_book)
+            and (not self._last_forced_reconnect or now_m - self._last_forced_reconnect >= min_gap)
+        ):
+            self._last_forced_reconnect = now_m
+            self._stats["watchdog_reconnects"] = int(self._stats.get("watchdog_reconnects") or 0) + 1
+            log(
+                f"exit_realtime watchdog: no tick for {now_m - since:.0f}s on "
+                f"{len(self._subscribed)} pairs, forcing reconnect",
+                "WARNING",
+            )
+            out["reconnect"] = True
+            app = self._app or ws
+            try:
+                with self._ws_send_lock:
+                    app.close()
+            except Exception as exc:
+                log(f"exit_realtime watchdog close: {exc}", "DEBUG")
+            return out
+        stale = _cfg_float(cfg, "stale_resubscribe_sec", DEFAULT_STALE_RESUBSCRIBE_SEC)
+        if stale <= 0:
+            return out
+        with self._pos_lock:
+            book_pairs = sorted(self._gate_to_symbol.keys())
+        for gp in book_pairs:
+            last = self._pair_last_tick.get(gp) or self._connected_since
+            if not last or now_m - last < stale:
+                continue
+            if now_m - self._pair_last_resub.get(gp, 0.0) < stale:
+                continue
+            try:
+                self._ws_send(
+                    ws, {"time": int(time.time()), "channel": CHANNEL, "event": "subscribe", "payload": [gp]}
+                )
+                self._subscribed.add(gp)
+                self._pair_last_resub[gp] = now_m
+                self._stats["watchdog_resubscribes"] = int(self._stats.get("watchdog_resubscribes") or 0) + 1
+                out["resubscribed"].append(gp)
+            except Exception as exc:
+                log(f"exit_realtime watchdog resubscribe {gp}: {exc}", "DEBUG")
+        if out["resubscribed"]:
+            log(
+                f"exit_realtime watchdog: resubscribed {len(out['resubscribed'])} open-lot pairs "
+                f"without a tick for >= {stale:g}s: {','.join(out['resubscribed'][:10])}",
+                "INFO",
+            )
+        return out
 
 
 _hub: ExitRealtimeHub | None = None
@@ -1217,12 +1433,96 @@ def get_hub() -> ExitRealtimeHub | None:
     return _hub
 
 
+def next_backoff(current: float, lasted_sec: float, *, base: float, cap: float, stable_sec: float) -> float:
+    """Wait before the next reconnect. A connection that held ``stable_sec`` resets to ``base``."""
+    if lasted_sec >= stable_sec > 0:
+        return base
+    return min(cap, max(base, current * 1.5))
+
+
+# #710: real ATR% per (symbol, timeframe) for WS trail/TTP eval instead of the
+# flat atr_reference_pct (3.0). Fetched in the book-refresh thread, never on
+# the WS thread; TTL-cached; a fetch budget per refresh bounds REST load.
+_atr_cache_lock = threading.Lock()
+_atr_cache: dict[tuple[str, str], tuple[float, float]] = {}  # (sym, tf) -> (atr_pct, monotonic ts)
+
+
+def _fetch_live_atr_pct(symbol: str, timeframe: str, price: float) -> float | None:
+    from services.market_service import MarketService
+
+    svc = MarketService()
+    df = svc._fetch_ohlcv(symbol, timeframe, 100)
+    # indicators_from_df() answers an empty frame with a flat 3.0 fallback;
+    # that must not be labelled "live". ATR(14) needs at least 15 bars.
+    if df is None or getattr(df, "empty", True) or len(df) < 15:
+        return None
+    # ATR% against the last candle close, not the caller's lot price, so the
+    # (symbol, timeframe) cache is the same for every tenant.
+    try:
+        ref_px = float(df["close"].iloc[-1])
+    except Exception:
+        ref_px = float(price or 0)
+    if not ref_px > 0:
+        return None
+    ind = svc.indicators_from_df(df, timeframe, ref_px, symbol=symbol)
+    if not ind:
+        return None
+    val = ind.get("atr_pct")
+    if val is None:
+        return None
+    val = float(val)
+    return val if val > 0 and val == val else None
+
+
+def resolve_row_atr(
+    symbol: str,
+    timeframe: str,
+    *,
+    price: float,
+    reference: float,
+    cfg: dict | None,
+    budget: list[int] | None = None,
+    fetch_fn: Callable[[str, str, float], float | None] | None = None,
+    now: float | None = None,
+) -> tuple[float, str]:
+    """(atr_pct, source) for one book row. source: live | cached | stale_cached | reference.
+
+    ``exit_realtime.live_atr`` (default True) switches the live lookup on.
+    Any failure falls back to ``reference`` (atr_reference_pct, else 3.0).
+    """
+    cfg = cfg or {}
+    if not bool(cfg.get("live_atr", True)):
+        return reference, "reference"
+    ttl = _cfg_float(cfg, "atr_ttl_sec", DEFAULT_ATR_TTL_SEC)
+    now_m = time.monotonic() if now is None else float(now)
+    key = (symbol, timeframe or "1h")
+    with _atr_cache_lock:
+        hit = _atr_cache.get(key)
+    if hit and now_m - hit[1] <= ttl:
+        return hit[0], "cached"
+    if budget is not None:
+        if budget[0] <= 0:
+            return (hit[0], "stale_cached") if hit else (reference, "reference")
+        budget[0] -= 1
+    try:
+        val = (fetch_fn or _fetch_live_atr_pct)(symbol, key[1], price)
+    except Exception as exc:
+        log(f"exit_realtime atr fetch {symbol} {key[1]}: {exc}", "DEBUG")
+        val = None
+    if val is None:
+        return (hit[0], "stale_cached") if hit else (reference, "reference")
+    with _atr_cache_lock:
+        _atr_cache[key] = (float(val), now_m)
+    return float(val), "live"
+
+
 def _book_row_for_position(
     *,
     key: str,
     pos: dict[str, Any],
     tenant_id: str,
     cfg: Any,
+    atr_budget: list[int] | None = None,
 ) -> dict[str, Any] | None:
     from strategies.positions import is_open_position, parse_position_key
 
@@ -1251,6 +1551,18 @@ def _book_row_for_position(
         except Exception:
             params = {}
 
+    reference = float(
+        (params or {}).get("atr_reference_pct")
+        or (getattr(cfg, "risk_config", None) or {}).get("atr_reference_pct")
+        or 3.0
+    )
+    try:
+        raw_cfg = getattr(cfg, "raw", None)
+        rt_cfg = exit_realtime_config(raw_cfg if isinstance(raw_cfg, dict) else None)
+    except Exception:
+        rt_cfg = {}
+    price = float(pos.get("current_price") or pos.get("average_entry") or 1.0)
+    atr, atr_source = resolve_row_atr(sym, tf, price=price, reference=reference, cfg=rt_cfg, budget=atr_budget)
     return {
         "symbol": sym,
         "timeframe": tf,
@@ -1259,11 +1571,8 @@ def _book_row_for_position(
         "average_entry": float(pos.get("average_entry") or 0),
         "recent_high": float(pos.get("recent_high") or 0),
         "strategy_params": params,
-        "atr_pct": float(
-            (params or {}).get("atr_reference_pct")
-            or (cfg.risk_config or {}).get("atr_reference_pct")
-            or 3.0
-        ),
+        "atr_pct": atr,
+        "atr_source": atr_source,
         "strategy_tier": pos.get("strategy_tier"),
     }
 
@@ -1278,6 +1587,11 @@ def _load_open_book(raw: dict | None) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     sidecar = is_exit_radar_sidecar_process()
+    try:
+        rt = exit_realtime_config(raw)
+        atr_budget = [int(rt.get("atr_fetch_max_per_refresh", DEFAULT_ATR_FETCH_MAX_PER_REFRESH))]
+    except Exception:
+        atr_budget = [DEFAULT_ATR_FETCH_MAX_PER_REFRESH]
     # Daemon thread: contextvars do not inherit. Walk each tenant store
     # explicitly; do not iterate the module `positions` dict (default-only).
     # Build rows *inside* tenant_cycle_context so resolve_strategy_params /
@@ -1302,7 +1616,7 @@ def _load_open_book(raw: dict | None) -> list[dict[str, Any]]:
                     if not isinstance(pos, dict):
                         continue
                     row = _book_row_for_position(
-                        key=str(key), pos=pos, tenant_id=tid, cfg=cfg
+                        key=str(key), pos=pos, tenant_id=tid, cfg=cfg, atr_budget=atr_budget
                     )
                     if row is not None:
                         rows.append(row)
@@ -1429,6 +1743,11 @@ def reset_exit_realtime_for_tests() -> None:
             and ws_thread is not threading.current_thread()
         ):
             ws_thread.join(timeout=2.0)
+        wd = hub._watchdog_thread
+        if wd is not None and wd.is_alive() and wd is not threading.current_thread():
+            wd.join(timeout=2.0)
     if thread is not None and thread.is_alive() and thread is not threading.current_thread():
         thread.join(timeout=2.0)
+    with _atr_cache_lock:
+        _atr_cache.clear()
     _refresh_stop.clear()
