@@ -853,3 +853,65 @@ def scenario_m(ctx: Context) -> ScenarioResult:
 
 
 SCENARIOS["m"] = scenario_m
+
+
+# ---------------------------------------------------------------------------
+# (p) profit floor (2026-11-04, Kay PR3): once a lot reached +arm %, never let
+# it close below a small net floor. Grid arm {4, 6, 8} x net floor {0.5, 1, 2},
+# the earlier TP recommendation (arm 8, 3 % trail, +3 % floor) and the primary
+# with a candle-close fill instead of the intrabar stop fill (fill realism).
+PROFIT_GRID = tuple((arm, floor) for arm in (4.0, 6.0, 8.0) for floor in (0.5, 1.0, 2.0))
+PROFIT_PRIMARY = "pf_a4_f0.5"
+PROFIT_T8 = "pf_a8_trail3_f3"
+
+
+def _pf_name(arm: float, floor: float) -> str:
+    return f"pf_a{arm:g}_f{floor:g}"
+
+
+def _profit_variants():
+    out = [(policy("baseline", ref=None, escalate=True), "staging stop/DCA code, recorded entries, adds and tape sells")]
+    for arm, floor in PROFIT_GRID:
+        out.append((
+            policy(_pf_name(arm, floor), ref=None, escalate=True, profit_arm_pct=arm, profit_floor_net_pct=floor),
+            f"armed once a bar high >= avg +{arm:g} %; full sell when the low touches the price that nets +{floor:g} % after fees and slippage",
+        ))
+    out.append((
+        policy(PROFIT_T8, ref=None, escalate=True, profit_arm_pct=8.0, profit_floor_net_pct=3.0, profit_trail_pct=3.0),
+        "earlier TP recommendation: armed at +8 %, 3 % trail from the peak high, never below +3 % net",
+    ))
+    out.append((
+        policy(PROFIT_PRIMARY + "_close", ref=None, escalate=True, profit_arm_pct=4.0, profit_floor_net_pct=0.5, profit_fill="close"),
+        "primary rule, but checked and filled on the 1h candle close (fill realism)",
+    ))
+    return out
+
+
+_PF_NOTES = [
+    "Arming uses the bar high and is applied after the bar's exits: a lot is never armed and sold on the same bar.",
+    "Touch fill = min(bar open, max(level, bar low)) minus class slippage, like the hard stop; a gap below the level fills at the open, so a floor exit can realise less than the floor.",
+    "Recorded tape sells (trail, take-profit, rotation, manual) still apply as recorded; the floor only adds exits.",
+]
+
+
+def scenario_p(ctx: Context) -> ScenarioResult:
+    return _evaluate(ctx, key="p", title="Profit floor: armed at +4 %, never close below +0.5 % net", question="Does a profit floor after +X % beat staging (Jul-Oct entries)?",
+                     mode="entries", windows=ENTRY_WINDOWS, variants=_profit_variants(), baseline="baseline", primary=PROFIT_PRIMARY,
+                     notes=list(_PF_NOTES))
+
+
+def scenario_p_t8(ctx: Context) -> ScenarioResult:
+    return _evaluate(ctx, key="p_t8_rerun", title="Profit floor: earlier TP recommendation (arm 8, trail 3, floor 3)", question="Same candidates as (p), verdict for the trail variant.",
+                     mode="entries", windows=ENTRY_WINDOWS, variants=_profit_variants(), baseline="baseline", primary=PROFIT_T8,
+                     notes=list(_PF_NOTES))
+
+
+def scenario_p_oct(ctx: Context) -> ScenarioResult:
+    return _evaluate(ctx, key="p_oct", title="Profit floor on the October book (check)", question="Same candidates as (p) on the whole October book.",
+                     mode="book", windows=OCT_WINDOWS, variants=_profit_variants(), baseline="baseline", primary=PROFIT_PRIMARY,
+                     notes=list(_PF_NOTES) + ["Book mode: carried-in lots arm only on bars inside the window (no lookback)."])
+
+
+SCENARIOS["p"] = scenario_p
+SCENARIOS["p_t8_rerun"] = scenario_p_t8
+SCENARIOS["p_oct"] = scenario_p_oct

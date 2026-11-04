@@ -38,6 +38,10 @@ class RunMetrics:
     early_exits: int = 0
     flat_stops: int = 0
     skipped_adds: int = 0
+    profit_floor_exits: int = 0
+    profit_floor_below: int = 0
+    profit_floor_mean_net_pct: float | None = None
+    profit_armed: int = 0
 
 
 def summarize(run: RunResult) -> RunMetrics:
@@ -81,6 +85,14 @@ def summarize(run: RunResult) -> RunMetrics:
         early_exits=sum(x.early_exits for x in lots),
         flat_stops=sum(x.flat_stops for x in lots),
         skipped_adds=sum(x.skipped_adds for x in lots),
+        profit_floor_exits=sum(x.profit_floor_exits for x in lots),
+        profit_floor_below=sum(x.profit_floor_below for x in lots),
+        profit_floor_mean_net_pct=(
+            sum(x.profit_floor_net_sum for x in lots) / sum(x.profit_floor_exits for x in lots)
+            if any(x.profit_floor_exits for x in lots)
+            else None
+        ),
+        profit_armed=sum(x.profit_armed for x in lots),
     )
 
 

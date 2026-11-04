@@ -31,9 +31,9 @@ def test_all_modules_read_the_register():
     assert longwf.N_ALL == trials.n_all_trials() == trials.n_scenario_trials() + trials.n_longwf_trials()
 
 
-# Re-runs of an existing candidate set add no new trial; every other
+# Re-runs of an existing candidate set (key suffix _oct or _rerun) add no new trial; every other
 # scenario must count at least one variant (a 0 would understate N).
-RERUN_KEYS = {k for k, t in trials.SCENARIO_TRIALS.items() if k.endswith("_oct")}
+RERUN_KEYS = {k for k, t in trials.SCENARIO_TRIALS.items() if k.endswith(("_oct", "_rerun"))}
 
 
 def test_only_reruns_count_zero():
