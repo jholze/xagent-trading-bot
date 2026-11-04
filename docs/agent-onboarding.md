@@ -7,9 +7,10 @@ Never copy secrets, tokens, .env contents or credentials into this file. -->
 - Omnigent project ID: `adba8ee6896849cd82e22bec7a881691` ("Trading bot")
 - Workspace: `/Users/jholze/Documents/scripts/trading_bot`
 - Repo: `jholze/xagent-trading-bot`, default branch: `main`; integration / PR base branch: `staging`
-- Bot account handle: `trading-bot` (scope: this project only)
+- Bot account handle: `trading-bot` (scope: this project only; access check 2026-11-04: `list_projects` shows only "Trading bot", a foreign project id returns `not_found`)
+- Omnigent host for sessions: `1201aea5000540c8a96378432409ef7c`
 - Phase: production (real money, live trading state); `staging` = paper-trading bot
-- Filled in by / date: Kay (Grok Bot lead), 2026-11-01
+- Filled in by / date: Kay (Grok Bot lead), 2026-11-01, updated 2026-11-04
 
 ## 1. Purpose
 
@@ -65,7 +66,8 @@ drawdown, measured on paper first; see the evidence rules in `AGENTS.md` and `do
 - Deploy: Railway. Service `xagent-test` (env `test`) auto-deploys from `staging` (paper bot; sidecars such as
   `xagent-mcp`, `xagent-hermes`, `xagent-memory-cortex` via `railway.cortex.toml`). Production from `main` (described
   as "future/later" in `docs/RAILWAY_PLAN.md`). Build: `Dockerfile` + `railway.toml` (`scripts/railway_start.sh`, health `/health`).
-- Who may deploy: Jens only (apart from the `staging` auto-deploy that a merge to `staging` triggers). Agents never run `scripts/deploy_staging.sh` or any Railway command.
+- Who may deploy: Jens only (apart from the `staging` auto-deploy that a permitted merge to `staging` triggers). Agents never run `scripts/deploy_staging.sh`, `railway variables`, or any Railway write; reading deployment status and logs to verify the `staging` auto-deploy is allowed.
+- Whether Railway is the only deploy target, and where the real-money bot runs today: OPEN (see section 10).
 
 ## 5. Critical risks
 
@@ -78,6 +80,13 @@ drawdown, measured on paper first; see the evidence rules in `AGENTS.md` and `do
   `costs`, `max_usdt_per_trade`, `max_position_percent`, `stop_loss_pct`, `max_open_positions`, `max_daily_trades`,
   `trade_cooldown_hours`. Also deploy config (`Dockerfile`, `railway*.toml`, `scripts/railway_start.sh`,
   `deploy/live_caps_overlay.json`) — proposed as high-risk, see section 10.
+- Further code that places or sizes orders or rewrites ledgers outside `ci/money_paths.json` (found 2026-11-04,
+  proposed as high-risk, see section 10): `services/exit_realtime/` (realtime exits, `execute.py`), `services/exit_radar*`,
+  `services/trading_service.py`, `services/portfolio_service.py`, `services/order_service.py`, `services/mcp/bot_http.py`
+  (MCP buy/sell/lock), `notifications/telegram_commands/manual_order_flow.py`,
+  `core/costs.py`, `core/execution_mode.py`, `core/config_guardrails.py`, `data_manager.py`,
+  `scripts/ledger_epoch.py` and `bus/writer_lease.py` (ledger reset/restore), and every `config.json` change that
+  also applies to `main`/live.
 
 ## 6. Tests
 
@@ -95,7 +104,7 @@ drawdown, measured on paper first; see the evidence rules in `AGENTS.md` and `do
 - Change live config or `*.live.json`, enable live trading, place orders, call bot MCP buy/sell/lock.
 - Create accounts or paid services.
 - Read or print `.env`, `.env.local`, `ngrok.log`, credentials files, tokens, `.cursor/mcp.json`.
-- Merge (exception: Kay may merge any PR into `staging` under `AGENTS.md` rule 6), push to `main` or `staging`, set `owner-approved` (exception: Kay for staging merges) or Omnigent labels, use `ALLOW_DEPLOY_PUSH=1`.
+- Merge (exception: Kay may merge proven paper-only improvements into `staging` under `AGENTS.md` rule 6; never PRs on `aria_bot.py`, `execution/`, `risk/`, `*.live.json` or real money), push to `main` or `staging`, set `owner-approved` (exception: Kay for staging merges) or Omnigent labels, use `ALLOW_DEPLOY_PUSH=1`.
 - Edit an existing test assertion to make a change pass.
 - Hardcode coin names in strategy or risk code.
 
@@ -105,10 +114,10 @@ drawdown, measured on paper first; see the evidence rules in `AGENTS.md` and `do
 - [ ] Unit suite green locally (unique `PYTEST_DB_SUFFIX`), `data/` untouched.
 - [ ] CI `unit` green.
 - [ ] PR body has an `Evidence` section with before/after metric; money path: `docs/evidence/<pr-or-issue>.md`.
-- [ ] DeepSeek review passed; Claude Opus final review passed for high-risk paths / before going live; tester sign-off.
+- [ ] DeepSeek review passed and posted as a PR comment naming the model; Claude Opus final review passed for high-risk paths / before going live (interim until 2026-11-06 07:00 Europe/Berlin: DeepSeek final review, Opus catch-up afterwards); tester sign-off.
 - [ ] Docs updated (`AGENTS.md`, `docs/`) when rules or behavior change.
 - [ ] No secrets in diff, logs or PR text.
-- [ ] Merged by Jens, or by Kay into `staging` under the merge rule below.
+- [ ] Merged by Jens, or by Kay into `staging` under the merge rule below; `staging` auto-deploy verified read-only (SUCCESS) and logged.
 
 ## 9. Workflow and roles
 
@@ -119,14 +128,14 @@ Branch naming `<type>/<slug>-<issue>` (`fix/`, `feat/`, `docs/`, `chore/`, `perf
 against `staging`, merge to `main` only by Jens; Kay may merge into `staging` as below. PR template: none in `.github/` (OPEN). Back channel: a session in the Omnigent
 project `adba8ee6896849cd82e22bec7a881691`, addressed to Jens' assistant.
 
-Merge rule for this project (Jens, 2026-11-01 22:57; replaces the 22:32 rule): Kay may merge any PR into `staging` himself, including PRs touching money paths and live paths (`aria_bot.py`, `execution/`, `risk/`, `*.live.json`), and may set the `owner-approved` label for staging merges. Jens only: merges to `main`, deploys other than the `staging` auto-deploy, real money, keys, withdraw. Kay's own quality bar before every staging merge: green CI `unit`, evidence in the PR, a DeepSeek review on every PR, and a Claude Opus review when a high-risk path is touched.
+Merge rule for this project (Jens, 2026-11-04; replaces the 2026-11-01 22:57 rule): Kay may merge into `staging` only proven improvements with evidence in the PR (tests, backtest or paper trading), for paper trading only, with a passed review gate and green CI `unit`. Jens keeps `main`, every deploy, the live paths `aria_bot.py`, `execution/`, `risk/`, `*.live.json`, and anything with real money: for those Kay opens the PR and stops. Code reaches `main` only through the `staging` → `main` release PR, opened and merged by Jens.
 
-Model rule unchanged: Grok 4.7 codes, DeepSeek reviews every PR, Claude Opus final review before anything live and on risky paths, at least two model families per PR, author and reviewer never the same family.
+Model rule: Grok 4.7 codes, DeepSeek reviews every PR, Claude Opus final review (mandatory, real money); until 2026-11-06 07:00 Europe/Berlin DeepSeek gives the final review and Opus re-reviews the high-risk PRs afterwards. Every PR names the reviewing model. At least two model families per PR, author and reviewer never the same family.
 
 ## 10. Open questions
 
 1. **Key success metric.** Proposed default: net PnL after fees/slippage vs. buy-and-hold at bounded max drawdown, on paper first.
-2. **Lead agent in Omnigent.** Config has `default_agent: xagent_lead` (agent id `58a1bc5bf0bba6d31ceeb7661f8d751c`), but `list_projects` shows `default_agent: null` and no `xagent_lead` agent is visible. Proposed default: Kay (Grok Bot lead) leads; Jens sets `default_agent` to an existing agent.
+2. **Lead agent in Omnigent.** The project config has `default_agent: xagent_lead` with `agent_id` `58a1bc5bf0bba6d31ceeb7661f8d751c`, but that id is the built-in `claude-native-ui` agent, `list_projects` shows `default_agent: null`, and `xagent_lead` (agent id `74cf5567…`, last sessions 2026-09-19) is no longer registered. Proposed default: Kay (Grok Bot lead) leads via the `trading-bot` account; Jens either registers a lead agent or clears `default_agent`.
 3. **Where the live (real-money) bot runs.** Docs call Railway production "future"; the Mac has production start scripts (`scripts/start_stack.sh`). Proposed default: treat both the Mac main checkout and any Railway production service as live and off-limits.
 4. **Tenants.** Who they are and whether tenant trading is real money. Proposed default: treat every tenant as real money.
 5. **Coder model config.** `.grok/settings.json` sets `grok-code-fast-1`, but the model rule says Grok 4.7. Proposed default: Jens updates it to `grok-4.7` (config change, not done by agents).
@@ -137,3 +146,6 @@ Model rule unchanged: Grok 4.7 codes, DeepSeek reviews every PR, Claude Opus fin
 10. **Deploy config as high-risk.** `Dockerfile`, `railway*.toml`, `scripts/railway_start.sh`, `deploy/live_caps_overlay.json` are not in `ci/money_paths.json`. Proposed default: treat as high-risk (Claude Opus final review), Jens decides whether to add them to the gate.
 11. **Local bind default.** `aria_bot.py` defaults to `HOST=0.0.0.0`. Proposed default: agents always set `HOST=127.0.0.1`; a code change to the default needs a ticket (high-risk file).
 12. **Telegram E2E / staging checks as gates.** Only `unit` is required. Proposed default: E2E stays optional; staging soak (`docs/WQE_STAGING_SOAK.md`) is Jens' post-merge check.
+13. **Further high-risk paths.** Code that places/sizes orders or rewrites ledgers outside `ci/money_paths.json` (list in section 5). Proposed default: treat as high-risk (Opus final review, Jens merges when real money is involved); Jens decides whether to add them to `ci/money_paths.json`.
+14. **`config.json` applies to `main`/live too.** A paper-motivated `config.json` change also changes live behaviour after the next release. Proposed default: every `config.json` change is flagged in the release PR for Jens.
+15. **Worktree cleanup on the Mac.** About 91 task worktrees under `trading_bot-worktrees/` (inventory 2026-11-01: keep 6, archive 21, delete-candidate 65), plus `chore-hermes-enabled-false-310`, an empty folder skeleton without `.git`. A folder `trading-bot-worktrees/` (with hyphen) does not exist (checked 2026-11-01 and 2026-11-04). Proposed default: Jens removes the delete-candidates himself; agents delete nothing.
