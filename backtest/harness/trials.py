@@ -10,7 +10,8 @@ Rules:
   fails if a scenario is missing here (or registered but gone).
 * ``trials`` = candidate variants that were evaluated against the baseline
   (the baseline itself is not a trial). Re-runs of the same candidates on a
-  different book (``e_oct``, ``f_oct``) add 0.
+  different book (``e_oct``, ``f_oct``) or with another primary (key suffix
+  ``_rerun``) add 0.
 * Never lower a count once a report was published with it: N only grows.
 """
 
@@ -45,6 +46,9 @@ SCENARIO_TRIALS: dict[str, Trial] = {
     },
     "k": Trial(5, "2026-11-02", "criteria eligibility E1/E2/G15"),
     "m": Trial(5, "2026-11-04", "pre-trade memory gate"),
+    "p": Trial(11, "2026-11-04", "profit floor: arm 4/6/8 x floor 0.5/1/2, arm8+trail3+floor3, primary with close fill"),
+    "p_t8_rerun": Trial(0, "2026-11-04", "same candidates as p, verdict for the trail variant"),
+    "p_oct": Trial(0, "2026-11-04", "same candidates as p on the October book"),
 }
 
 # Variants of the long walk-forward study (backtest/harness/longwf.py).

@@ -117,6 +117,21 @@ class Policy:
     bar_exit: Callable[[str, int, list, dict], bool] | None = None  # full sell at bar close if True
     skip_if_open: bool = False  # no new lot while a simulated lot on tenant+symbol is still open
     min_add_usdt: float = 50.0  # budget-truncated adds below this are skipped
+    # Profit floor (2026-11-04, Kay PR3). Default off = old behaviour.
+    # A lot is armed once a bar HIGH reaches avg * (1 + arm/100). Arming is
+    # applied after the bar's exit checks, so a lot is never armed and stopped
+    # on the same bar (the order of high and low inside one bar is unknown).
+    # From the next bar on, the lot is sold in full when price reaches the
+    # floor level: the gross price whose net return (exit slippage + fees on
+    # both sides) equals +floor %. With ``profit_trail_pct`` the level is
+    # max(floor level, peak high since arming * (1 - trail/100)).
+    profit_arm_pct: float | None = None
+    profit_floor_net_pct: float = 0.5
+    profit_trail_pct: float | None = None
+    # "touch": checked on the bar low, filled at min(open, max(level, low)) like
+    #          the hard stop (a gap below the level fills at the open).
+    # "close": checked on the bar close, filled at the close (candle-close stop).
+    profit_fill: str = "touch"
 
 
 @dataclass
@@ -145,6 +160,10 @@ class LotResult:
     time_stops: int = 0
     capped_adds: int = 0
     bar_exits: int = 0
+    profit_floor_exits: int = 0
+    profit_floor_below: int = 0  # floor exits whose realised net return was below the floor
+    profit_floor_net_sum: float = 0.0  # sum of realised net returns (%) of floor exits
+    profit_armed: int = 0
     exit_ts: int | None = None  # unix of the bar in which the lot went flat
     exit_reason: str = ""  # tape|stop|escalated|early|flat|time|bar_exit|open
     entry_usdt: float = 0.0
@@ -487,6 +506,10 @@ class Engine:
         closed = False
         last_close = candles[i][1]
         last_bar_ts = candles[i][0]
+        armed = False
+        armed_peak = 0.0
+        # A carried-in lot (book mode) arms only on bars inside the run: no
+        # lookback into the tape before the window start.
         while i < len(candles) and candles[i][0] < end_ts and not closed:
             bar_ts, o, h, low, c, _v = candles[i]
             bar_end = bar_ts + HOUR
@@ -611,6 +634,32 @@ class Engine:
                     mid = min(o, max(level, low))
                     closed = self._sell(pos, lot, 1.0, self.costs.sell_price(mid, slip), fee_pct)
                     cost_basis = 0.0
+            # 2c) profit floor (armed on an earlier bar)
+            if (
+                not closed
+                and armed
+                and policy.profit_arm_pct is not None
+                and pos["amount"] > 0
+                and pos["average_entry"] > 0
+                and not locked
+            ):
+                level = self._profit_floor_level(pos["average_entry"], policy, fee_pct, slip, armed_peak)
+                fill_mid = None
+                if policy.profit_fill == "close":
+                    if c <= level:
+                        fill_mid = c
+                elif low <= level:
+                    fill_mid = min(o, max(level, low))
+                if fill_mid is not None:
+                    px = self.costs.sell_price(fill_mid, slip)
+                    net = (px * (1 - fee_pct)) / (pos["average_entry"] * (1 + fee_pct)) - 1.0
+                    closed = self._sell(pos, lot, 1.0, px, fee_pct)
+                    cost_basis = 0.0
+                    lot.profit_floor_exits += 1
+                    lot.profit_floor_net_sum += net * 100.0
+                    if net * 100.0 < policy.profit_floor_net_pct - 1e-9:
+                        lot.profit_floor_below += 1
+                    lot.exit_reason = "profit_floor"
             # 3) rule-mode DCA at the bar close
             if not closed and indicators is not None and pos["amount"] > 0 and not locked and not policy.no_adds:
                 ind = ind_at(i) if (not self.fast_indicators or c < pos["average_entry"] * 0.995) else None
@@ -661,6 +710,13 @@ class Engine:
                     cost_basis = 0.0
                     lot.bar_exits += 1
                     lot.exit_reason = "bar_exit"
+            # 3c) arm / track the peak after this bar's exits (no same-bar arm + stop)
+            if not closed and policy.profit_arm_pct is not None and pos["amount"] > 0 and pos["average_entry"] > 0:
+                if not armed and h >= pos["average_entry"] * (1.0 + policy.profit_arm_pct / 100.0):
+                    armed = True
+                    lot.profit_armed += 1
+                if armed:
+                    armed_peak = max(armed_peak, h)
             last_close = c
             last_bar_ts = bar_ts
             # 4) curves
@@ -689,6 +745,16 @@ class Engine:
         res.pnl_curve[final_ts] = res.pnl_curve.get(final_ts, 0.0) + (lot.pnl - prev_pnl)
         res.capital_curve[final_ts] = res.capital_curve.get(final_ts, 0.0) - prev_cb
         return lot
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _profit_floor_level(avg: float, policy: Policy, fee_pct: float, slip_pct: float, peak: float) -> float:
+        """Gross price whose net return after exit slippage and both fees is +floor %."""
+        floor = policy.profit_floor_net_pct / 100.0
+        level = avg * (1.0 + fee_pct) * (1.0 + floor) / ((1.0 - fee_pct) * (1.0 - slip_pct / 100.0))
+        if policy.profit_trail_pct is not None and peak > 0:
+            level = max(level, peak * (1.0 - policy.profit_trail_pct / 100.0))
+        return level
 
     # ------------------------------------------------------------------
     @staticmethod
