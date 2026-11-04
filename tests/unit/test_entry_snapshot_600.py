@@ -108,7 +108,7 @@ class TestEntrySnapshot600(unittest.TestCase):
         update_position("SHRT/USDT", "4h", "SHORT_ADD", 0.35, 4, leverage=2, rsi=10.0)
         self.assertEqual(get_position("SHRT/USDT", "4h")["entry_snapshot"], first)
 
-    def test_passed_strategy_tier_is_not_read_from_the_lot(self):
+    def test_passed_strategy_tier_replaces_a_stale_lot_value(self):
         set_position_field("TIER/USDT", "4h", "strategy_tier", "stable")
         pos = self._open_long(
             symbol="TIER/USDT",
