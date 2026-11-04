@@ -105,9 +105,23 @@ def load_epoch_readonly(tenant_id: str, *, db=None) -> dict:
     )
     best: dict = {}
     for doc in cur:
-        if isinstance(doc, dict) and str(doc.get("started_at") or "") > str(best.get("started_at") or ""):
+        if not isinstance(doc, dict) or _parse_ts(doc.get("started_at")) is None:
+            continue
+        if not best or _epoch_sort_key(doc) > _epoch_sort_key(best):
             best = {"epoch_id": doc.get("epoch_id"), "started_at": str(doc.get("started_at"))}
     return best
+
+
+_TS_MIN = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _epoch_sort_key(marker: dict) -> datetime:
+    """Order epoch markers by parsed start time, not by string.
+
+    Sources differ in format (BSON datetime str "2026-11-04 09:59:50" vs ISO
+    "2026-11-04T09:59:50Z"); string order would pick a stale marker.
+    """
+    return _parse_ts(marker.get("started_at")) or _TS_MIN
 
 
 def _parse_ts(raw: Any) -> datetime | None:
@@ -240,7 +254,7 @@ def nav_pack(
         errors.append("ledger_epoch_unavailable")
     if isinstance(got_epoch, dict) and got_epoch.get("started_at"):
         markers.append(got_epoch)
-    epoch = max(markers, key=lambda m: str(m.get("started_at"))) if markers else {}
+    epoch = max(markers, key=_epoch_sort_key) if markers else {}
     epoch_start = _parse_ts(epoch.get("started_at"))
     if epoch and epoch_start is None:
         errors.append("ledger_epoch_bad_started_at")

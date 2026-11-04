@@ -367,3 +367,23 @@ def test_epoch_loader_only_reads_and_picks_newest():
     got = load_epoch_readonly("henry", db={"ledger_epochs": Coll()})
     assert got == {"epoch_id": "e2", "started_at": "2026-11-04T09:59:50+00:00"}
     assert calls[0][0] == {"tenant_id": "henry"}
+
+
+def test_epoch_loader_orders_mixed_formats_by_time_not_string():
+    # BSON datetime str (space) vs ISO "T": string order would pick e_old (DeepSeek #768).
+    from datetime import datetime, timezone
+
+    from services.mcp.nav import _epoch_sort_key, load_epoch_readonly
+
+    class Coll:
+        def find(self, flt, proj):
+            return [
+                {"epoch_id": "e_new", "started_at": datetime(2026, 11, 4, 9, 59, 50, tzinfo=timezone.utc)},
+                {"epoch_id": "e_old", "started_at": "2026-11-01T08:00:00Z"},
+                {"epoch_id": "e_bad", "started_at": "not-a-date"},
+            ]
+
+    got = load_epoch_readonly("henry", db={"ledger_epochs": Coll()})
+    assert got["epoch_id"] == "e_new"
+    markers = [{"started_at": "2026-11-04 09:59:50+00:00"}, {"started_at": "2026-11-04T08:00:00Z"}]
+    assert max(markers, key=_epoch_sort_key) is markers[0]
