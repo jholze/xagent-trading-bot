@@ -46,7 +46,11 @@ def btc_rows(points: Iterable[dict] | None) -> list[tuple[date, float, float]]:
     return rows
 
 
-def benchmark_from_nav_rows(points: Iterable[dict] | None) -> dict[str, Any] | None:
+def benchmark_from_nav_rows(
+    points: Iterable[dict] | None,
+    *,
+    start_nav: float | None = None,
+) -> dict[str, Any] | None:
     """BTC HODL series and alpha from NAV history.
 
     Returns ``None`` when no row has ``btc_close``. With one row, returns and
@@ -55,7 +59,9 @@ def benchmark_from_nav_rows(points: Iterable[dict] | None) -> dict[str, Any] | N
     rows = btc_rows(points)
     if not rows:
         return None
-    start_d, start_nav, start_btc = rows[0]
+    start_d, first_nav, start_btc = rows[0]
+    # Epoch start capital (e.g. 100k after a ledger reset) when given; else first NAV.
+    start_nav = _as_positive_float(start_nav) or first_nav
     series: list[dict[str, Any]] = []
     for d, nav, btc in rows:
         btc_hodl_nav = start_nav * (btc / start_btc)
@@ -106,10 +112,16 @@ def hodl_nav_by_plan_day(
     return out
 
 
-def format_btc_benchmark_line(points: Iterable[dict] | None) -> str:
-    """Additive /plan line. Empty unless at least two rows have ``btc_close``."""
-    bench = benchmark_from_nav_rows(points)
-    if not bench or int(bench.get("n") or 0) < 2:
+def format_btc_benchmark_line(
+    points: Iterable[dict] | None,
+    *,
+    start_nav: float | None = None,
+) -> str:
+    """Additive /plan line. Empty unless at least two rows have ``btc_close``
+    (with ``start_nav`` one row is enough: the bot return is then vs. that capital)."""
+    bench = benchmark_from_nav_rows(points, start_nav=start_nav)
+    need = 1 if _as_positive_float(start_nav) else 2
+    if not bench or int(bench.get("n") or 0) < need:
         return ""
     btc = f"{float(bench['btc_return_pct']):+.1f}%"
     bot = f"{float(bench['bot_return_pct']):+.1f}%"

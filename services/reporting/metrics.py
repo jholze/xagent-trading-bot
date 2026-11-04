@@ -6,6 +6,7 @@ and adds hit rate and profit factor. Read-only.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Iterable
 
 from hermes.metrics import compute_trade_quality, max_drawdown_pct, sharpe_from_trades
@@ -93,24 +94,42 @@ def metrics_from_closed_trades(
     }
 
 
-def live_metrics(days: int = 7, *, start_equity: float | None = None) -> dict[str, Any]:
-    """Risk-adjusted metrics over live closed trades for *days* lookback."""
+def live_metrics(
+    days: int = 7,
+    *,
+    start_equity: float | None = None,
+    since: datetime | None = None,
+) -> dict[str, Any]:
+    """Risk-adjusted metrics over live closed trades for *days* lookback.
+
+    ``since`` (aware datetime, e.g. the ledger epoch start) additionally drops
+    trades before that moment, so a reset does not mix old trades in.
+    """
     days = clamp_days(days)
     try:
         trades = list_closed_trades(days)
     except Exception:
         trades = []
+    if since is not None:
+        from services.ledger_epoch_view import trade_in_epoch
+
+        trades = [t for t in trades if trade_in_epoch(t, since)]
     return metrics_from_closed_trades(trades, days=days, start_equity=start_equity)
 
 
-def format_live_metrics_block(days: int = 7) -> str:
+def format_live_metrics_block(
+    days: int = 7,
+    *,
+    since: datetime | None = None,
+    start_equity: float | None = None,
+) -> str:
     """Compact HTML block for /plan and the morning briefing. Empty → ''."""
     try:
         from notifications.telegram_i18n import signed_money, t
     except Exception:
         return ""
     try:
-        m = live_metrics(days)
+        m = live_metrics(days, start_equity=start_equity, since=since)
     except Exception:
         return ""
     if m.get("empty"):
