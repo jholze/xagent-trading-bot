@@ -116,11 +116,21 @@ def test_defaults_all_off():
     assert rs.rule_config(raw, "elig_chase48")["max_above_48h_low_pct"] == 15
 
 
-def test_shipped_and_tenant_configs_enable_nothing():
-    assert not rs.any_elig_rule_on(get_config())
+def test_shipped_config_blocks_nothing():
+    # The shipped config.json may run eligibility rules in shadow (log only),
+    # never in enforce: the default tenant must not lose any BUY to them.
     # Tenant bodies live in Mongo tenant_configs; the repo ships only config.json.
+    for cfg in (get_config(), json.loads((ROOT / "config.json").read_text())):
+        modes = rs.elig_modes(cfg)
+        assert set(modes.values()) <= {rs.MODE_OFF, rs.MODE_SHADOW}, modes
+        assert rs.MODE_ENFORCE not in modes.values()
+        for rule in rs.RULES:
+            assert not rs.rule_enabled(cfg, rule), rule
+
+
+def test_shipped_config_runs_default_elig_in_shadow():
     raw = json.loads((ROOT / "config.json").read_text())
-    assert "rule_switches" not in raw or not rs.any_elig_rule_on(raw)
+    assert rs.elig_modes(raw) == {rule: rs.MODE_SHADOW for rule in rs.ELIG_RULES}
 
 
 @pytest.mark.parametrize(

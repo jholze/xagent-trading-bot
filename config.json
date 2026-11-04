@@ -2562,6 +2562,10 @@
         "sma_days": 50,
         "max_below_sma_pct": null
       }
-    }
+    },
+    "elig_liq7": {"mode": "shadow"},
+    "elig_collapse90": {"mode": "shadow"},
+    "elig_chase48": {"mode": "shadow"},
+    "elig_mcap": {"mode": "shadow"}
   }
 }
