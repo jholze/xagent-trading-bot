@@ -360,6 +360,12 @@ def test_run_loop_sends_no_protocol_ping_timeout_by_default():
         def run_forever(self, **kw):
             seen.append(kw)
 
+        def send(self, _msg):
+            pass
+
+        def close(self):
+            pass
+
     fake_ws = types.ModuleType("websocket")
     fake_ws.WebSocketApp = FakeApp
 
