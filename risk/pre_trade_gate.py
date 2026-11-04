@@ -49,6 +49,7 @@ VERDICT_BLOCK = "block"
 
 CODE_DB_ERROR = "db_error"
 CODE_NO_HISTORY = "no_history"
+CODE_TRUNCATED = "history_truncated"
 DECISION_CODE_BLOCK = "pre_trade_gate_block"
 OBSERVE_COLLECTION = "obs_pre_trade_gate"
 
@@ -122,7 +123,11 @@ def _block(config: Any) -> dict | None:
 
 
 def gate_mode(config: Any) -> str:
-    """``off`` | ``shadow`` | ``enforce``. Missing = off; malformed = enforce."""
+    """``off`` | ``shadow`` | ``enforce``. Missing = off; malformed = shadow.
+
+    A typo in the mode must not switch hard blocks on (config.json is promoted
+    to live), and must not silently drop the audit either, so it logs only.
+    """
     sub = _block(config)
     if sub is None or "mode" not in sub or sub.get("mode") is None:
         return MODE_OFF
@@ -130,7 +135,7 @@ def gate_mode(config: Any) -> str:
     if isinstance(value, bool):
         return MODE_ENFORCE if value else MODE_OFF
     text = str(value).strip().lower()
-    return text if text in MODES else MODE_ENFORCE
+    return text if text in MODES else MODE_SHADOW
 
 
 def _num(value: Any) -> float | None:
@@ -258,9 +263,11 @@ def _parse_ts(row: dict) -> datetime | None:
             dt = datetime.strptime(day, "%Y-%m-%d")
         except ValueError:
             return None
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
+        return dt  # calendar day, already a UTC-ish bucket
+    from core.time_utils import to_utc
+
+    # Naive ledger stamps are process-local wall clock (#320/#760), not UTC.
+    return to_utc(dt).replace(tzinfo=None)
 
 
 def _usdt(row: dict) -> float | None:
@@ -504,6 +511,7 @@ def evaluate_gate(
 
     try:
         history: HistoryStats | None = None
+        truncated = False
         lookback = _num(settings.get("lookback_days"))
         if lookback is not None and lookback > 0:
             pool = settings.get("pool_tenants") or []
@@ -518,6 +526,7 @@ def evaluate_gate(
                     tenant_ids=tids, scope=scope, symbol=symbol, since_day=since_day, limit=max_rows
                 ),
             )
+            truncated = len(rows) >= max_rows
             history = summarize_history(rows, now=now_utc, settings=settings)
 
         flags: dict[str, Any] = {}
@@ -542,9 +551,12 @@ def evaluate_gate(
             error=f"{type(exc).__name__}: {str(exc)[:200]}",
         )
 
-    return decide(
+    result = decide(
         history, flags, settings, is_dca=is_dca, dca_sma_ext_pct=dca_sma_ext_pct
     )
+    if truncated:  # older rows cut off: the counts are a lower bound, flag it
+        result.codes.append(CODE_TRUNCATED)
+    return result
 
 
 def log_line(result: GateResult, *, tenant_id: str, symbol: str, source: str) -> str:

@@ -768,7 +768,7 @@ def memory_history_rows(
                 "status": "filled",
                 "pnl": pnl,
                 "execution": {"usdt": proceeds},
-                "ts_event": ts.isoformat(),
+                "ts_event": closed_at.astimezone(UTC).isoformat(),  # aware: no local-clock guess
                 "day_key": ts.strftime("%Y-%m-%d"),
             })
     return rows

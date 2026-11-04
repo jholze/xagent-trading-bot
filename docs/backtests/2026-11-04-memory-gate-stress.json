@@ -18,7 +18,7 @@
    "start"
   ],
   "cost_tier": "stress",
-  "staging_sha": "94dc9fe9",
+  "staging_sha": "83a001e7",
   "reconciliation": "open lots in positions export 125, open on tape 138, both 125, export only 0, tape only 13"
  },
  "n_trials": 60,

@@ -2177,10 +2177,7 @@ class RiskManager:
 
         sym = order.symbol
         tenant = resolve_tenant_id()
-        try:
-            scope = resolve_tenant_scope()
-        except Exception:
-            scope = ""
+        scope = resolve_tenant_scope()  # errors go to _pre_trade_gate_crashed (fail closed)
         dca_ext = None
         settings = ptg.gate_settings(raw)
         dca_cfg = settings.get("dca") or {}

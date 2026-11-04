@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 from contextlib import ExitStack
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -67,7 +67,7 @@ def _sell(pnl, *, days_ago=5.0, usdt=1000.0, tenant="default", sym=SYM, oid=None
         "execution": {"usdt": usdt},
         "source": "exit_ws",
         "day_key": ts.strftime("%Y-%m-%d"),
-        "ts_event": ts.isoformat(),
+        "ts_event": ts.replace(tzinfo=timezone.utc).isoformat(),
     }
 
 
@@ -84,7 +84,7 @@ def _buy(*, days_ago=6.0, source="auto", signal="BUY", tenant="default", oid=Non
         "signal": signal,
         "execution": {"usdt": 1000.0},
         "day_key": ts.strftime("%Y-%m-%d"),
-        "ts_event": ts.isoformat(),
+        "ts_event": ts.replace(tzinfo=timezone.utc).isoformat(),
     }
 
 
@@ -132,7 +132,7 @@ def _gate(rows=None, events=None, *, cfg=None, is_dca=False, ext=None, h_err=Non
         ({"mode": "off"}, "off"),
         ({"mode": True}, "enforce"),
         ({"mode": False}, "off"),
-        ({"mode": "shdow"}, "enforce"),  # malformed must not lift the guard
+        ({"mode": "shdow"}, "shadow"),  # typo must not switch hard blocks on
     ],
 )
 def test_gate_mode(block, expected):
@@ -665,3 +665,41 @@ def test_harness_m_registered_and_trials_counted():
 
     assert "m" in sc.SCENARIOS
     assert sc.N_TRIALS == 60
+
+
+# --- review follow-ups (DeepSeek on #767) -----------------------------------
+
+
+def test_rm_enforce_scope_resolution_error_blocks():
+    with patch("core.tenant_context.resolve_tenant_scope", side_effect=RuntimeError("no scope")):
+        dec, _ = _run(_gcfg("enforce"), _order(), rows=[])
+    assert not dec.approved and dec.code == "pre_trade_gate_block"
+    with patch("core.tenant_context.resolve_tenant_scope", side_effect=RuntimeError("no scope")):
+        dec2, _ = _run(_gcfg("shadow"), _order(), rows=[])
+    assert dec2.approved
+
+
+def test_truncated_history_is_flagged():
+    rows = [_sell(10.0, days_ago=1 + i, oid=f"t{i}") for i in range(3)]
+    res = ptg.evaluate_gate(
+        symbol=SYM, source="auto", tenant_id="default", scope="demo",
+        config=_cfg_dict(max_rows=3, facts={"enabled": False}), now=NOW,
+        history_loader=lambda **kw: rows[: kw["limit"]], facts_loader=lambda **kw: [],
+    )
+    assert ptg.CODE_TRUNCATED in res.codes
+    res2 = ptg.evaluate_gate(
+        symbol=SYM, source="auto", tenant_id="default", scope="demo",
+        config=_cfg_dict(max_rows=50, facts={"enabled": False}), now=NOW,
+        history_loader=lambda **kw: rows, facts_loader=lambda **kw: [],
+    )
+    assert ptg.CODE_TRUNCATED not in res2.codes
+
+
+def test_naive_ledger_stamp_uses_process_clock():
+    from core.time_utils import to_utc
+
+    naive = datetime(2026, 1, 15, 12, 0, 0)
+    got = ptg._parse_ts({"ts_event": naive.isoformat()})
+    assert got == to_utc(naive).replace(tzinfo=None)
+    aware = ptg._parse_ts({"ts_event": "2026-01-15T12:00:00+00:00"})
+    assert aware == datetime(2026, 1, 15, 12, 0, 0)
