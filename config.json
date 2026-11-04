@@ -834,7 +834,7 @@
     "daily_return_pct": 0.5,
     "compound": true,
     "horizon_days": 365,
-    "plan_start_date": "2026-07-28",
+    "plan_start_date": null,
     "chart_default_days": 365
   },
   "observability": {

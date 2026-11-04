@@ -225,9 +225,19 @@ def resolve_plan_start_date(
     config_raw: dict | None = None,
     history_points: Sequence[dict] | None = None,
     fallback: date | None = None,
+    epoch_start: date | None = None,
 ) -> date:
+    """Plan start day.
+
+    The current ledger epoch start (``epoch_start``) wins: a ledger reset
+    restarts the plan without a config edit. A configured
+    ``portfolio_plan.plan_start_date`` only applies when it is later than the
+    epoch start (deliberate restart inside an epoch) or when there is no epoch.
+    """
     cfg = portfolio_plan_config(config_raw)
     configured = parse_plan_date(cfg.get("plan_start_date"))
+    if epoch_start and (configured is None or configured < epoch_start):
+        return epoch_start
     if configured:
         return configured
     if history_points:

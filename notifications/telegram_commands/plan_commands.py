@@ -88,6 +88,32 @@ def format_plan_report_html(
     return "\n".join(lines)
 
 
+def format_epoch_line(epoch: dict | None, pre_history: list[dict] | None) -> str:
+    """One line naming the ledger epoch and where the older numbers are."""
+    if not epoch or not epoch.get("started_at"):
+        return ""
+    try:
+        from services.ledger_epoch_view import epoch_start
+
+        start = epoch_start(epoch)
+        from core.time_utils import display_tz
+
+        when = start.astimezone(display_tz()).strftime("%Y-%m-%d %H:%M") if start else "?"
+    except Exception:
+        when = str(epoch.get("started_at"))[:16]
+    line = f"<i>Ledger-Epoch <code>{epoch.get('epoch_id') or '?'}</code> seit {when}"
+    pre = [p for p in (pre_history or []) if isinstance(p, dict) and p.get("nav") is not None]
+    if pre:
+        first = str(pre[0].get("date") or "?")[:10]
+        last = str(pre[-1].get("date") or "?")[:10]
+        try:
+            last_nav = f"${float(pre[-1]['nav']):,.0f}"
+        except (TypeError, ValueError):
+            last_nav = "?"
+        line += f" · vorher {first}…{last}, NAV zuletzt {last_nav} (in portfolio_nav_daily)"
+    return line + "</i>"
+
+
 def build_plan_payload() -> tuple[str, str | None, object]:
     """Return (html_report, chart_path_or_none, gap)."""
     from core.config import get_bot_config
@@ -105,10 +131,34 @@ def build_plan_payload() -> tuple[str, str | None, object]:
     snap = _portfolio_snapshot()
     nav = float(snap.get("total_value") or 0)
     init = float(snap.get("initial_capital") or initial_capital() or 0)
-    history = load_nav_history()
+    all_history = load_nav_history()
+
+    # Current ledger epoch (reset marker, else newest ledger_epochs doc): plan
+    # start, day counter, BTC HODL baseline and KPI windows all start there.
+    from services.ledger_epoch_view import (
+        epoch_start,
+        epoch_start_date,
+        load_current_epoch,
+        split_points,
+    )
+
+    try:
+        epoch = load_current_epoch()
+    except Exception:
+        epoch = {}
+    ep_start = epoch_start(epoch)
+    history, pre_history = split_points(all_history, ep_start)
+    if ep_start is not None:
+        try:
+            ep_cap = float(epoch.get("initial_capital") or 0)
+        except (TypeError, ValueError):
+            ep_cap = 0.0
+        if ep_cap > 0:
+            init = ep_cap
     plan_start = resolve_plan_start_date(
         config_raw=cfg.raw,
         history_points=history,
+        epoch_start=epoch_start_date(epoch),
     )
     try:
         from core.time_utils import now_display
@@ -135,18 +185,27 @@ def build_plan_payload() -> tuple[str, str | None, object]:
         mode = str(cfg.trading_mode or "")
 
     html = format_plan_report_html(gap=gap, plan_start=plan_start, mode=mode)
+    epoch_line = format_epoch_line(epoch, pre_history)
+    if epoch_line:
+        html = f"{html}\n{epoch_line}"
     try:
         from services.reporting.metrics import format_live_metrics_block
 
-        block = format_live_metrics_block(days=7)
+        block = format_live_metrics_block(
+            days=7, since=ep_start, start_equity=init if ep_start is not None else None
+        )
         if block:
             html = f"{html}\n\n{block}"
+        elif ep_start is not None:
+            html = f"{html}\n\n<i>Kennzahlen: noch keine geschlossenen Trades seit Epoch-Start.</i>"
     except Exception:
         pass
     try:
         from services.reporting.benchmark import format_btc_benchmark_line
 
-        bench = format_btc_benchmark_line(history)
+        bench = format_btc_benchmark_line(
+            history, start_nav=init if ep_start is not None else None
+        )
         if bench:
             html = f"{html}\n{bench}"
     except Exception:
