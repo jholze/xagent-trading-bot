@@ -40,16 +40,16 @@ These rules are fixed by Jens (2026-11-01, updated 2026-11-04). They override an
    - Tester is a separate role from coder and reviewers.
    - At least two different model families see every PR. Author and reviewer are never the same model family.
    - Every PR states which model reviewed it: one PR comment per review with the model id (confirmed from the Omnigent session's usage record) and the reviewed head commit.
-   - Interim rule (Jens, 2026-11-04): Claude is rate-limited until **2026-11-06 07:00 Europe/Berlin**. Until then DeepSeek also gives the final review. Afterwards Claude Opus reviews every PR merged in the meantime that touches a high-risk path; the catch-up list is kept by Kay (`opus_nachholen.md`) and findings become fix PRs against `staging`.
+   - Interim rule (Jens, 2026-11-04): Claude is rate-limited until **2026-11-06 07:00 Europe/Berlin**. Until then DeepSeek also gives the final review. Afterwards Claude Opus reviews every PR merged in the meantime that touches a high-risk path; the catch-up list is kept by Kay (`/workspace/umbau/opus_nachholen.md` on Kay's Grok Bot box; each affected PR also carries a review comment saying Opus is still due) and findings become fix PRs against `staging`.
 2. Tickets, issues, and pull-request titles are always in **English**.
 3. Development and tests run **locally only**. Bind local services to `127.0.0.1` (for the bot: `HOST=127.0.0.1`; its default is `0.0.0.0`).
-4. This project is **production** (real money, live trading state). No deploy (Railway or any other target), no live config changes, no orders, no account or paid-service creation. Do not run `scripts/deploy_staging.sh`, `scripts/deploy_test_branch.sh`, `scripts/railway_trigger_test_deploy.sh`, `railway variables`, or anything that writes to Railway or a Railway Mongo. Railway status, deployments, and logs may be read (read-only) to verify the `staging` auto-deploy.
+4. This project is **production** (real money, live trading state). No deploy (Railway or any other target), no live config changes, no orders, no account or paid-service creation. Do not run `scripts/deploy_staging.sh`, `scripts/deploy_test_branch.sh`, `scripts/railway_trigger_test_deploy.sh`, `railway variables`, or anything that writes to Railway or a Railway Mongo. Railway status, deployments, and logs may be read (read-only) to verify the `staging` auto-deploy; search logs for specific patterns and never copy log lines that contain secrets, tokens, or connection strings into any output.
 5. **Never read or print secrets**: `.env`, `.env.local`, `ngrok.log`, credentials files, tokens (also `.cursor/mcp.json` and similar local tool configs). The only exception is the Omnigent bot token described under "Omnigent access" below, used exactly as described there.
 6. **Merges** (Jens, 2026-11-04; replaces the 2026-11-01 22:57 rule). Kay may squash-merge a PR into `staging` himself only when **all** of these hold:
    - it is a proven improvement with evidence in the PR (tests, backtest, or paper-trading results; see "Evidence"),
    - it affects paper trading only,
    - the review gate passed (DeepSeek review on every PR; final review per rule 1),
-   - CI `unit` is green.
+   - CI `unit` is green and the branch is up to date with `staging` (rebased).
 
    Jens only: `main` (every merge to `main`, including the `staging` → `main` release), every deploy other than the `staging` auto-deploy that a permitted staging merge triggers, the live paths `aria_bot.py`, `execution/`, `risk/`, `*.live.json`, and anything else with real money. For those Kay opens the PR and stops. Kay may set the `owner-approved` label only for a staging merge he is allowed to do under this rule. Documentation-only PRs may be merged to `staging` after the review gate.
 
@@ -58,9 +58,9 @@ Workflow, roles, branch naming, and test commands: [`docs/workflow.md`](docs/wor
 ## Omnigent access (bot account `trading-bot`)
 
 - Kay works in Omnigent through his own bot account, handle `trading-bot`. It sees only the project **Trading bot** (ID `adba8ee6896849cd82e22bec7a881691`); any other project must be rejected. Check this with `list_projects` before the first use.
-- Token: on Jens' Mac in `~/.local/share/omnigent-bots/trading-bot.credentials` (JSON field `token`, file mode 0600). Send it as `Authorization: Bearer <token>`. Read it inside the same command that uses it (for example into a Python variable). Never print, echo, log, or write the token or `webhook_secret` to any file, ticket, PR, commit, or chat; no `set -x`.
+- Token: in the bot's credentials file on Jens' Mac (JSON field `token`, file mode 0600; Jens gives Kay the location, it is not repeated in this public repo). Send it as `Authorization: Bearer <token>`. Read it inside the same command that uses it (for example into a Python variable). Never print, echo, log, or write the token or `webhook_secret` to any file, ticket, PR, commit, or chat; no `set -x`.
 - Endpoint: `http://127.0.0.1:6767/mcp` when running on the Mac; otherwise the public MCP URL Jens provides. The token is valid only for `/mcp` and `/v1/chat/*`; other paths return 401, which is expected.
-- `create_session` always passes `project_id`, `host_id` `1201aea5000540c8a96378432409ef7c`, and the workspace `/Users/jholze/Documents/scripts/trading_bot` (or the task worktree).
+- `create_session` always passes `project_id`, the Mac's `host_id` (from Jens' instruction or `list_hosts`), and the workspace `/Users/jholze/Documents/scripts/trading_bot` (or the task worktree).
 - Review sessions: title `Kay review PR<n> <model>` (for example `Kay review PR770 deepseek`). Never create a second review session for the same PR and model; reuse the existing one (`list_sessions` with the project id first).
 - Feedback to Jens' assistant goes into a session of this project.
 
