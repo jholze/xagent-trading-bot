@@ -116,11 +116,46 @@ def test_defaults_all_off():
     assert rs.rule_config(raw, "elig_chase48")["max_above_48h_low_pct"] == 15
 
 
-def test_shipped_and_tenant_configs_enable_nothing():
-    assert not rs.any_elig_rule_on(get_config())
+def test_shipped_config_blocks_nothing():
+    # The shipped config.json may run eligibility rules in shadow (log only),
+    # never in enforce: the default tenant must not lose any BUY to them.
     # Tenant bodies live in Mongo tenant_configs; the repo ships only config.json.
+    for cfg in (get_config(), json.loads((ROOT / "config.json").read_text())):
+        modes = rs.elig_modes(cfg)
+        assert set(modes.values()) <= {rs.MODE_OFF, rs.MODE_SHADOW}, modes
+        assert rs.MODE_ENFORCE not in modes.values()
+        for rule in rs.RULES:
+            assert not rs.rule_enabled(cfg, rule), rule
+
+
+def test_shipped_config_runs_default_elig_in_shadow():
     raw = json.loads((ROOT / "config.json").read_text())
-    assert "rule_switches" not in raw or not rs.any_elig_rule_on(raw)
+    assert rs.elig_modes(raw) == {rule: rs.MODE_SHADOW for rule in rs.ELIG_RULES}
+
+
+def test_tenant_body_enforce_wins_over_shipped_shadow():
+    # henry keeps liq7/collapse90 in enforce from its Mongo body although the
+    # shipped config.json runs every elig rule in shadow (deep merge, #762 review).
+    from data_manager import _apply_trading_profile_merge
+
+    raw = json.loads((ROOT / "config.json").read_text())
+    body = {
+        "rule_switches": {
+            "elig_liq7": {"mode": "enforce"},
+            "elig_collapse90": {"mode": "enforce"},
+        }
+    }
+    merged = _apply_trading_profile_merge(raw, body)
+    modes = rs.elig_modes(merged)
+    assert modes["elig_liq7"] == rs.MODE_ENFORCE
+    assert modes["elig_collapse90"] == rs.MODE_ENFORCE
+    assert modes["elig_chase48"] == rs.MODE_SHADOW
+    assert modes["elig_mcap"] == rs.MODE_SHADOW
+    # sibling keys from config.json survive the overlay (no shallow replace)
+    assert "pre_trade_gate" in merged["rule_switches"]
+    # tenant without a body sees the shipped shadow modes
+    base = rs.elig_modes(_apply_trading_profile_merge(raw, None))
+    assert set(base.values()) == {rs.MODE_SHADOW}
 
 
 @pytest.mark.parametrize(
