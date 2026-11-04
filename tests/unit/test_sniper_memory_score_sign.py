@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -92,6 +93,9 @@ class TestPolarity:
         assert item_polarity({"text": GREEN}) == POSITIVE
         assert count_polarity([lesson, hit, {"text": DEPLOY}]) == (1, 1, 1)
 
+    def test_bare_string_tag_is_read(self):
+        assert item_polarity({"text": "", "tags": "skip"}) == item_polarity({"text": "", "tags": ["skip"]}) == NEGATIVE
+
 
 class TestChecklistSign:
     def test_warning_lesson_lowers_score(self):
@@ -118,7 +122,7 @@ class TestChecklistSign:
             rag_hit_count=1,
             rag_negative_count=1,
         )
-        assert float(m["score"]) == 2.0 - 0.5 - 0.4
+        assert float(m["score"]) == pytest.approx(2.0 - 0.5 - 0.4)
 
     def test_score_clamped(self):
         m = _mem(entry_bias="soft_block", dca_lesson_count=9, dca_lesson_negative_count=9, rag_hit_count=9, rag_negative_count=9)
@@ -135,6 +139,14 @@ class TestChecklistSign:
         d = _mem(rag_hit_count=1, rag_positive_count=5)
         e = _mem(rag_hit_count=1, rag_positive_count=1)
         assert float(d["score"]) == float(e["score"])
+
+    def test_direction_counts_without_total_are_trusted(self):
+        # Directional counts without a total (no producer writes this today) still
+        # act in the right direction: a warning never raises the score.
+        base = float(_mem()["score"])
+        assert float(_mem(dca_lesson_negative_count=2)["score"]) < base
+        assert float(_mem(rag_negative_count=2)["score"]) < base
+        assert float(_mem(dca_lesson_positive_count=2)["score"]) > base
 
     def test_total_checklist_score_lower_with_warning(self):
         cash = {"spendable_dca": 1000}
