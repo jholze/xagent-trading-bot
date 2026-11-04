@@ -663,8 +663,12 @@ def test_harness_m_history_has_no_lookahead_and_is_per_tenant():
 def test_harness_m_registered_and_trials_counted():
     from backtest.harness import scenarios as sc
 
+    from backtest.harness import trials
+
     assert "m" in sc.SCENARIOS
-    assert sc.N_TRIALS == 60
+    # The count grows with every registered family (#769); pin it to the registry, not a literal.
+    assert sc.N_TRIALS == trials.n_scenario_trials()
+    assert sc.N_TRIALS >= 60
 
 
 # --- review follow-ups (DeepSeek on #767) -----------------------------------

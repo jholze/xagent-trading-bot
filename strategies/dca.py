@@ -279,7 +279,7 @@ def dca_stop_in_grace(position: dict | None, strategy_params: dict | None) -> bo
     age = youngest_dca_age_hours(pos)
     # A future timestamp (negative age) is outside the window. It must not
     # pause the partial forever.
-    if age is None:
+    if age is None or age < 0:
         return False
     return age < grace_window_hours(strategy_params)
 
