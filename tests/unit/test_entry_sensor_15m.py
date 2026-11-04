@@ -41,7 +41,9 @@ def reset_sensor_state(tmp_path, monkeypatch):
     monkeypatch.setattr("strategies.decision_engine.get_bot_config", _active_sensor_config)
     monkeypatch.setattr(
         "data.cmc_market_cap.resolve_market_cap_usd",
-        lambda symbol, coin=None: 10_000_000,
+        # #711: above both long floors. The fixture coin (ATR 3 %) classifies
+        # stable, and the 20M stable floor now applies to new entries.
+        lambda symbol, coin=None: 25_000_000,
     )
     monkeypatch.setattr(
         "price_fetcher.is_gate_tradeable",

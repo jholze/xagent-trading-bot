@@ -966,9 +966,29 @@ class RiskManager:
                     resolve_long_market_cap_min_usd,
                 )
 
-                tier = _tier_key(
+                # #711: a new entry has no lot, so pos["strategy_tier"] is always
+                # empty here and _tier_key(None) fell back to volatile (5M) for
+                # every coin. Use the tier the buy path resolved for this order.
+                from strategies.entry_tier import entry_tier_for_order, normalize_tier
+
+                lot_tier = normalize_tier(
                     pos.get("strategy_tier") if isinstance(pos, dict) else None
                 )
+                resolved_tier = lot_tier or entry_tier_for_order(order, config=self.config)
+                if resolved_tier and not normalize_tier(getattr(order, "strategy_tier", None)):
+                    try:
+                        order.strategy_tier = resolved_tier
+                    except Exception:
+                        pass
+                if not resolved_tier:
+                    from logger import log as _mcap_log
+
+                    _mcap_log(
+                        f"long mcap floor {order.symbol}: strategy_tier unresolved, "
+                        "legacy volatile floor",
+                        "INFO",
+                    )
+                tier = _tier_key(resolved_tier)
                 min_mcap = float(
                     resolve_long_market_cap_min_usd(
                         tier,
@@ -1478,6 +1498,7 @@ class RiskManager:
             ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
             ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
             ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
+            strategy_tier=getattr(order, "strategy_tier", None),
         )
         approved_decision = RiskDecision(
             approved=True,
