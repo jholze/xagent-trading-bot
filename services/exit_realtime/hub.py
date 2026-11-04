@@ -38,6 +38,7 @@ DEFAULT_WATCHDOG_INTERVAL_SEC = 5.0
 DEFAULT_APP_PING_SEC = 15.0  # Gate app-level spot.ping, on top of the WS ping frame
 DEFAULT_SILENT_RECONNECT_SEC = 90.0  # connected but no tick on any pair -> force reconnect
 DEFAULT_STALE_RESUBSCRIBE_SEC = 300.0  # open-lot pair without a tick -> resubscribe it
+DEFAULT_FORCED_RECONNECT_MIN_GAP_SEC = 300.0  # no reconnect storm on a genuinely quiet stream
 DEFAULT_STABLE_CONNECTION_SEC = 60.0  # a connection this long resets the reconnect backoff
 DEFAULT_ATR_TTL_SEC = 900.0
 DEFAULT_ATR_FETCH_MAX_PER_REFRESH = 10
@@ -180,6 +181,12 @@ class ExitRealtimeHub:
         self._disconnected_at: float = 0.0
         self._last_app_ping: float = 0.0
         self._watchdog_thread: threading.Thread | None = None
+        self._last_forced_reconnect: float = 0.0
+        # Smallest (local now - Gate time_ms) seen on this connection: clock
+        # skew plus base latency. The stale guard measures age above it, so a
+        # host clock that runs ahead of Gate never mutes every tick (fail-open).
+        self._tick_lag_min: float | None = None
+        self._ws_send_lock = threading.Lock()
         self.sync_correlated_tier_watch()
         self._liq_stream: Any = None
         self._cascade_detector: Any = None
@@ -774,7 +781,7 @@ class ExitRealtimeHub:
         # max_tick_age_sec (backlog after a reconnect, a stuck stream). A tick
         # without a usable time stays allowed: the cycle path is the backstop.
         max_age = _cfg_float(cfg, "max_tick_age_sec", DEFAULT_MAX_TICK_AGE_SEC)
-        age = tick_age_seconds(time_ms)
+        age = self.stale_tick_age(time_ms)
         if max_age > 0 and age is not None and age > max_age:
             self._stats["ws_stale_tick_skip"] = int(self._stats.get("ws_stale_tick_skip") or 0) + 1
             if self._debounce_ok(sym, "ws_stale_tick_skip", cooldown, tenant_id=row_tenant):
@@ -1203,6 +1210,7 @@ class ExitRealtimeHub:
                 self._last_any_tick = now_m  # silent-stream clock starts at connect
                 self._pair_last_tick = {}
                 self._pair_last_resub = {}
+                self._tick_lag_min = None
                 down = (now_m - self._disconnected_at) if self._disconnected_at else 0.0
                 self._stats["last_disconnect_sec"] = round(down, 1)
                 failed: list[str] = []
@@ -1212,15 +1220,14 @@ class ExitRealtimeHub:
                 live_pairs = self._desired_gate_pairs()
                 for gp in live_pairs:
                     try:
-                        ws.send(
-                            json.dumps(
-                                {
-                                    "time": int(time.time()),
-                                    "channel": CHANNEL,
-                                    "event": "subscribe",
-                                    "payload": [gp],
-                                }
-                            )
+                        self._ws_send(
+                            ws,
+                            {
+                                "time": int(time.time()),
+                                "channel": CHANNEL,
+                                "event": "subscribe",
+                                "payload": [gp],
+                            },
                         )
                         self._subscribed.add(gp)
                         time.sleep(0.05)
@@ -1269,7 +1276,7 @@ class ExitRealtimeHub:
             except Exception as exc:
                 log(f"exit_realtime run_forever: {exc}", "WARNING")
             finally:
-                lasted = (time.monotonic() - self._connected_since) if self._connected_since else 0.0
+                lasted = self.connection_lasted()
                 self._disconnected_at = time.monotonic()
                 self._connected = False
                 self._stats["connected"] = False
@@ -1284,6 +1291,38 @@ class ExitRealtimeHub:
             backoff = next_backoff(backoff, lasted, base=base_backoff, cap=max_backoff, stable_sec=stable_sec)
             if self._stop.wait(backoff):
                 break
+
+    def connection_lasted(self, now: float | None = None) -> float:
+        """Seconds the current/last connection held (0 when on_open never ran).
+
+        ``_connected_since`` is cleared before ``run_forever`` and stamped by
+        ``on_open`` (which runs inside ``run_forever``), so after a drop this
+        is the real connection length that decides the backoff reset.
+        """
+        if not self._connected_since:
+            return 0.0
+        now_m = time.monotonic() if now is None else float(now)
+        return max(0.0, now_m - self._connected_since)
+
+    def stale_tick_age(self, time_ms: Any, now: float | None = None) -> float | None:
+        """Tick age above the connection's minimum observed lag (skew-corrected).
+
+        The raw age (``tick_age_seconds``) includes any host/Gate clock skew.
+        A host clock 60 s ahead would make every fresh tick look 60 s old and
+        mute all stops. The minimum lag on this connection absorbs that skew,
+        so only a tick that is late *relative to the stream* counts as stale.
+        """
+        raw = tick_age_seconds(time_ms, now=now)
+        if raw is None:
+            return None
+        lag_min = self._tick_lag_min
+        if lag_min is None or raw < lag_min:
+            self._tick_lag_min = lag_min = raw
+        return raw - lag_min
+
+    def _ws_send(self, ws: Any, payload: dict) -> None:
+        with self._ws_send_lock:
+            ws.send(json.dumps(payload))
 
     # ------------------------------------------------------------------ #710 watchdog
     def _watchdog_loop(self) -> None:
@@ -1315,7 +1354,7 @@ class ExitRealtimeHub:
         ping_sec = _cfg_float(cfg, "app_ping_sec", DEFAULT_APP_PING_SEC)
         if ping_sec > 0 and now_m - self._last_app_ping >= ping_sec:
             try:
-                ws.send(json.dumps({"time": int(time.time()), "channel": PING_CHANNEL}))
+                self._ws_send(ws, {"time": int(time.time()), "channel": PING_CHANNEL})
                 self._last_app_ping = now_m
                 self._stats["app_pings"] = int(self._stats.get("app_pings") or 0) + 1
                 out["pinged"] = True
@@ -1323,7 +1362,17 @@ class ExitRealtimeHub:
                 log(f"exit_realtime app ping: {exc}", "DEBUG")
         silent = _cfg_float(cfg, "silent_reconnect_sec", DEFAULT_SILENT_RECONNECT_SEC)
         since = max(self._last_any_tick, self._connected_since)
-        if silent > 0 and since > 0 and now_m - since >= silent and self._subscribed:
+        min_gap = _cfg_float(cfg, "forced_reconnect_min_gap_sec", DEFAULT_FORCED_RECONNECT_MIN_GAP_SEC)
+        with self._pos_lock:
+            has_book = bool(self._gate_to_symbol)
+        if (
+            silent > 0
+            and since > 0
+            and now_m - since >= silent
+            and (self._subscribed or has_book)
+            and (not self._last_forced_reconnect or now_m - self._last_forced_reconnect >= min_gap)
+        ):
+            self._last_forced_reconnect = now_m
             self._stats["watchdog_reconnects"] = int(self._stats.get("watchdog_reconnects") or 0) + 1
             log(
                 f"exit_realtime watchdog: no tick for {now_m - since:.0f}s on "
@@ -1333,7 +1382,8 @@ class ExitRealtimeHub:
             out["reconnect"] = True
             app = self._app or ws
             try:
-                app.close()
+                with self._ws_send_lock:
+                    app.close()
             except Exception as exc:
                 log(f"exit_realtime watchdog close: {exc}", "DEBUG")
             return out
@@ -1349,10 +1399,8 @@ class ExitRealtimeHub:
             if now_m - self._pair_last_resub.get(gp, 0.0) < stale:
                 continue
             try:
-                ws.send(
-                    json.dumps(
-                        {"time": int(time.time()), "channel": CHANNEL, "event": "subscribe", "payload": [gp]}
-                    )
+                self._ws_send(
+                    ws, {"time": int(time.time()), "channel": CHANNEL, "event": "subscribe", "payload": [gp]}
                 )
                 self._subscribed.add(gp)
                 self._pair_last_resub[gp] = now_m
@@ -1402,7 +1450,15 @@ def _fetch_live_atr_pct(symbol: str, timeframe: str, price: float) -> float | No
     # that must not be labelled "live". ATR(14) needs at least 15 bars.
     if df is None or getattr(df, "empty", True) or len(df) < 15:
         return None
-    ind = svc.indicators_from_df(df, timeframe, float(price or 1.0), symbol=symbol)
+    # ATR% against the last candle close, not the caller's lot price, so the
+    # (symbol, timeframe) cache is the same for every tenant.
+    try:
+        ref_px = float(df["close"].iloc[-1])
+    except Exception:
+        ref_px = float(price or 0)
+    if not ref_px > 0:
+        return None
+    ind = svc.indicators_from_df(df, timeframe, ref_px, symbol=symbol)
     if not ind:
         return None
     val = ind.get("atr_pct")
@@ -1440,7 +1496,7 @@ def resolve_row_atr(
         return hit[0], "cached"
     if budget is not None:
         if budget[0] <= 0:
-            return (hit[0], "cached") if hit else (reference, "reference")
+            return (hit[0], "stale_cached") if hit else (reference, "reference")
         budget[0] -= 1
     try:
         val = (fetch_fn or _fetch_live_atr_pct)(symbol, key[1], price)
@@ -1448,7 +1504,7 @@ def resolve_row_atr(
         log(f"exit_realtime atr fetch {symbol} {key[1]}: {exc}", "DEBUG")
         val = None
     if val is None:
-        return (hit[0], "cached") if hit else (reference, "reference")
+        return (hit[0], "stale_cached") if hit else (reference, "reference")
     with _atr_cache_lock:
         _atr_cache[key] = (float(val), now_m)
     return float(val), "live"

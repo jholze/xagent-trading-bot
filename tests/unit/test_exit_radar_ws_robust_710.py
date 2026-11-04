@@ -56,13 +56,15 @@ class TestStaleTickGuard:
 
     def test_stale_tick_is_not_evaluated_and_logged(self):
         h = self._hub_with_lot()
-        calls, lines = _eval_calls(h, time_ms=int((FIXED - 60.0) * 1000))
+        _eval_calls(h, time_ms=int((FIXED - 0.5) * 1000))  # baseline lag 0.5 s
+        calls, lines = _eval_calls(h, time_ms=int((FIXED - 60.5) * 1000))
         assert calls == []
         assert h.stats()["ws_stale_tick_skip"] == 1
         assert any("ws_stale_tick_skip symbol=AAA/USDT" in ln and "tick_age=60.0s" in ln for ln in lines)
 
     def test_envelope_time_is_used_when_result_has_none(self):
         h = self._hub_with_lot()
+        _eval_calls(h, envelope_ms=int(FIXED * 1000))
         calls, _ = _eval_calls(h, envelope_ms=int((FIXED - 45.0) * 1000))
         assert calls == [] and h.stats()["ws_stale_tick_skip"] == 1
 
@@ -71,8 +73,22 @@ class TestStaleTickGuard:
         calls, _ = _eval_calls(h)
         assert len(calls) == 1
 
+    def test_host_clock_ahead_does_not_mute_ticks(self):
+        # Host 60 s ahead of Gate: every raw age is ~60 s, the corrected age ~0.
+        h = self._hub_with_lot()
+        for lag in (60.2, 60.0, 60.4):
+            calls, _ = _eval_calls(h, time_ms=int((FIXED - lag) * 1000))
+            assert len(calls) == 1
+        assert h.stats()["ws_stale_tick_skip"] == 0
+
+    def test_future_tick_is_allowed(self):
+        h = self._hub_with_lot()
+        calls, _ = _eval_calls(h, time_ms=int((FIXED + 20.0) * 1000))
+        assert len(calls) == 1
+
     def test_guard_can_be_switched_off(self):
         h = self._hub_with_lot(max_tick_age_sec=0)
+        _eval_calls(h, time_ms=int(FIXED * 1000))
         calls, _ = _eval_calls(h, time_ms=int((FIXED - 600.0) * 1000))
         assert len(calls) == 1
 
@@ -156,6 +172,21 @@ def test_watchdog_forces_reconnect_on_a_silent_stream():
     assert any("forcing reconnect" in ln for ln in lines)
 
 
+def test_watchdog_forced_reconnects_are_rate_limited():
+    h, ws = _connected_hub()
+    assert h.watchdog_check(now=1091.0)["reconnect"]
+    h._ws, h._connected, h._connected_since, h._last_any_tick = ws, True, 1100.0, 1100.0
+    assert not h.watchdog_check(now=1200.0)["reconnect"]  # 109 s after the last forced one
+    assert h.watchdog_check(now=1400.0)["reconnect"]
+    assert ws.closed == 2
+
+
+def test_watchdog_reconnects_when_every_subscribe_failed():
+    h, ws = _connected_hub()
+    h._subscribed = set()  # all initial subscribes failed, book still has lots
+    assert h.watchdog_check(now=1091.0)["reconnect"] and ws.closed == 1
+
+
 def test_watchdog_quiet_stream_inside_window_is_left_alone():
     h, ws = _connected_hub()
     out = h.watchdog_check(now=1080.0)
@@ -204,6 +235,10 @@ def test_atr_fetch_budget_bounds_rest_calls():
     budget = [2]
     got = [resolve_row_atr(f"S{i}/USDT", "1h", price=1.0, reference=3.0, cfg={}, budget=budget, fetch_fn=fetch)[1] for i in range(4)]
     assert got == ["live", "live", "reference", "reference"] and len(calls) == 2
+    # an expired entry that cannot be refreshed is labelled stale, not fresh
+    assert resolve_row_atr(
+        "S0/USDT", "1h", price=1.0, reference=3.0, cfg={"atr_ttl_sec": 1}, budget=[0], fetch_fn=fetch, now=1e9
+    ) == (4.0, "stale_cached")
 
 
 def test_book_row_carries_live_atr():
@@ -227,3 +262,65 @@ def test_empty_candles_are_not_reported_as_live_atr():
         "AAA/USDT", "1h", price=1.0, reference=7.0, cfg={},
         fetch_fn=lambda *a: None,
     ) == (7.0, "reference")
+
+
+def test_live_atr_uses_candle_close_not_lot_price():
+    import pandas as pd
+
+    df = pd.DataFrame({"open": [1.0] * 20, "high": [1.1] * 20, "low": [0.9] * 20, "close": [2.0] * 20, "volume": [1.0] * 20})
+    seen = []
+
+    def _ind(self, frame, tf, price, symbol=None):
+        seen.append(price)
+        return {"atr_pct": 4.2}
+
+    with patch("services.market_service.MarketService._fetch_ohlcv", return_value=df), patch(
+        "services.market_service.MarketService.indicators_from_df", _ind
+    ):
+        assert hub_mod._fetch_live_atr_pct("AAA/USDT", "1h", 123.0) == pytest.approx(4.2)
+    assert seen == [2.0]
+
+
+# ----------------------------------------------------------------- _run_loop backoff (integration)
+def test_run_loop_resets_backoff_after_a_long_connection():
+    import sys
+    import types
+
+    clock = {"t": 1000.0}
+    lasts = iter([5.0, 5.0, 720.0, 5.0])
+
+    class FakeApp:
+        def __init__(self, url, on_open=None, on_message=None, on_error=None, on_close=None):
+            self.on_open, self.on_close = on_open, on_close
+
+        def send(self, _text):
+            pass
+
+        def close(self):
+            pass
+
+        def run_forever(self, **_kw):
+            self.on_open(self)
+            clock["t"] += next(lasts)
+            self.on_close(self)
+
+    fake_ws = types.ModuleType("websocket")
+    fake_ws.WebSocketApp = FakeApp
+    h = _hub()
+    h.update_book([_row("AAA/USDT")])
+    waits = []
+
+    class Stop:
+        def is_set(self):
+            return False
+
+        def wait(self, t):
+            waits.append(round(t, 3))
+            return len(waits) >= 4
+
+    h._stop = Stop()
+    with patch.dict(sys.modules, {"websocket": fake_ws}), patch(
+        "services.exit_realtime.hub.time.monotonic", side_effect=lambda: clock["t"]
+    ), patch("services.exit_realtime.hub.time.sleep"), patch.object(h, "_broadcast_gui"), _logs():
+        h._run_loop()
+    assert waits == [4.5, 6.75, 3.0, 4.5]
