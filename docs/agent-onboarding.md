@@ -8,7 +8,7 @@ Never copy secrets, tokens, .env contents or credentials into this file. -->
 - Workspace: `/Users/jholze/Documents/scripts/trading_bot`
 - Repo: `jholze/xagent-trading-bot`, default branch: `main`; integration / PR base branch: `staging`
 - Bot account handle: `trading-bot` (scope: this project only; access check 2026-11-04: `list_projects` shows only "Trading bot", a foreign project id returns `not_found`)
-- Omnigent host for sessions: `1201aea5000540c8a96378432409ef7c`
+- Omnigent host for sessions: Jens' Mac (host id from Jens' instruction or `list_hosts`, not repeated in this public repo)
 - Phase: production (real money, live trading state); `staging` = paper-trading bot
 - Filled in by / date: Kay (Grok Bot lead), 2026-11-01, updated 2026-11-04
 

@@ -6,7 +6,7 @@ describes who does what and how a change travels from ticket to merge.
 - Omnigent project: **Trading bot**, ID `adba8ee6896849cd82e22bec7a881691`
 - Workspace (Jens' Mac): `/Users/jholze/Documents/scripts/trading_bot`
 - Repo: `jholze/xagent-trading-bot`
-- Omnigent host: `1201aea5000540c8a96378432409ef7c` (Jens' Mac); Kay's bot account: `trading-bot` (sees this project only, see `AGENTS.md` "Omnigent access")
+- Omnigent host: Jens' Mac (host id from Jens' instruction or `list_hosts`); Kay's bot account: `trading-bot` (sees this project only, see `AGENTS.md` "Omnigent access")
 - PR base branch: **`staging`** (paper-trading bot). `main` is the release / live branch: Jens only.
 
 ## Roles and models
@@ -35,9 +35,10 @@ in `config.json`).
 3. **PR** — against `staging`, English title, PR body with an `## Evidence` heading (test result, before/after metric).
    Money path: `docs/evidence/<pr-or-issue>.md` with a before/after table; the `owner-approved` label is set by Jens, or by Kay for staging merges.
 4. **CI green** — required check `unit` (aggregates `classify`, `pytest`, `review-gates`, `hypothesis-evidence`, `ruff`).
-5. **Review** — DeepSeek per-PR review in an Omnigent session of this project (agent `deepseek_review`, title
+5. **Review** — DeepSeek per-PR review in an Omnigent session of this project (agent `deepseek_review`, verified with
+   `list_agents` on 2026-11-04; confirm the session's model from its usage record; title
    `Kay review PR<n> deepseek`, one session per PR and model, reused on re-review). Claude Opus final review (agent
-   `reviewer`, title `Kay review PR<n> opus`), mandatory for high-risk paths and before going live; interim DeepSeek
+   `reviewer`, verified the same way, title `Kay review PR<n> opus`), mandatory for high-risk paths and before going live; interim DeepSeek
    final review until 2026-11-06 07:00 Europe/Berlin. Each review is posted verbatim as a PR comment naming the model
    and the reviewed head. Real findings are fixed on the branch. Tester confirms acceptance tests.
 6. **Merge** — Merge rule (Jens, 2026-11-04; replaces the 2026-11-01 rule): Kay squash-merges into `staging` only a
