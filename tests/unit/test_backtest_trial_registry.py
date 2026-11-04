@@ -31,10 +31,24 @@ def test_all_modules_read_the_register():
     assert longwf.N_ALL == trials.n_all_trials() == trials.n_scenario_trials() + trials.n_longwf_trials()
 
 
+# Re-runs of an existing candidate set add no new trial; every other
+# scenario must count at least one variant (a 0 would understate N).
+RERUN_KEYS = {k for k, t in trials.SCENARIO_TRIALS.items() if k.endswith("_oct")}
+
+
+def test_only_reruns_count_zero():
+    for key, t in trials.SCENARIO_TRIALS.items():
+        if key in RERUN_KEYS:
+            assert t.trials == 0, key
+        else:
+            assert t.trials >= 1, f"{key} registers no trial"
+
+
 def test_known_totals_at_introduction():
-    # 12 (a-d) + 11 (e-h) + 27 (r_*) + 5 (k) = 55; long walk-forward adds 8.
+    # 12 (a-d) + 11 (e-h) + 27 (r_*) + 5 (k) + 5 (m, #767) = 60; long walk-forward adds 8.
     # Floor, not equality: N only grows when scenarios are added.
-    assert trials.n_scenario_trials() >= 55
+    assert trials.n_scenario_trials() >= 60
+    assert trials.n_all_trials() >= 68
     assert trials.n_longwf_trials() == 8
 
 
