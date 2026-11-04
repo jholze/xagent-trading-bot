@@ -91,3 +91,14 @@ def test_scenario_variants_match_register():
     assert names[0] == "baseline" and len(names) - 1 == trials.SCENARIO_TRIALS["p"].trials
     assert sc.PROFIT_PRIMARY in names and sc.PROFIT_T8 in names
 
+
+
+def test_fee_sweep_break_even_and_sign_changes():
+    from backtest.harness.fee_sweep import break_even, sign_changes
+
+    mono = {0.0: {"x": 100.0}, 0.5: {"x": 50.0}, 1.0: {"x": -50.0}}
+    assert break_even(mono, "x") == 0.75 and sign_changes(mono, "x") == 1
+    flip = {0.0: {"x": 10.0}, 0.5: {"x": -10.0}, 1.0: {"x": 30.0}}
+    assert break_even(flip, "x") == 0.25 and sign_changes(flip, "x") == 2
+    assert break_even({0.0: {"x": -1.0}, 1.0: {"x": 2.0}}, "x") == 0.0
+    assert break_even({0.0: {"x": 1.0}, 1.0: {"x": 2.0}}, "x") is None

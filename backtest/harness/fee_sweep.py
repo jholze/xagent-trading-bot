@@ -39,7 +39,12 @@ def sweep(ctx, variants, windows, tape_end, fees=FEES) -> dict:
 
 
 def break_even(points: dict, name: str) -> float | None:
-    """Lowest fee in the grid where the candidate's excess PnL turns <= 0 (linear interpolation)."""
+    """First fee in the grid where the candidate's excess PnL turns <= 0 (linear interpolation).
+
+    This is the *first* crossing only. A non-monotonic excess can turn positive
+    again at a higher fee; check ``sign_changes`` before calling it a break-even.
+    Already <= 0 at the lowest grid fee returns that fee. Never <= 0 returns None.
+    """
     fees = sorted(points)
     prev = None
     for f in fees:
@@ -51,6 +56,12 @@ def break_even(points: dict, name: str) -> float | None:
             return pf + (f - pf) * pv / (pv - v)
         prev = (f, v)
     return None
+
+
+def sign_changes(points: dict, name: str) -> int:
+    """How often the candidate's excess PnL changes sign across the fee grid."""
+    signs = [points[f][name] > 0 for f in sorted(points)]
+    return sum(1 for a, b in zip(signs, signs[1:]) if a != b)
 
 
 def main(argv=None) -> int:

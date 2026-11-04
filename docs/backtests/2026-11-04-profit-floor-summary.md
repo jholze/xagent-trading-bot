@@ -32,7 +32,7 @@ Recorded tape sells (trail, take-profit, rotation, manual) still apply as record
 - `pf_a8_trail3_f3`: the earlier TP recommendation (arm 8, 3 % trail from the peak high, floor +3 %)
 - `pf_a4_f0.5_close`: the primary, checked and filled on the candle close (stop-fill realism)
 
-`p_t8_rerun` and `p_oct` re-run the same candidates with another primary or another book, so they add 0 trials.
+`p_t8_rerun` and `p_oct` re-run the same candidates with another primary or another book, so they add 0 trials. The second primary (`pf_a8_trail3_f3`) was specified before the run, as the earlier TP recommendation. It was not re-picked after seeing the results, and DSR/CI/PBO use the full N=71.
 
 Scenario N is now 71. N over everything, including the long walk-forward, is 79.
 
