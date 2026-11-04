@@ -1,23 +1,24 @@
 # Workflow — Trading bot
 
-Status: 2026-11-01, written by Kay (Grok Bot lead). Operating rules are in [`AGENTS.md`](../AGENTS.md); this file
+Status: 2026-11-04 (first version 2026-11-01), written by Kay (Grok Bot lead). Operating rules are in [`AGENTS.md`](../AGENTS.md); this file
 describes who does what and how a change travels from ticket to merge.
 
 - Omnigent project: **Trading bot**, ID `adba8ee6896849cd82e22bec7a881691`
 - Workspace (Jens' Mac): `/Users/jholze/Documents/scripts/trading_bot`
 - Repo: `jholze/xagent-trading-bot`
+- Omnigent host: Jens' Mac (host id from Jens' instruction or `list_hosts`); Kay's bot account: `trading-bot` (sees this project only, see `AGENTS.md` "Omnigent access")
 - PR base branch: **`staging`** (paper-trading bot). `main` is the release / live branch: Jens only.
 
 ## Roles and models
 
 | Role | Who / model | Does | Does not |
 |------|-------------|------|----------|
-| Lead | Kay (Jens' Grok Bot lead) | Writes and scopes tickets (English), assigns coder/reviewer/tester, keeps one worktree per task, reports to Jens; may merge any PR into `staging` and set `owner-approved` for staging merges (merge rule below) | Merge to `main`, deploy (other than the `staging` auto-deploy), change live config, real money, keys, withdraw |
+| Lead | Kay (Jens' Grok Bot lead) | Writes and scopes tickets (English), assigns coder/reviewer/tester, keeps one worktree per task, reports to Jens; may merge into `staging` and set `owner-approved` only for proven paper-only improvements (merge rule below) | Merge to `main`, merge PRs touching `aria_bot.py`/`execution/`/`risk/`/`*.live.json` or real money, deploy (other than the `staging` auto-deploy), change live config, keys, withdraw |
 | Coder | Grok 4.7 (`grok-4.7`) | Implements one ticket on one branch in one worktree, runs the unit suite locally, opens the PR against `staging` | Review own PR, touch secrets, push to `staging`/`main` |
 | Reviewer (per PR) | DeepSeek (`deepseek-v4-pro`) | Line-by-line review of every PR: spec/AC coverage, frozen tests, money-path impact, evidence | Write the code under review |
-| Final reviewer | Claude Opus (`claude-opus-5-5`) | Mandatory final review (real money). Always before anything goes live and for every PR touching a high-risk path | Merge |
+| Final reviewer | Claude Opus (`claude-opus-5-5`) | Mandatory final review (real money). Always before anything goes live and for every PR touching a high-risk path. Interim: until 2026-11-06 07:00 Europe/Berlin DeepSeek gives the final review; afterwards Opus re-reviews every high-risk PR merged in between | Merge |
 | Tester | Separate role (not the coder) | Runs the tests / acceptance checks locally and records the result as evidence | Change existing assertions to make tests pass |
-| Owner | Jens Holze | Merges to `main`, deploys (other than the `staging` auto-deploy), releases `staging` → `main`, real money, keys, withdraw; may also set `owner-approved` | — |
+| Owner | Jens Holze | Merges to `main`, merges PRs on live paths (`aria_bot.py`, `execution/`, `risk/`, `*.live.json`) and anything with real money, every deploy (other than the `staging` auto-deploy), releases `staging` → `main`, keys, withdraw; may also set `owner-approved` | — |
 
 Model-family rule: at least two different model families see every PR, and the author and the reviewer are never the
 same family (Grok codes → DeepSeek and Claude review).
@@ -34,11 +35,23 @@ in `config.json`).
 3. **PR** — against `staging`, English title, PR body with an `## Evidence` heading (test result, before/after metric).
    Money path: `docs/evidence/<pr-or-issue>.md` with a before/after table; the `owner-approved` label is set by Jens, or by Kay for staging merges.
 4. **CI green** — required check `unit` (aggregates `classify`, `pytest`, `review-gates`, `hypothesis-evidence`, `ruff`).
-5. **Review** — DeepSeek per-PR review; Claude Opus final review (mandatory for high-risk paths and before going live).
-   Tester confirms acceptance tests.
-6. **Merge** — Merge rule for this project (Jens, 2026-11-01 22:57; replaces the 22:32 rule): Kay may merge any PR into `staging` himself, including PRs touching money paths and live paths (`aria_bot.py`, `execution/`, `risk/`, `*.live.json`), and may set the `owner-approved` label for staging merges. Jens only: merges to `main`, deploys other than the `staging` auto-deploy, real money, keys, withdraw. Kay's own quality bar before every staging merge: green CI `unit`, evidence in the PR, a DeepSeek review on every PR, and a Claude Opus review when a high-risk path is touched. Model rule unchanged: Grok 4.7 codes, DeepSeek reviews every PR, Claude Opus final review before anything live and on risky paths, at least two model families per PR, author and reviewer never the same family. Merging to `staging` deploys the paper bot (`xagent-test`).
+5. **Review** — DeepSeek per-PR review in an Omnigent session of this project (agent `deepseek_review`, verified with
+   `list_agents` on 2026-11-04; confirm the session's model from its usage record; title
+   `Kay review PR<n> deepseek`, one session per PR and model, reused on re-review). Claude Opus final review (agent
+   `reviewer`, verified the same way, title `Kay review PR<n> opus`), mandatory for high-risk paths and before going live; interim DeepSeek
+   final review until 2026-11-06 07:00 Europe/Berlin. Each review is posted verbatim as a PR comment naming the model
+   and the reviewed head. Real findings are fixed on the branch. Tester confirms acceptance tests.
+6. **Merge** — Merge rule (Jens, 2026-11-04; replaces the 2026-11-01 rule): Kay squash-merges into `staging` only a
+   proven improvement with evidence in the PR (tests, backtest or paper trading), paper trading only, review gate
+   passed, CI `unit` green, branch rebased on `staging`. Documentation-only PRs may be merged after the review gate.
+   PRs touching `aria_bot.py`, `execution/`, `risk/`, `*.live.json`, or anything with real money: Kay opens the PR and
+   stops; Jens merges. Merging to `staging` deploys the paper bot (`xagent-test`, Railway environment `test`); Kay
+   verifies the deployment read-only (status SUCCESS, no new tracebacks) and logs it.
 7. **Release** — `staging` → `main` PR (`gh pr create --base main --head staging`, see `DOCUMENTATION.en.md` §17),
    opened and merged by Jens only.
+
+How code reaches `main`: only through the `staging` → `main` release PR, opened and merged by Jens. No topic branch
+targets `main`.
 
 Back channel: the lead reports to Jens' assistant in a session of the Omnigent project above.
 
@@ -60,7 +73,8 @@ git worktree add -b <type>/<slug> /Users/jholze/Documents/scripts/trading_bot-wo
 # <branch-slug> = branch name with "/" replaced by "-", e.g. fix-dca-trail-new-peak-558
 ```
 
-Never work in the main checkout. Removing a worktree is Jens' decision.
+Never work in the main checkout. Removing a worktree is Jens' decision. Kay's own worktrees on the Grok Bot box live
+under `/workspace/wt-<slug>`; they are scratch copies of the same branches and never replace the PR.
 
 ## Test commands
 
