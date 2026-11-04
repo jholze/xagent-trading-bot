@@ -116,6 +116,17 @@ def test_first_fill_stamps_tier_and_dca_does_not_overwrite(clean_store):
     assert get_position("XYZ/USDT", "1h")["strategy_tier"] == "stable"
 
 
+def test_tier_source_survives_serialize_roundtrip(clean_store):
+    from strategies.positions import _deserialize_position, _serialize_positions, get_key
+
+    update_position("RTP/USDT", "1h", "BUY", 1.0, 10, strategy_tier="stable")
+    key = get_key("RTP/USDT", "1h")
+    raw = _serialize_positions(store={key: positions[key]}, scope="demo")["positions"][key]
+    assert raw["strategy_tier_source"] == "entry"
+    back = _deserialize_position(raw)
+    assert back["strategy_tier"] == "stable" and back["strategy_tier_source"] == "entry"
+
+
 def test_invalid_or_missing_tier_leaves_lazy_lock_path(clean_store):
     update_position("XYZ/USDT", "1h", "BUY", 1.0, 10, strategy_tier="mid")
     assert not get_position("XYZ/USDT", "1h").get("strategy_tier")

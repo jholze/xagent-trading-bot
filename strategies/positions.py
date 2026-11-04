@@ -504,6 +504,7 @@ def _deserialize_position(raw: dict) -> dict:
         "last_cmc_sell_at": raw.get("last_cmc_sell_at"),
         "recent_high": float(raw.get("recent_high", 0)),
         "strategy_tier": raw.get("strategy_tier"),
+        "strategy_tier_source": raw.get("strategy_tier_source"),
         "exit_ladder_step": int(raw.get("exit_ladder_step", 0) or 0),
         "dca_rounds": int(raw.get("dca_rounds", 0) or 0),
         "dca_max_rounds": int(raw.get("dca_max_rounds", 0) or 0),
@@ -612,6 +613,7 @@ def _serialize_positions(store: dict | None = None, scope: str | None = None) ->
             "last_cmc_sell_at": p.get("last_cmc_sell_at"),
             "recent_high": float(p.get("recent_high", 0)),
             "strategy_tier": p.get("strategy_tier"),
+            "strategy_tier_source": p.get("strategy_tier_source"),
             "exit_ladder_step": int(p.get("exit_ladder_step", 0) or 0),
             "dca_rounds": int(p.get("dca_rounds", 0) or 0),
             "dca_max_rounds": int(p.get("dca_max_rounds", 0) or 0),
@@ -2492,6 +2494,7 @@ def _active_lot_from_store_key(key: str, p: dict) -> dict:
         "highlight": highlight,
         # overlays needed by sniper / lock / board (not order-derived)
         "strategy_tier": p.get("strategy_tier"),
+        "strategy_tier_source": p.get("strategy_tier_source"),
         "dca_rounds": int(p.get("dca_rounds") or 0),
         "dca_heavy_used": bool(p.get("dca_heavy_used")),
         "recovery_hold": bool(p.get("recovery_hold")),
