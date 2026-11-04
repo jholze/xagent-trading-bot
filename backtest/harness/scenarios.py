@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -55,8 +55,8 @@ ENTRY_WINDOWS = tuple(_berlin_window(*w) for w in efr.WINDOWS)
 
 # Every candidate variant evaluated by this harness run (3 per scenario).
 # DSR deflates each primary candidate against all of them.
-N_TRIALS = 55  # 12 from (a)-(d) + 11 loser-coin candidates (e)-(h) + 27 regime-conditional (r_*), 2026-11-01
-# + 5 criteria-eligibility variants (k), 2026-11-02
+N_TRIALS = 60  # 12 from (a)-(d) + 11 loser-coin candidates (e)-(h) + 27 regime-conditional (r_*), 2026-11-01
+# + 5 criteria-eligibility variants (k), 2026-11-02 + 5 memory-gate variants (m), 2026-11-04
 
 
 @dataclass
@@ -717,3 +717,138 @@ def scenario_k(ctx: Context) -> ScenarioResult:
 
 
 SCENARIOS["k"] = scenario_k
+
+
+# ---------------------------------------------------------------------------
+# (m) Pre-buy memory gate (2026-11-04, plan memory_gate §3). Live code:
+# risk.pre_trade_gate (rule_switches.pre_trade_gate). The coin history for an
+# entry is built only from tape episodes of the same tenant (or the pooled
+# tenants) and symbol that went flat BEFORE the signal, so there is no
+# lookahead. One closed episode = one closed trade, pnl = sell USDT - buy USDT
+# from the tape (the live gate counts each filled sell; partial sells are one
+# episode here). Verdict and metrics come from the live functions
+# ``summarize_history`` and ``decide``; block -> entry dropped, reduce ->
+# size multiplier. Coin-fact flags need a market-events export and the DCA
+# trend rule needs an add filter; both are not in this scenario (follow-up).
+def _closed_trades_index(episodes: list[Episode]) -> dict[tuple[str, str], list[tuple[datetime, float, float]]]:
+    idx: dict[tuple[str, str], list[tuple[datetime, float, float]]] = {}
+    for ep in episodes:
+        if ep.closed_at is None:
+            continue
+        buys = sum(f.usdt for f in ep.events if f.side == "buy")
+        sells = sum(f.usdt for f in ep.events if f.side == "sell")
+        idx.setdefault((ep.tenant, ep.symbol), []).append((ep.closed_at, sells - buys, sells))
+    for v in idx.values():
+        v.sort(key=lambda t: t[0])
+    return idx
+
+
+def memory_history_rows(
+    idx: dict[tuple[str, str], list[tuple[datetime, float, float]]],
+    ep: Episode,
+    *,
+    lookback_days: float,
+    pool: tuple[str, ...] = (),
+) -> list[dict]:
+    """Gate-shaped sell rows for trades closed strictly before ``ep``'s signal."""
+    sig = ep.entry.ts
+    lo = sig - timedelta(days=lookback_days)
+    rows: list[dict] = []
+    for tenant in sorted({ep.tenant, *pool}):
+        for closed_at, pnl, proceeds in idx.get((tenant, ep.symbol), []):
+            if closed_at >= sig:
+                break
+            if closed_at < lo:
+                continue
+            ts = closed_at.astimezone(UTC).replace(tzinfo=None)
+            rows.append({
+                "tenant_id": tenant,
+                "symbol": ep.symbol,
+                "side": "sell",
+                "status": "filled",
+                "pnl": pnl,
+                "execution": {"usdt": proceeds},
+                "ts_event": ts.isoformat(),
+                "day_key": ts.strftime("%Y-%m-%d"),
+            })
+    return rows
+
+
+def _memory_gate(
+    ctx: Context, settings: dict, *, pool: tuple[str, ...], hits: dict
+) -> tuple[Callable[[Episode], bool | None], Callable[[Episode], float]]:
+    from risk import pre_trade_gate as ptg
+
+    idx = _closed_trades_index(ctx.episodes)
+    memo: dict[tuple, object] = {}
+
+    def verdict(ep: Episode):
+        key = (ep.key, ep.entry.ts)
+        if key not in memo:
+            rows = memory_history_rows(idx, ep, lookback_days=float(settings["lookback_days"]), pool=pool)
+            now = ep.entry.ts.astimezone(UTC).replace(tzinfo=None)
+            hist = ptg.summarize_history(rows, now=now, settings=settings)
+            res = ptg.decide(hist, {}, settings)
+            memo[key] = res
+            for c in res.codes:
+                hits.setdefault(c, set()).add(key)
+        return memo[key]
+
+    def keep(ep: Episode) -> bool | None:
+        return verdict(ep).verdict != ptg.VERDICT_BLOCK
+
+    def mult(ep: Episode) -> float:
+        return float(verdict(ep).size_mult or 1.0) if verdict(ep).verdict == ptg.VERDICT_REDUCE else 1.0
+
+    return keep, mult
+
+
+def _gate_settings_from_config(**over) -> dict:
+    from data_manager import get_config
+    from risk import pre_trade_gate as ptg
+
+    raw = get_config()
+    s = ptg.gate_settings(raw)
+    s.update(over)
+    return s
+
+
+def scenario_m(ctx: Context) -> ScenarioResult:
+    hits: dict = {}
+    shipped = _gate_settings_from_config()
+    tenants = tuple(sorted({ep.tenant for ep in ctx.episodes}))
+
+    def _p(name: str, settings: dict, *, pool: tuple[str, ...] = (), sink: dict | None = None,
+           sizing: bool = True) -> Policy:
+        keep, mult = _memory_gate(ctx, settings, pool=pool, hits=sink if sink is not None else {})
+        return policy(name, ref=None, escalate=True, entry_filter=keep, size_multiplier=mult if sizing else None)
+
+    variants = [
+        (policy("baseline", ref=None, escalate=True), "all recorded entries"),
+        (_p("m_hist", shipped, sink=hits),
+         "shipped rule_switches.pre_trade_gate: block (>=2 losses and weighted net <= -100, or 14 d big loss), reduce x0.5"),
+        (_p("m_hist_block_only", shipped, sizing=False), "same blocks, no size reduction"),
+        (_p("m_hist_lenient", dict(shipped, block_min_losses=3)), "history block only from 3 losses"),
+        (_p("m_hist_no_recent", dict(shipped, recent_days=None)), "without the 14-day big-loss block"),
+        (_p("m_hist_pooled", shipped, pool=tenants), "history pooled over all tape tenants"),
+    ]
+    res = _evaluate(
+        ctx,
+        key="m",
+        title="Pre-buy memory gate (coin history, no coin names)",
+        question="Does skipping/shrinking entries on coins with a bad closed-trade history beat staging?",
+        mode="entries",
+        windows=ENTRY_WINDOWS,
+        variants=variants,
+        baseline="baseline",
+        primary="m_hist",
+        notes=[
+            "N_TRIALS = 60 (55 before + 5 new memory-gate variants).",
+            "History = tape episodes closed before the signal (no lookahead); facts and DCA trend rule not replayed.",
+        ],
+    )
+    res.notes.append(f"Primary codes: { {k: len(v) for k, v in hits.items()} }")
+    return res
+
+
+SCENARIOS["m"] = scenario_m

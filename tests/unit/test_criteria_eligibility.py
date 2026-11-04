@@ -427,5 +427,5 @@ def test_parity_with_harness_scenario_k():
 def test_harness_n_trials_counts_scenario_k():
     from backtest.harness import scenarios as sc
 
-    assert sc.N_TRIALS == 55
+    assert sc.N_TRIALS >= 55  # later scenarios add trials (m: 60)
     assert "k" in sc.SCENARIOS

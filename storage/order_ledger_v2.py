@@ -726,6 +726,15 @@ class OrderLedgerV2(Protocol):
         limit: int = 500,
     ) -> list[dict]: ...
     def get_day_stats(self, tenant_id: str, scope: str, day_key: str) -> dict: ...
+    def query_symbol_fills(
+        self,
+        tenant_ids: list[str],
+        scope: str,
+        symbol: str,
+        since_day: str,
+        *,
+        limit: int = 2000,
+    ) -> list[dict]: ...
     def rebuild_day_stats(self, tenant_id: str, scope: str, day_key: str) -> dict: ...
     def full_blob_load_count(self) -> int: ...
     def ensure_indexes(self) -> None: ...
@@ -828,6 +837,35 @@ class MemoryOrderLedgerV2:
             if len(out) >= max(1, limit):
                 break
         return out
+
+    def query_symbol_fills(
+        self,
+        tenant_ids: list[str],
+        scope: str,
+        symbol: str,
+        since_day: str,
+        *,
+        limit: int = 2000,
+    ) -> list[dict]:
+        """Filled orders of one symbol for *tenant_ids* with ``day_key >= since_day``.
+
+        Read-only. Used by the pre-buy memory gate (``risk/pre_trade_gate``).
+        Newest first, at most *limit* rows.
+        """
+        tids = {str(t) for t in tenant_ids if t}
+        sym = str(symbol or "")
+        with self._lock:
+            docs = [
+                d
+                for d in self._orders.values()
+                if str(d.get("tenant_id") or "") in tids
+                and str(d.get("ledger_scope") or "") == scope
+                and str(d.get("symbol") or "") == sym
+                and is_executed_status(str(d.get("status") or "").lower())
+                and str(d.get("day_key") or "") >= since_day
+            ]
+        docs.sort(key=lambda d: str(d.get("ts_event") or d.get("day_key") or ""), reverse=True)
+        return [public_order_view(d) | {"ts_event": d.get("ts_event")} for d in docs[: max(1, int(limit))]]
 
     def get_day_stats(self, tenant_id: str, scope: str, day_key: str) -> dict:
         sid = compound_day_stats_id(tenant_id, scope, day_key)
@@ -987,6 +1025,52 @@ class MongoOrderLedgerV2:
             .limit(max(1, int(limit)))
         )
         return [public_order_view(d) for d in cur]
+
+    def query_symbol_fills(
+        self,
+        tenant_ids: list[str],
+        scope: str,
+        symbol: str,
+        since_day: str,
+        *,
+        limit: int = 2000,
+    ) -> list[dict]:
+        """Filled orders of one symbol for *tenant_ids* with ``day_key >= since_day``.
+
+        Read-only (``find`` with a projection). Errors propagate: the caller
+        (pre-buy memory gate) decides fail-closed. Uses the
+        ``tenant_scope_status_day`` index prefix.
+        """
+        tids = sorted({str(t) for t in tenant_ids if t})
+        filt: dict[str, Any] = {
+            "tenant_id": {"$in": tids},
+            "ledger_scope": scope,
+            "status": OrderStatus.EXECUTED.value,
+            "day_key": {"$gte": since_day},
+            "symbol": str(symbol or ""),
+        }
+        projection = {
+            "_id": 0,
+            "id": 1,
+            "tenant_id": 1,
+            "symbol": 1,
+            "side": 1,
+            "status": 1,
+            "pnl": 1,
+            "source": 1,
+            "signal": 1,
+            "day_key": 1,
+            "ts_event": 1,
+            "timestamps": 1,
+            "execution.usdt": 1,
+        }
+        cur = (
+            self._db()[ORDERS_V2_COLLECTION]
+            .find(filt, projection)
+            .sort([("day_key", -1)])
+            .limit(max(1, int(limit)))
+        )
+        return [dict(d) for d in cur]
 
     def get_day_stats(self, tenant_id: str, scope: str, day_key: str) -> dict:
         doc = self._db()[DAY_STATS_COLLECTION].find_one(

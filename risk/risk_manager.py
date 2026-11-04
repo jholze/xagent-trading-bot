@@ -1068,6 +1068,17 @@ class RiskManager:
         if merge_reject is not None:
             return merge_reject
 
+        # Pre-buy memory gate (risk/pre_trade_gate): the one coin-history +
+        # coin-facts check for every bot BUY (all entry sources and DCA adds).
+        # Manual buys are exempt. ``shadow`` logs only; ``enforce`` blocks or
+        # scales the final size. Mode off = nothing is read.
+        try:
+            gate_block, gate_mult = self._pre_trade_gate(order, source, is_dca=is_dca)
+        except Exception as e:
+            gate_block, gate_mult = self._pre_trade_gate_crashed(e, order), None
+        if gate_block is not None:
+            return gate_block
+
         base_usdt = order.usdt_amount or self._base_usdt_cap()
         if source == "cmc":
             fusion = self.config.cmc_trending_fusion_config
@@ -1228,6 +1239,10 @@ class RiskManager:
             factors["vol_sizing_mult"] = round(float(vol_mult), 4)
             factors["vol_sizing_rv"] = rule_ctx.get("vol_rv")
             sized = float(sized) * float(vol_mult)
+
+        if gate_mult is not None and float(gate_mult) < 1.0:
+            factors["pre_trade_gate_mult"] = round(float(gate_mult), 4)
+            sized = float(sized) * float(gate_mult)
 
         equity = self._equity_for_sizing(order.price, order.symbol)
         pos_value = float(pos.get("amount", 0)) * order.price
@@ -2139,6 +2154,102 @@ class RiskManager:
             details=details,
         )
         return BuyLockResult(decision=decision, apply_cap=False, **fields)
+
+    def _pre_trade_gate(
+        self, order: TradeOrder, source: str, *, is_dca: bool
+    ) -> "tuple[RiskDecision | None, float | None]":
+        """Run ``risk.pre_trade_gate`` for one BUY. Returns (block decision, size mult).
+
+        Off: (None, None) and no reads. Shadow: logs + audit row, (None, None).
+        Enforce: block -> RiskDecision ``pre_trade_gate_block``; reduce -> mult.
+        A read error is a block in enforce (fail-closed) and only logged in shadow.
+        """
+        if str(getattr(order, "type", "") or "").upper() != "BUY":
+            return None, None
+        from risk import pre_trade_gate as ptg
+        from risk import rule_switches as rs
+
+        raw = self.config.raw if hasattr(self.config, "raw") else {}
+        mode = ptg.gate_mode(raw)
+        if mode == ptg.MODE_OFF or rs.is_manual_source(source):
+            return None, None
+        from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+
+        sym = order.symbol
+        tenant = resolve_tenant_id()
+        try:
+            scope = resolve_tenant_scope()
+        except Exception:
+            scope = ""
+        dca_ext = None
+        settings = ptg.gate_settings(raw)
+        dca_cfg = settings.get("dca") or {}
+        sma_days = ptg._num(dca_cfg.get("sma_days"))
+        if is_dca and sma_days and ptg._num(dca_cfg.get("max_below_sma_pct")) is not None:
+            try:
+                daily = rs.closed_bars(
+                    self._rule_switch_bars(sym, "1d", int(sma_days) + 5),
+                    self._rule_switch_now(),
+                    rs.DAY,
+                )
+                _, dca_ext = rs.sma_extension(daily, int(sma_days))
+            except Exception:
+                dca_ext = None
+        result = ptg.evaluate_gate(
+            symbol=sym,
+            source=str(source or ""),
+            tenant_id=tenant,
+            scope=scope,
+            config=raw,
+            is_dca=is_dca,
+            dca_sma_ext_pct=dca_ext,
+        )
+        ptg.record_decision(
+            result,
+            tenant_id=tenant,
+            symbol=sym,
+            source=str(source or ""),
+            is_dca=is_dca,
+            order_usdt=getattr(order, "usdt_amount", None),
+        )
+        if result.mode != ptg.MODE_ENFORCE:
+            return None, None
+        if result.blocks:
+            return (
+                RiskDecision(
+                    approved=False,
+                    message=(
+                        f"Pre-trade memory gate: {','.join(result.codes) or 'block'}"
+                    ),
+                    code=ptg.DECISION_CODE_BLOCK,
+                    size_multiplier=0.0,
+                ),
+                None,
+            )
+        if result.verdict == ptg.VERDICT_REDUCE:
+            return None, float(result.size_mult)
+        return None, None
+
+    def _pre_trade_gate_crashed(self, exc: BaseException, order: TradeOrder) -> "RiskDecision | None":
+        """Unexpected gate crash: block in enforce (fail-closed), log in shadow/off."""
+        from logger import log
+        from risk import pre_trade_gate as ptg
+
+        raw = self.config.raw if hasattr(self.config, "raw") else {}
+        mode = ptg.gate_mode(raw)
+        log(
+            f"pre_trade_gate crashed symbol={getattr(order, 'symbol', '?')} "
+            f"mode={mode}: {type(exc).__name__}: {exc}",
+            "ERROR",
+        )
+        if mode != ptg.MODE_ENFORCE:
+            return None
+        return RiskDecision(
+            approved=False,
+            message=f"Pre-trade memory gate error: {type(exc).__name__}",
+            code=ptg.DECISION_CODE_BLOCK,
+            size_multiplier=0.0,
+        )
 
     def _eligibility_check(self, order: TradeOrder, *, pos: dict, has_position: bool):
         """Criteria eligibility for one BUY (``services.venue_quality``).

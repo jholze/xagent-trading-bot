@@ -2531,5 +2531,37 @@
     "standalone": true,
     "ws_move_pct": 1.5,
     "redis_enabled": true
+  },
+  "rule_switches": {
+    "pre_trade_gate": {
+      "_doc": "Pre-buy memory gate (risk/pre_trade_gate.py). mode off|shadow|enforce; shadow logs 'pre_trade_gate ...' and writes obs_pre_trade_gate, never blocks. A numeric rule is inactive while its threshold is null. Values are not backtested yet (harness scenario m is a follow-up).",
+      "mode": "shadow",
+      "lookback_days": 90,
+      "pool_tenants": [],
+      "loss_min_usdt": 1.0,
+      "half_life_days": 30,
+      "block_min_losses": 2,
+      "block_net_loss_usdt": 100.0,
+      "recent_days": 14,
+      "recent_loss_pct": 25.0,
+      "recent_loss_usdt": 500.0,
+      "reduce_min_losses": 1,
+      "reduce_net_loss_usdt": 0.0,
+      "reduce_mult": 0.5,
+      "min_mult": 0.25,
+      "max_rows": 2000,
+      "cache_ttl_sec": 60,
+      "facts": {
+        "enabled": true,
+        "lookback_hours": 336,
+        "max_events": 40,
+        "block_flags": ["hard_negative", "structure_risk", "unlock"],
+        "reduce_mults": {"flow_only": 0.5, "profit_taking": 0.7}
+      },
+      "dca": {
+        "sma_days": 50,
+        "max_below_sma_pct": null
+      }
+    }
   }
 }
