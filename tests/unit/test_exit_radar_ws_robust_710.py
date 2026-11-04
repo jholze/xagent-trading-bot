@@ -200,6 +200,26 @@ def test_tick_updates_watchdog_clocks():
     assert h._pair_last_tick["ZZZ_USDT"] == 5000.0 and h._last_any_tick == 5000.0
 
 
+def test_stale_ticks_do_not_keep_the_watchdog_quiet():
+    """DeepSeek follow-up on #774: late frames must not refresh the silent-stream clock."""
+    h = _hub()
+    with patch("services.exit_realtime.hub.time.monotonic", return_value=5000.0), patch(
+        "services.exit_realtime.hub.time.time", return_value=FIXED
+    ):
+        h.on_ticker("ZZZ_USDT", 1.0, time_ms=int((FIXED - 0.5) * 1000))  # baseline lag 0.5 s
+    assert h._last_any_tick == 5000.0
+    with patch("services.exit_realtime.hub.time.monotonic", return_value=5100.0), patch(
+        "services.exit_realtime.hub.time.time", return_value=FIXED + 100.0
+    ):
+        h.on_ticker("ZZZ_USDT", 1.0, time_ms=int((FIXED + 100.0 - 60.5) * 1000))  # 60 s late
+    assert h._last_any_tick == 5000.0 and h._pair_last_tick["ZZZ_USDT"] == 5000.0
+    with patch("services.exit_realtime.hub.time.monotonic", return_value=5200.0), patch(
+        "services.exit_realtime.hub.time.time", return_value=FIXED + 200.0
+    ):
+        h.on_ticker("ZZZ_USDT", 1.0, time_ms=int((FIXED + 200.0 - 1.0) * 1000))  # fresh again
+    assert h._last_any_tick == 5200.0 and h._pair_last_tick["ZZZ_USDT"] == 5200.0
+
+
 # ----------------------------------------------------------------- real ATR
 def test_live_atr_is_fetched_then_cached():
     calls = []

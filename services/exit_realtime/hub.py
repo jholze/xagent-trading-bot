@@ -621,8 +621,14 @@ class ExitRealtimeHub:
         self._stats["ticks"] += 1
         self._stats["last_tick_at"] = time.time()
         mono = time.monotonic()
-        self._last_any_tick = mono
-        self._pair_last_tick[gate_pair] = mono
+        # #710 review: only a tick that passes the stale guard proves the stream
+        # is alive. A stream that keeps delivering late frames must not keep the
+        # watchdog quiet while every WS stop on it is skipped as stale.
+        _max_age = _cfg_float(exit_realtime_config(self._raw), "max_tick_age_sec", DEFAULT_MAX_TICK_AGE_SEC)
+        _age = self.stale_tick_age(time_ms)
+        if not (_max_age > 0 and _age is not None and _age > _max_age):
+            self._last_any_tick = mono
+            self._pair_last_tick[gate_pair] = mono
         with self._pos_lock:
             sym = (
                 self._gate_to_symbol.get(gate_pair)
@@ -1479,7 +1485,7 @@ def resolve_row_atr(
     fetch_fn: Callable[[str, str, float], float | None] | None = None,
     now: float | None = None,
 ) -> tuple[float, str]:
-    """(atr_pct, source) for one book row. source: live | cached | reference.
+    """(atr_pct, source) for one book row. source: live | cached | stale_cached | reference.
 
     ``exit_realtime.live_atr`` (default True) switches the live lookup on.
     Any failure falls back to ``reference`` (atr_reference_pct, else 3.0).
