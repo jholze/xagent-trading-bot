@@ -39,7 +39,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from . import stats
+from . import stats, trials
 from .costs import CostModel
 from .data import Fill, load_book, load_fills, load_tenant_params
 from .engine import HOUR, Engine, Episode, build_episodes
@@ -66,8 +66,8 @@ SIGNAL_DEDUP_H = 24
 ENTRY_USDT = 1275.0  # median recorded entry size
 TP_MIN_GAIN = 1.015
 WEAK, STRONG = 0.40, 0.60
-NEW_TRIALS = 8  # a, b, c, d, e, combo, rg, wf_selector
-N_ALL = N_TRIALS + NEW_TRIALS
+NEW_TRIALS = trials.n_longwf_trials()  # a, b, c, d, e, combo, rg, wf_selector (central register)
+N_ALL = trials.n_all_trials()
 OVL_START = ENTRY_WINDOWS[0][1]
 OVL_END = TAPE_END
 
@@ -742,7 +742,8 @@ def main(argv=None):
     res = run_jobs(jobs, a.procs)
     report = {"generated": datetime.now(UTC).isoformat(), "head": os.popen(f"git -C {REPO_ROOT} rev-parse --short=8 HEAD").read().strip(),
               "constants": {"RET24_MIN": RET24_MIN, "RELVOL_MIN": RELVOL_MIN, "K_PER_DAY": K_PER_DAY, "ENTRY_USDT": ENTRY_USDT,
-                            "TP_MIN_GAIN": TP_MIN_GAIN, "WEAK": WEAK, "STRONG": STRONG, "N_ALL": N_ALL},
+                            "TP_MIN_GAIN": TP_MIN_GAIN, "WEAK": WEAK, "STRONG": STRONG, "N_ALL": N_ALL,
+                            "N_TRIALS": N_TRIALS, "NEW_TRIALS": NEW_TRIALS},
               "data": {"pairs": len(mk.candles), "universe": len(mk.universe), "proxy_entries": len(W["proxy"]),
                        "raw_signals": len(W["signals"]),
                        "first_real_1h_median": statistics.median([v for v in mk.first_real.values() if v]),
@@ -815,7 +816,7 @@ def render_md(r: dict) -> str:
           "* Walk-forward: rolling 2 months train / 1 month test. Fixed variants have no parameters to fit, so the train "
           "months only feed the WF selector (best variant by return on deployed capital over the 2 train months, applied "
           "in the test month; daily returns spliced, an approximation because each variant runs as its own book).",
-          f"* Statistics: DSR with N = {c['N_ALL']} (50 earlier harness trials + 8 new), 5-day block bootstrap CI of the "
+          f"* Statistics: DSR with N = {c['N_ALL']} ({c.get('N_TRIALS', '?')} scenario trials + {c.get('NEW_TRIALS', '?')} long walk-forward, central register), 5-day block bootstrap CI of the "
           "daily excess return on deployed capital, PBO by CSCV (10 blocks) over all 8 variants, Monte-Carlo trade "
           "shuffle (2000) of lot PnL for drawdown. Costs: fee 0.2 %/side + class slippage, base and stress.",
           "* Rule 4 (release framework), applied per variant: GO only if >= 2/3 of test months better (return on deployed "

@@ -22,7 +22,7 @@ from typing import Callable
 
 from tools import entry_filter_replay as efr
 
-from . import stats
+from . import stats, trials
 from .benchmark import BenchmarkConfig, benchmark_report
 from .costs import CostModel
 from .data import CandleCache, load_book, load_fills, load_tenant_params
@@ -55,8 +55,9 @@ ENTRY_WINDOWS = tuple(_berlin_window(*w) for w in efr.WINDOWS)
 
 # Every candidate variant evaluated by this harness run (3 per scenario).
 # DSR deflates each primary candidate against all of them.
-N_TRIALS = 60  # 12 from (a)-(d) + 11 loser-coin candidates (e)-(h) + 27 regime-conditional (r_*), 2026-11-01
-# + 5 criteria-eligibility variants (k), 2026-11-02 + 5 memory-gate variants (m), 2026-11-04
+# N comes from the central trial register (backtest/harness/trials.py).
+# Register every new scenario there; a unit test enforces it.
+N_TRIALS = trials.n_scenario_trials()
 
 
 @dataclass
@@ -708,7 +709,7 @@ def scenario_k(ctx: Context) -> ScenarioResult:
         variants=variants,
         baseline="baseline",
         primary="elig_primary",
-        notes=["N_TRIALS = 55 (50 before + 5 new eligibility variants)."],
+        notes=[f"N_TRIALS = {N_TRIALS} (central register, k adds {trials.SCENARIO_TRIALS['k'].trials})."],
     )
     res.notes.append(
         f"Primary hits: { {k: len(v) for k, v in hits.items()} }; entries kept for missing data: {len(missing)}"
@@ -843,7 +844,7 @@ def scenario_m(ctx: Context) -> ScenarioResult:
         baseline="baseline",
         primary="m_hist",
         notes=[
-            "N_TRIALS = 60 (55 before + 5 new memory-gate variants).",
+            f"N_TRIALS = {N_TRIALS} (central register, m adds {trials.SCENARIO_TRIALS['m'].trials} memory-gate variants).",
             "History = tape episodes closed before the signal (no lookahead); facts and DCA trend rule not replayed.",
         ],
     )
