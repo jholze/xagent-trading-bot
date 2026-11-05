@@ -181,6 +181,13 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
         out["macro"] = {"error": str(e)[:200]}
     try:
         out["event_ts_backfill"] = store.backfill_event_timestamps(batch=2000)
+        bf = out["event_ts_backfill"] or {}
+        if bf.get("normalized") or bf.get("error"):
+            log(
+                f"memory event ts backfill: normalized={bf.get('normalized', 0)} "
+                f"rfc822={bf.get('rfc822', 0)} err={bf.get('error', 0)}",
+                "INFO",
+            )
     except Exception as e:
         log(f"memory event ts backfill: {e}", "WARNING")
         out["event_ts_backfill"] = {"error": str(e)[:200]}
