@@ -57,8 +57,8 @@ def render(results: list[ScenarioResult], sources: dict, started: datetime) -> s
         lines += [f"## ({r.key}) {r.title}", "", r.question, "", f"Mode: `{r.mode}`. Verdict: **{r.verdict.label}** - {r.verdict.reason}.", ""]
         lines += ["Windows: " + ", ".join(f"{w} {a[:16]} to {b[:16]} UTC" for w, a, b in r.window_labels), ""]
         lines += [
-            "| Variant | Lots | Invested USDT | PnL USDT | PnL % | Max DD % | Open <= -20 % | Hit % | Avg win | Avg loss | Capital in losing lots | Stops full/partial/escalated | Partial rejects | Filtered |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+            "| Variant | Lots | Invested USDT | PnL USDT | PnL % | Max DD % | Open <= -20 % | Hit % | Avg win | Avg loss | Capital in losing lots | Stops full/partial/escalated | Cap/flat stops | Stopouts recovered | Partial rejects | Filtered |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
         ]
         for vr in r.variants:
             m = vr.full
@@ -66,7 +66,7 @@ def render(results: list[ScenarioResult], sources: dict, started: datetime) -> s
                 f"| {vr.name} | {m.lots} | {_f(m.invested_usdt, 0)} | {_f(m.pnl_usdt, 0)} | {_f(m.pnl_pct)} | {_f(m.max_dd_pct)} | "
                 f"{m.open_le_minus20}/{m.open_lots} ({_f(m.share_open_le_minus20, 1)} %) | {_f(m.hit_rate, 1)} | {_f(m.avg_win_usdt, 0)} | "
                 f"{_f(m.avg_loss_usdt, 0)} | {_f(m.capital_in_losing_lots, 0)} | {m.stop_full}/{m.stop_partial}/{m.escalated} | "
-                f"{m.partial_rejects} | {m.filtered_out} |"
+                f"{m.flat_stops} | {m.stopouts_recovered} | {m.partial_rejects} | {m.filtered_out} |"
             )
         lines += ["", "| Variant | " + " | ".join(f"{w} PnL % (USDT)" for w, _a, _b in r.window_labels) + " |"]
         lines += ["|---|" + "---|" * len(r.window_labels)]

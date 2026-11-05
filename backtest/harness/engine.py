@@ -132,6 +132,13 @@ class Policy:
     #          the hard stop (a gap below the level fills at the open).
     # "close": checked on the bar close, filled at the close (candle-close stop).
     profit_fill: str = "touch"
+    # Hard-stop cap (2026-11-05, Kay stop-cap study). Models risk.long_hard_stop_max_loss_pct
+    # as a flat full exit at -cap % vs average entry while still allowing tape DCA adds.
+    # Distinct from flat_stop_pct+no_adds (scenario f): here adds stay on.
+    hard_stop_cap_pct: float | None = None
+    # When True, once a lot has any DCA round the partial hard stop never fires again
+    # (pre-#733 / #696 F2 hole). Staging default is grace-only (False here).
+    pause_partial_after_dca_forever: bool = False
 
 
 @dataclass
@@ -164,6 +171,7 @@ class LotResult:
     profit_floor_below: int = 0  # floor exits whose realised net return was below the floor
     profit_floor_net_sum: float = 0.0  # sum of realised net returns (%) of floor exits
     profit_armed: int = 0
+    stopouts_recovered: int = 0  # stop/flat/escalated exits whose later high reclaimed avg entry
     exit_ts: int | None = None  # unix of the bar in which the lot went flat
     exit_reason: str = ""  # tape|stop|escalated|early|flat|time|bar_exit|open
     entry_usdt: float = 0.0
@@ -508,6 +516,7 @@ class Engine:
         last_bar_ts = candles[i][0]
         armed = False
         armed_peak = 0.0
+        stop_exit_avg: float | None = None  # avg at a full stop/flat/escalated exit for recovery scan
         # A carried-in lot (book mode) arms only on bars inside the run: no
         # lookback into the tape before the window start.
         while i < len(candles) and candles[i][0] < end_ts and not closed:
@@ -588,28 +597,35 @@ class Engine:
                             cost_basis = 0.0
                             lot.stop_full += 1
                             lot.exit_reason = "stop"
+                            stop_exit_avg = avg
                         else:
-                            level = avg * (1.0 - float(part_t if part_t is not None else partial_bound) / 100.0)
-                            mid = min(o, max(level, low))
-                            code = self._partial_guard(pos, sell_frac_partial, mid, limits)
-                            if code is None:
-                                closed = self._sell(pos, lot, sell_frac_partial, self.costs.sell_price(mid, slip), fee_pct)
-                                cost_basis *= (1.0 - sell_frac_partial)
-                                if closed:
-                                    lot.exit_reason = "stop"
-                                pos["hard_partial_stop_done"] = True
-                                lot.stop_partial += 1
-                            elif (
-                                code in ("min_position", "min_notional", "sold_cap_unconfigured")
-                                and policy.escalate_rejected_hard_partial
-                                and mid < avg
-                            ):
-                                closed = self._sell(pos, lot, 1.0, self.costs.sell_price(mid, slip), fee_pct)
-                                cost_basis = 0.0
-                                lot.escalated += 1
-                                lot.exit_reason = "escalated"
-                            else:
-                                lot.partial_rejects += 1
+                            forever = (
+                                policy.pause_partial_after_dca_forever
+                                and int(pos.get("dca_rounds") or 0) > 0
+                            )
+                            if not forever:
+                                level = avg * (1.0 - float(part_t if part_t is not None else partial_bound) / 100.0)
+                                mid = min(o, max(level, low))
+                                code = self._partial_guard(pos, sell_frac_partial, mid, limits)
+                                if code is None:
+                                    closed = self._sell(pos, lot, sell_frac_partial, self.costs.sell_price(mid, slip), fee_pct)
+                                    cost_basis *= (1.0 - sell_frac_partial)
+                                    if closed:
+                                        lot.exit_reason = "stop"
+                                    pos["hard_partial_stop_done"] = True
+                                    lot.stop_partial += 1
+                                elif (
+                                    code in ("min_position", "min_notional", "sold_cap_unconfigured")
+                                    and policy.escalate_rejected_hard_partial
+                                    and mid < avg
+                                ):
+                                    closed = self._sell(pos, lot, 1.0, self.costs.sell_price(mid, slip), fee_pct)
+                                    cost_basis = 0.0
+                                    lot.escalated += 1
+                                    lot.exit_reason = "escalated"
+                                    stop_exit_avg = avg
+                                else:
+                                    lot.partial_rejects += 1
             # 2b) loser-coin rules: early exit in the first N hours, flat full stop
             if not closed and pos["amount"] > 0 and pos["average_entry"] > 0 and not locked:
                 avg = pos["average_entry"]
@@ -624,12 +640,15 @@ class Engine:
                         level = lv
                         lot.early_exits += 1
                         lot.exit_reason = "early"
-                if level is None and policy.flat_stop_pct is not None:
-                    lv = avg * (1.0 - policy.flat_stop_pct / 100.0)
-                    if low <= lv:
-                        level = lv
-                        lot.flat_stops += 1
-                        lot.exit_reason = "flat"
+                if level is None:
+                    cap = policy.hard_stop_cap_pct if policy.hard_stop_cap_pct is not None else policy.flat_stop_pct
+                    if cap is not None:
+                        lv = avg * (1.0 - float(cap) / 100.0)
+                        if low <= lv:
+                            level = lv
+                            lot.flat_stops += 1
+                            lot.exit_reason = "flat"
+                            stop_exit_avg = avg
                 if level is not None:
                     mid = min(o, max(level, low))
                     closed = self._sell(pos, lot, 1.0, self.costs.sell_price(mid, slip), fee_pct)
@@ -737,6 +756,16 @@ class Engine:
         if not lot.open_at_end:
             lot.exit_ts = last_bar_ts
             lot.exit_reason = lot.exit_reason or "tape"
+            if (
+                lot.exit_reason in ("stop", "flat", "escalated")
+                and stop_exit_avg
+                and stop_exit_avg > 0
+            ):
+                # Counterfactual: would the lot have reclaimed average entry after the stop?
+                for j in range(i, len(candles)):
+                    if candles[j][2] >= stop_exit_avg:  # high
+                        lot.stopouts_recovered = 1
+                        break
         else:
             lot.exit_reason = "open"
         lot.pnl = lot.proceeds - lot.invested

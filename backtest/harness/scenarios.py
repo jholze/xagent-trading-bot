@@ -915,3 +915,101 @@ def scenario_p_oct(ctx: Context) -> ScenarioResult:
 SCENARIOS["p"] = scenario_p
 SCENARIOS["p_t8_rerun"] = scenario_p_t8
 SCENARIOS["p_oct"] = scenario_p_oct
+
+# ---------------------------------------------------------------------------
+# (s) full-stop cap vs late-stop hole (2026-11-05, Kay). Caps keep DCA adds.
+# Pre-registered primary = cap20 (matches open #696 proposal). Neighbours
+# 12/15/25 and the "pause partial forever after DCA" factor are sensitivity.
+STOP_CAPS = (12.0, 15.0, 20.0, 25.0)
+STOP_CAP_PRIMARY = "cap20"
+
+
+def _cap(name: str, pct: float, *, forever_pause: bool = False, **kw) -> Policy:
+    return policy(
+        name,
+        ref=None,
+        escalate=True,
+        hard_stop_cap_pct=pct,
+        pause_partial_after_dca_forever=forever_pause,
+        **kw,
+    )
+
+
+def _stop_cap_variants():
+    out = [
+        (
+            policy("baseline", ref=None, escalate=True),
+            "staging stop/DCA (no hard-stop cap; partial pauses only inside DCA grace)",
+        )
+    ]
+    for pct in STOP_CAPS:
+        out.append((
+            _cap(f"cap{pct:g}", pct, forever_pause=False),
+            f"full exit at -{pct:g} % vs avg (DCA adds still allowed); partial keeps firing after DCA grace",
+        ))
+    for pct in STOP_CAPS:
+        out.append((
+            _cap(f"cap{pct:g}_dcapause", pct, forever_pause=True),
+            f"full exit at -{pct:g} % vs avg; partial paused for the life of the lot once any DCA round is used",
+        ))
+    return out
+
+
+_STOP_CAP_NOTES = [
+    "Cap is modelled as a flat full exit at -cap % vs the running average entry; tape DCA/adds stay on (unlike scenario f).",
+    "Partial-after-DCA factor: default = staging grace-only; `_dcapause` = pre-#733 forever pause once rounds > 0.",
+    "Stopouts recovered = lots that exited via stop/flat/escalated whose later 1h high reclaimed the exit-time average entry (counterfactual hold).",
+    "Fees and class slippage follow the cost tier (base / stress / hard_stress).",
+]
+
+
+def scenario_s(ctx: Context) -> ScenarioResult:
+    return _evaluate(
+        ctx,
+        key="s",
+        title="Full-stop cap -20 % (DCA on), late-stop hole",
+        question="Does capping the full stop at -20 % (with DCA still allowed) beat uncapped staging on Jul-Oct entries?",
+        mode="entries",
+        windows=ENTRY_WINDOWS,
+        variants=_stop_cap_variants(),
+        baseline="baseline",
+        primary=STOP_CAP_PRIMARY,
+        notes=list(_STOP_CAP_NOTES),
+    )
+
+
+def scenario_s_pause(ctx: Context) -> ScenarioResult:
+    return _evaluate(
+        ctx,
+        key="s_pause_rerun",
+        title="Full-stop cap with permanent partial-after-DCA pause",
+        question="Same candidates as (s); verdict for the primary with forever partial pause (cap20_dcapause).",
+        mode="entries",
+        windows=ENTRY_WINDOWS,
+        variants=_stop_cap_variants(),
+        baseline="baseline",
+        primary="cap20_dcapause",
+        notes=list(_STOP_CAP_NOTES),
+    )
+
+
+def scenario_s_oct(ctx: Context) -> ScenarioResult:
+    return _evaluate(
+        ctx,
+        key="s_oct",
+        title="Full-stop cap on the October book (check)",
+        question="Same candidates as (s) on the whole October book.",
+        mode="book",
+        windows=OCT_WINDOWS,
+        variants=_stop_cap_variants(),
+        baseline="baseline",
+        primary=STOP_CAP_PRIMARY,
+        notes=list(_STOP_CAP_NOTES) + [
+            "Book mode: a carried-in lot already below the cap vs avg at window start is sold on the first bar."
+        ],
+    )
+
+
+SCENARIOS["s"] = scenario_s
+SCENARIOS["s_pause_rerun"] = scenario_s_pause
+SCENARIOS["s_oct"] = scenario_s_oct

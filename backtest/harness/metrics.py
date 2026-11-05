@@ -42,6 +42,7 @@ class RunMetrics:
     profit_floor_below: int = 0
     profit_floor_mean_net_pct: float | None = None
     profit_armed: int = 0
+    stopouts_recovered: int = 0
 
 
 def summarize(run: RunResult) -> RunMetrics:
@@ -93,6 +94,7 @@ def summarize(run: RunResult) -> RunMetrics:
             else None
         ),
         profit_armed=sum(x.profit_armed for x in lots),
+        stopouts_recovered=sum(x.stopouts_recovered for x in lots),
     )
 
 
