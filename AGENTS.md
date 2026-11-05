@@ -38,6 +38,7 @@ These rules are fixed by Jens (2026-11-01, updated 2026-11-04 and 2026-11-05). T
    2. Open the relevant linked docs (at least the settings/features reference when the work touches config, flags, Telegram commands, or options).
    3. Query **Hindsight** memory for bank `coding-agent::trading_bot` (knowledge-page search and/or reflect). Omnigent MCP for bot account `trading-bot` does **not** expose Hindsight tools — use the Hindsight coding-agent tools or the local Hindsight HTTP API on Jens' Mac. Prefer read-only; writes need an explicit retain/confirm path.
    4. If docs and Hindsight disagree, **trust git + `AGENTS.md` + committed `config.json`**, note the contradiction in the ticket/PR, and do not silently prefer stale memory.
+   5. **Duplicate check for new backlog tickets.** Before opening a new backlog issue, search the staging code (`rg` for the mechanism, config keys, `strategies/`, `intelligence/`), the settings reference (`docs/reference/settings-features-options.md`) and open/closed issues (`gh issue list --state all --search "<keywords>"`) for what already exists. List the found files/functions/config keys in the issue under **"Existing in code"**. If the mechanism already exists, the issue becomes wiring, extension or tuning of it — **not a rebuild**.
 
    Docs map:
 
