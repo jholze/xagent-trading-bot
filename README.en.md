@@ -184,21 +184,15 @@ python3 scripts/reconcile_gate_positions.py   # Live mode
 
 ## Important defaults (`config.json`)
 
-> **Do not quote this table.** Use [docs/reference/settings-features-options.md](docs/reference/settings-features-options.md) and committed `config.json` on the target branch (audit 2026-11-05 / #780).
+> **Do not quote numbers from this section.** Historical README values diverge from committed `config.json` on `staging`. Agents and tickets must read **[`docs/reference/settings-features-options.md`](docs/reference/settings-features-options.md)** (generated tables) and `config.json` on the target branch. Audit 2026-11-05 / issue #780.
 
-
-| Setting | Value |
-|---------|-------|
-| `update_interval` | 600 (10 min) |
-| `max_usdt_per_trade` | 25 |
-| `max_daily_trades` | 8 |
-| `trade_cooldown_hours` | 1.0 |
-| `notify_on_cycle` | true |
-| `observability.telegram_explanations.enabled` | true |
-| `observability.telegram_explanations.verbosity` | verbose |
-| `live.dry_run` | true (safe) |
-| `live.dry_run_enhanced` | false (true = sim wallet + trending) |
-| `strategy_backtest.auto_run` | true |
+| Setting | Where to read |
+|---------|---------------|
+| `update_interval` | See `config.json` / generated reference (not the old README "600") |
+| `max_usdt_per_trade` / `max_daily_trades` / `trade_cooldown_hours` | Money-path — current values only from `config.json` |
+| `notify_on_cycle` / `observability.telegram_explanations.*` | See `config.json` / generated reference |
+| `live.dry_run` / `live.dry_run_enhanced` | Safety/sim switches — values in `config.json` |
+| `strategy_backtest.auto_run` | See `config.json` / generated reference |
 
 ---
 

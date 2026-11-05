@@ -29,31 +29,28 @@ Lower-stakes areas (backtesting, data fetching, notifications, docs, tests, tool
 The full money-path list used by CI is `ci/money_paths.json` (see "Money path" below). It adds `strategies/`,
 `services/gainer_signal/`, `services/dca_sniper/`, and the risk/cost/sizing keys of `config.json` to the areas above.
 
-## Docs map + Hindsight (before research / analysis / tickets)
-
-**Mandatory.** Before any research, analysis, ticket/issue writing, or PR planning in this repository, agents must:
-
-1. Read this file (`AGENTS.md`) and the docs map below for the topic.
-2. Open the relevant linked docs (at least the settings/features reference when the work touches config, flags, Telegram commands, or options).
-3. Query **Hindsight** memory for bank `coding-agent::trading_bot` (knowledge-page search and/or reflect). Omnigent MCP for bot account `trading-bot` does **not** expose Hindsight tools — use the Hindsight coding-agent tools or the local Hindsight HTTP API on Jens' Mac. Prefer read-only; writes need an explicit retain/confirm path.
-4. If docs and Hindsight disagree, **trust git + `AGENTS.md` + committed `config.json`**, note the contradiction in the ticket/PR, and do not silently prefer stale memory.
-
-### Docs map
-
-| Topic | Document |
-|-------|----------|
-| Operating rules (this file) | `AGENTS.md` |
-| Workflow / roles / evidence | `docs/workflow.md` |
-| Agent onboarding facts | `docs/agent-onboarding.md` |
-| Settings / features / options / Telegram commands | `docs/reference/settings-features-options.md` (+ `.generated.md`) |
-| Agent docs index (llms.txt) | `docs/llms.txt` |
-| Human product docs | `README.md`, `DOCUMENTATION.md` |
-| Domain thresholds | `docs/domain/` |
-| Docs audit 2026-11-05 | `docs/audit/doku_audit_2026-11-05.md` |
-
 ## Mandatory rules
 
-These rules are fixed by Jens (2026-11-01, updated 2026-11-04). They override anything else in this repository.
+These rules are fixed by Jens (2026-11-01, updated 2026-11-04 and 2026-11-05). They override anything else in this repository.
+
+0. **Docs map + Hindsight (before research / analysis / tickets).** Before any research, analysis, ticket/issue writing, or PR planning in this repository, agents must:
+   1. Read this file (`AGENTS.md`) and the docs map below for the topic.
+   2. Open the relevant linked docs (at least the settings/features reference when the work touches config, flags, Telegram commands, or options).
+   3. Query **Hindsight** memory for bank `coding-agent::trading_bot` (knowledge-page search and/or reflect). Omnigent MCP for bot account `trading-bot` does **not** expose Hindsight tools — use the Hindsight coding-agent tools or the local Hindsight HTTP API on Jens' Mac. Prefer read-only; writes need an explicit retain/confirm path.
+   4. If docs and Hindsight disagree, **trust git + `AGENTS.md` + committed `config.json`**, note the contradiction in the ticket/PR, and do not silently prefer stale memory.
+
+   Docs map:
+
+   | Topic | Document |
+   |-------|----------|
+   | Operating rules (this file) | `AGENTS.md` |
+   | Workflow / roles / evidence | `docs/workflow.md` |
+   | Agent onboarding facts | `docs/agent-onboarding.md` |
+   | Settings / features / options / Telegram commands | `docs/reference/settings-features-options.md` (+ `.generated.md`) |
+   | Agent docs index (llms.txt) | `docs/llms.txt` |
+   | Human product docs | `README.md`, `DOCUMENTATION.md` |
+   | Domain thresholds | `docs/domain/` |
+   | Docs audit 2026-11-05 | `docs/audit/doku_audit_2026-11-05.md` |
 
 1. **Model rule** (not a Grok-only setup):
    - Coder: **Grok 4.7** (`grok-4.7`).
