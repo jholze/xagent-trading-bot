@@ -644,7 +644,47 @@ class TestMemoryEventTimestamps782(unittest.TestCase):
         }
         out = store.backfill_event_timestamps(batch=10)
         self.assertEqual(out["normalized"], 1)
+        self.assertEqual(out.get("rfc822"), 1)
         doc = store._docs["memory_market_events"]["rss:legacy"]
+        self.assertTrue(str(doc["timestamp"]).startswith("2026-09-30T"))
+        self.assertIn("ts_unix", doc)
+
+    def test_backfill_prioritizes_rfc822_over_missing_ts_unix(self):
+        store = InMemoryMemoryStore()
+        # Flood with ISO rows missing ts_unix so a naive $or batch would skip RFC822.
+        for i in range(30):
+            store._docs["memory_market_events"][f"iso:{i}"] = {
+                "_id": f"iso:{i}",
+                "event_id": f"iso:{i}",
+                "timestamp": f"2026-10-01T00:00:{i:02d}Z",
+                "event_type": "news",
+                "symbols": ["BTC/USDT"],
+                "impact_score": 0.0,
+                "description": "iso",
+                "source": "test",
+                "url": "",
+                "metadata": {},
+                "embedding": [],
+                "tenant_id": "global",
+            }
+        store._docs["memory_market_events"]["rss:priority"] = {
+            "_id": "rss:priority",
+            "event_id": "rss:priority",
+            "timestamp": "Wed, 30 Sep 2026 23:20:59 +0000",
+            "event_type": "news",
+            "symbols": ["BTC/USDT"],
+            "impact_score": 0.0,
+            "description": "must go first",
+            "source": "rss:decrypt.co",
+            "url": "",
+            "metadata": {},
+            "embedding": [],
+            "tenant_id": "global",
+        }
+        out = store.backfill_event_timestamps(batch=5)
+        self.assertEqual(out["normalized"], 5)
+        self.assertGreaterEqual(out.get("rfc822", 0), 1)
+        doc = store._docs["memory_market_events"]["rss:priority"]
         self.assertTrue(str(doc["timestamp"]).startswith("2026-09-30T"))
         self.assertIn("ts_unix", doc)
 

@@ -248,27 +248,56 @@ class MemoryStore:
             return []
 
     def backfill_event_timestamps(self, *, batch: int = 2000) -> dict[str, int]:
-        """Rewrite RFC822 / missing ts_unix on memory_market_events (#782). Ledger-safe."""
+        """Rewrite RFC822 / missing ts_unix on memory_market_events (#782). Ledger-safe.
+
+        RFC822 weekday strings sort *above* ISO-8601 lexicographically (``Tue`` >
+        ``2026-…``). Until those rows are rewritten, MCP images still on the old
+        ``.sort("timestamp")`` path keep returning a mid-2026 stale window even
+        after fresh ISO events are ingested. Always drain RFC822 rows first.
+        """
         batch = max(1, min(10000, int(batch)))
         normalized = 0
+        # ``rfc822`` counts RFC822 rows queued for rewrite in phase 1;
+        # ``normalized`` counts rows actually written (logging only).
+        rfc822 = 0
         try:
             col = self._col(COL_EVENTS)
-            query = {
-                "$or": [
-                    {"ts_unix": {"$exists": False}},
-                    {"timestamp": {"$regex": "^[A-Za-z]"}},
-                ]
-            }
-            ops = []
-            for doc in col.find(query, projection={"timestamp": 1}).limit(batch):
-                raw = doc.get("timestamp")
-                iso = normalize_memory_timestamp(raw)
-                unix = memory_timestamp_unix(iso)
-                filt = {"_id": doc["_id"]}
-                patch = {"$set": {"timestamp": iso, "ts_unix": unix}}
-                ops.append((filt, patch))
+            # Phase 1: weekday RFC822 pubDates (must win over generic missing-ts).
+            queries = [
+                ("rfc822", {"timestamp": {"$regex": "^[A-Za-z]"}}),
+                (
+                    "missing_ts_unix",
+                    {
+                        "ts_unix": {"$exists": False},
+                        "timestamp": {"$not": {"$regex": "^[A-Za-z]"}},
+                    },
+                ),
+            ]
+            ops: list[tuple[dict, dict]] = []
+            for label, query in queries:
+                if len(ops) >= batch:
+                    break
+                remain = batch - len(ops)
+                for doc in col.find(
+                    query, projection={"timestamp": 1, "ts_unix": 1}
+                ).limit(remain):
+                    raw = doc.get("timestamp")
+                    iso = normalize_memory_timestamp(raw)
+                    unix = memory_timestamp_unix(iso)
+                    if doc.get("timestamp") == iso and doc.get("ts_unix") == unix:
+                        continue
+                    ops.append(
+                        (
+                            {"_id": doc["_id"]},
+                            {"$set": {"timestamp": iso, "ts_unix": unix}},
+                        )
+                    )
+                    if label == "rfc822":
+                        rfc822 += 1
+                    if len(ops) >= batch:
+                        break
             if not ops:
-                return {"normalized": 0}
+                return {"normalized": 0, "rfc822": 0}
             try:
                 from pymongo import UpdateOne
 
@@ -283,8 +312,8 @@ class MemoryStore:
                     normalized += 1
         except Exception as e:
             log(f"memory backfill_event_timestamps failed: {e}", "WARNING")
-            return {"normalized": normalized, "error": 1}
-        return {"normalized": normalized}
+            return {"normalized": normalized, "rfc822": rfc822, "error": 1}
+        return {"normalized": normalized, "rfc822": rfc822}
 
     # --- trades ---
     def upsert_trade(self, trade: TradeMemory) -> bool:
@@ -427,7 +456,16 @@ class InMemoryMemoryStore(MemoryStore):
 
     def backfill_event_timestamps(self, *, batch: int = 2000) -> dict[str, int]:
         normalized = 0
-        for _id, d in list(self._docs[COL_EVENTS].items()):
+        rfc822 = 0
+        # Prefer weekday RFC822 rows first (same priority as Mongo path).
+        items = list(self._docs[COL_EVENTS].items())
+        items.sort(
+            key=lambda kv: (
+                0 if str((kv[1] or {}).get("timestamp") or "")[:1].isalpha() else 1,
+                kv[0],
+            )
+        )
+        for _id, d in items:
             if normalized >= batch:
                 break
             raw = d.get("timestamp")
@@ -435,12 +473,15 @@ class InMemoryMemoryStore(MemoryStore):
             unix = memory_timestamp_unix(iso)
             if d.get("timestamp") == iso and d.get("ts_unix") == unix:
                 continue
+            was_rfc = str(raw or "")[:1].isalpha()
             d = dict(d)
             d["timestamp"] = iso
             d["ts_unix"] = unix
             self._docs[COL_EVENTS][_id] = d
             normalized += 1
-        return {"normalized": normalized}
+            if was_rfc:
+                rfc822 += 1
+        return {"normalized": normalized, "rfc822": rfc822}
 
     def upsert_trade(self, trade: TradeMemory) -> bool:
         return self._put(COL_TRADES, trade.to_doc())
