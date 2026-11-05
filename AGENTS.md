@@ -33,12 +33,16 @@ The full money-path list used by CI is `ci/money_paths.json` (see "Money path" b
 
 These rules are fixed by Jens (2026-11-01, updated 2026-11-04 and 2026-11-05). They override anything else in this repository.
 
-0. **Docs map + Hindsight (before research / analysis / tickets).** Before any research, analysis, ticket/issue writing, or PR planning in this repository, agents must:
+0. **Docs map + Hindsight (before research / analysis / tickets / sessions).** Before any research, analysis, ticket/issue writing, Omnigent session, or PR planning in this repository, agents must:
    1. Read this file (`AGENTS.md`) and the docs map below for the topic.
    2. Open the relevant linked docs (at least the settings/features reference when the work touches config, flags, Telegram commands, or options).
-   3. Query **Hindsight** memory for bank `coding-agent::trading_bot` (knowledge-page search and/or reflect). Omnigent MCP for bot account `trading-bot` does **not** expose Hindsight tools — use the Hindsight coding-agent tools or the local Hindsight HTTP API on Jens' Mac. Prefer read-only; writes need an explicit retain/confirm path.
+   3. **Recall Hindsight** for bank `coding-agent::trading_bot` via the Mac HTTP API `http://127.0.0.1:8888`. Omnigent MCP is not the recall path: bot account `trading-bot` does not expose Hindsight tools, and an Omnigent MCP call does not satisfy this step. Cite every recalled fact with a source ref `memory:<id>` or `doc:<id>`. If the recall fails, write `RECALL_FAILED` in the ticket, session notes, or PR. A silent skip is a process violation. Recall is the call; reflect is not the default.
    4. If docs and Hindsight disagree, **trust git + `AGENTS.md` + committed `config.json`**, note the contradiction in the ticket/PR, and do not silently prefer stale memory.
-   5. **Duplicate check for new backlog tickets.** Before opening a new backlog issue, search the staging code (`rg` for the mechanism, config keys, `strategies/`, `intelligence/`), the settings reference (`docs/reference/settings-features-options.md`) and open/closed issues (`gh issue list --state all --search "<keywords>"`) for what already exists. List the found files/functions/config keys in the issue under **"Existing in code"**. If the mechanism already exists, the issue becomes wiring, extension or tuning of it — **not a rebuild**.
+   5. **Duplicate check for new backlog tickets.** Before opening a new backlog issue, search the staging code (`rg` for the mechanism, config keys, `strategies/`, `intelligence/`), the settings reference (`docs/reference/settings-features-options.md`) and open/closed issues (`gh issue list --state all --search "<keywords>"`) for what already exists. List the found files/functions/config keys in the issue under **"Existing in code"**. If the mechanism already exists, the issue becomes wiring, extension or tuning of it — **not a rebuild**. When a ticket template has an **Existing in memory (Hindsight)** section, fill it with the source refs from step 3 (or `RECALL_FAILED`).
+
+   **Kay entry gate.** Kay sessions and tickets are prepared through the ops gate (`kay-entry`, or the equivalent Pflichtblock + this Hindsight recall). Raw MCP create (`create_session` or a new ticket) without Pflichtblock + Hindsight is a process violation.
+
+   **Closeout.** Lessons written back to Hindsight are evidence-backed only. Retain a lesson only when the Hindsight LLM capability is ok. A pending queue is allowed when retain is not ok. No bulk import. Reflect is not the default.
 
    Docs map:
 
@@ -80,7 +84,8 @@ Workflow, roles, branch naming, and test commands: [`docs/workflow.md`](docs/wor
 - Kay works in Omnigent through his own bot account, handle `trading-bot`. It sees only the project **Trading bot** (ID `adba8ee6896849cd82e22bec7a881691`); any other project must be rejected. Check this with `list_projects` before the first use.
 - Token: in the bot's credentials file on Jens' Mac (JSON field `token`, file mode 0600; Jens gives Kay the location, it is not repeated in this public repo). Send it as `Authorization: Bearer <token>`. Read it inside the same command that uses it (for example into a Python variable). Never print, echo, log, or write the token or `webhook_secret` to any file, ticket, PR, commit, or chat; no `set -x`.
 - Endpoint: `http://127.0.0.1:6767/mcp` when running on the Mac; otherwise the public MCP URL Jens provides. The token is valid only for `/mcp` and `/v1/chat/*`; other paths return 401, which is expected.
-- `create_session` always passes `project_id`, the Mac's `host_id` (from Jens' instruction or `list_hosts`), and the workspace `/Users/jholze/Documents/scripts/trading_bot` (or the task worktree).
+- Active Omnigent workspace on Jens' Mac: `/Users/jholze/Documents/scripts/trading_bot_omnigent`. Task worktrees: `/Users/jholze/Documents/scripts/trading_bot_omnigent/.worktrees/<slug>`. `create_session` always passes `project_id`, the Mac's `host_id` (from Jens' instruction or `list_hosts`), and that workspace (or the task worktree under `.worktrees/<slug>`). Do not rewrite historical sessions.
+- Kay sessions and tickets must be prepared via the ops gate (`kay-entry`, or the equivalent Pflichtblock + Hindsight recall on bank `coding-agent::trading_bot` at `http://127.0.0.1:8888`). Raw MCP create without Pflichtblock + Hindsight is a process violation. See mandatory rule 0.
 - Review sessions: title `Kay review PR<n> <model>` (for example `Kay review PR770 deepseek`). Never create a second review session for the same PR and model; reuse the existing one (`list_sessions` with the project id first).
 - Feedback to Jens' assistant goes into a session of this project.
 
