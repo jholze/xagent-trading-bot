@@ -427,7 +427,8 @@ def memory_pack(
     sym = normalize_symbol(symbol) or None
     if store is None and live:
         try:
-            from intelligence.memory.store import MemoryStore
+                        # xagent_memory reads MemoryStore.list_events (ts_unix sort #782); keep intelligence/memory/** in MCP watch-patterns.
+from intelligence.memory.store import MemoryStore
 
             store = MemoryStore()
         except Exception as exc:

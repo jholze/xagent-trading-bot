@@ -55,7 +55,8 @@
     "xagent-mcp": {
       "id": "1a1acc61-0777-46e8-964a-d0d6aaa02efe",
       "patterns": [
-        "services/mcp/**"
+        "services/mcp/**",
+        "intelligence/memory/**"
       ]
     }
   }
