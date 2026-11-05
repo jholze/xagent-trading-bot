@@ -43,7 +43,7 @@ Invested about 2.5M USDT. Forever-pause vs grace differs by a few hundred USDT o
 |---|---|---|---|---|---|---|---|
 | s (entries) | cap20 | 2/3 | 0.00 | ≈ 0 (CI includes 0) | 0.53 | OBSERVE | **KILL** |
 | s_pause_rerun | cap20_dcapause | 2/3 | 0.00 | CI includes 0 | 0.53 | OBSERVE | **KILL** |
-| s_oct (October book) | cap20 | 2/3 | 0.00 | CI includes 0 | 0.16 | OBSERVE | **KILL** |
+| s_oct (October book) | cap20 | 2/3 | 0.00 | CI entirely below 0 (base.md: −30.1 [−39.2, −0.7] bp/day) | 0.16 | OBSERVE | **KILL** |
 
 Stress and hard_stress give the same labels. hard_stress equals stress here because the harness never sets `small_cap` (known limit).
 

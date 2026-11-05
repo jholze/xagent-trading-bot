@@ -175,7 +175,7 @@ def decide(
         label = "OBSERVE"
         why = f"won {won}/{len(window_wins)} but DSR {dsr:.2f}" + (
             " <= 0.5" if dsr <= dsr_threshold else ""
-        ) + ("; CI includes 0" if ci.low <= 0 else "")
+        ) + ("; CI includes 0" if ci.low <= 0 <= ci.high else ("; CI entirely below 0" if ci.high < 0 else ""))
     if informational:
         why = f"bug fix under rule 5, verdict is informational: {why}"
     return Verdict(label, won, len(window_wins), dsr, ci.low, ci.high, worse, why)
