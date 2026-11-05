@@ -224,21 +224,27 @@ class TestDeepAnalyze(unittest.TestCase):
 
 
 class TestChecklistMemoryFacts(unittest.TestCase):
-    def test_rag_boosts_memory_score(self):
+    def test_rag_hits_score_by_direction(self):
+        # Was test_rag_boosts_memory_score: it pinned the sign error (every RAG
+        # hit raised the score, including hits for the query "<sym> trade dca
+        # loss"). Now: positive hits raise, negative hits lower, unknown is 0.
         from services.dca_sniper.checklist import analyze_candidate
 
-        a = analyze_candidate(
-            _row(entry_bias="neutral", rag_hit_count=0, loss_pct=-30, notional=2000),
-            {"spendable_dca": 1000},
-        )
-        b = analyze_candidate(
-            _row(entry_bias="neutral", rag_hit_count=4, loss_pct=-30, notional=2000),
-            {"spendable_dca": 1000},
-        )
-        ma = (a["checklist"] or {}).get("memory") or {}
-        mb = (b["checklist"] or {}).get("memory") or {}
-        self.assertGreater(float(mb.get("score") or 0), float(ma.get("score") or 0))
-        self.assertIn("rag_hits", mb.get("reason") or "")
+        def mem(**kw):
+            a = analyze_candidate(
+                _row(entry_bias="neutral", loss_pct=-30, notional=2000, **kw),
+                {"spendable_dca": 1000},
+            )
+            return (a["checklist"] or {}).get("memory") or {}
+
+        base = mem(rag_hit_count=0)
+        unknown = mem(rag_hit_count=4)
+        pos = mem(rag_hit_count=4, rag_positive_count=4)
+        neg = mem(rag_hit_count=4, rag_negative_count=4)
+        self.assertEqual(float(unknown["score"]), float(base["score"]))
+        self.assertGreater(float(pos["score"]), float(base["score"]))
+        self.assertLess(float(neg["score"]), float(base["score"]))
+        self.assertIn("rag_hits", unknown.get("reason") or "")
 
 
 class TestContextQuality(unittest.TestCase):
