@@ -280,6 +280,9 @@ class TradeOrder:
     ctx_coin_regime: str | None = None
     ctx_volume_rel: float | None = None
     ctx_volume_window_days: float | None = None
+    # #711: tier the buy path resolved for a NEW lot ("stable"/"volatile"/None).
+    # Stamped onto pos["strategy_tier"] at the first fill; read by the long mcap floor.
+    strategy_tier: str | None = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     filled_qty: float = 0.0
     status: OrderStatus = OrderStatus.QUEUED

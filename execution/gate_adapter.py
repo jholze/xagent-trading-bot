@@ -2632,6 +2632,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 ctx=ctx,
                 fee_unknown=fee_unknown,
                 order_type=row_order_type,
+                strategy_tier=getattr(order, "strategy_tier", None),
             )
         elif order.type == "SHORT":
             local = self.portfolio.execute_short(

@@ -160,6 +160,7 @@ VENUE_MIN_MERGE_LOSS_EXCEEDED = "venue_min_merge_loss_exceeded"
 
 _CACHE_FIELDS = (
     "strategy_tier",
+    "strategy_tier_source",
     "exit_ladder_step",
     "dca_rounds",
     "dca_max_rounds",
@@ -237,6 +238,7 @@ CYCLE_FIELDS = (
     "rsi_sell_tiers_done",
     "exit_source",
     "strategy_tier",
+    "strategy_tier_source",
     "entry_snapshot",
     "entry_source",
     "entry_at",
@@ -502,6 +504,7 @@ def _deserialize_position(raw: dict) -> dict:
         "last_cmc_sell_at": raw.get("last_cmc_sell_at"),
         "recent_high": float(raw.get("recent_high", 0)),
         "strategy_tier": raw.get("strategy_tier"),
+        "strategy_tier_source": raw.get("strategy_tier_source"),
         "exit_ladder_step": int(raw.get("exit_ladder_step", 0) or 0),
         "dca_rounds": int(raw.get("dca_rounds", 0) or 0),
         "dca_max_rounds": int(raw.get("dca_max_rounds", 0) or 0),
@@ -610,6 +613,7 @@ def _serialize_positions(store: dict | None = None, scope: str | None = None) ->
             "last_cmc_sell_at": p.get("last_cmc_sell_at"),
             "recent_high": float(p.get("recent_high", 0)),
             "strategy_tier": p.get("strategy_tier"),
+            "strategy_tier_source": p.get("strategy_tier_source"),
             "exit_ladder_step": int(p.get("exit_ladder_step", 0) or 0),
             "dca_rounds": int(p.get("dca_rounds", 0) or 0),
             "dca_max_rounds": int(p.get("dca_max_rounds", 0) or 0),
@@ -1384,6 +1388,9 @@ def lock_strategy_tier(symbol: str, timeframe: str, tier: str) -> None:
         pos = _ensure_key(store, key)
         if not pos.get("strategy_tier"):
             pos["strategy_tier"] = tier
+            # #711: the buy path stamps "entry". Reaching here means a legacy
+            # lot (or a buy path without a tier) frozen by a later cycle.
+            pos["strategy_tier_source"] = "first_cycle"
             changed = True
     if changed and _position_persistable(store[key]):
         flush_positions()
@@ -1829,6 +1836,7 @@ _CYCLE_RESET_DEFAULTS = {
     "rsi_sell_tiers_done": None,
     "exit_source": None,
     "strategy_tier": None,
+    "strategy_tier_source": None,
     "entry_snapshot": _CYCLE_RESET_POP,
     "entry_source": None,
     "entry_at": None,
@@ -1941,6 +1949,9 @@ _ENTRY_SNAPSHOT_KEYS = (
     "size_before_mult",
     "size_after_mult",
     "cap_applied",
+    "cost_tier",
+    "coin_class",
+    "slippage_pct",
 )
 
 
@@ -1965,6 +1976,9 @@ def _build_entry_snapshot(
     size_before_mult=None,
     size_after_mult=None,
     cap_applied=None,
+    cost_tier=None,
+    coin_class=None,
+    slippage_pct=None,
 ) -> dict:
     """Fixed-key opening snapshot. Unknown inputs are null; codes default to []."""
     return {
@@ -1983,6 +1997,9 @@ def _build_entry_snapshot(
         "size_before_mult": size_before_mult,
         "size_after_mult": size_after_mult,
         "cap_applied": cap_applied,
+        "cost_tier": cost_tier,
+        "coin_class": coin_class,
+        "slippage_pct": slippage_pct,
     }
 
 
@@ -2003,6 +2020,9 @@ def _attach_and_persist_entry_snapshot(
     size_before_mult=None,
     size_after_mult=None,
     cap_applied=None,
+    cost_tier=None,
+    coin_class=None,
+    slippage_pct=None,
 ) -> None:
     """Attach ``entry_snapshot`` on first fill and persist. Caller is first fill only."""
     key = get_key(symbol, timeframe)
@@ -2024,6 +2044,9 @@ def _attach_and_persist_entry_snapshot(
             size_before_mult=size_before_mult,
             size_after_mult=size_after_mult,
             cap_applied=cap_applied,
+            cost_tier=cost_tier,
+            coin_class=coin_class,
+            slippage_pct=slippage_pct,
         )
     flush_positions(force=True)
 
@@ -2054,6 +2077,10 @@ def update_position(
     exit_source: str | None = None,
     fee_estimated: bool = False,
     open_fee_tracked: bool = False,
+    cost_tier: str | None = None,
+    coin_class: str | None = None,
+    slippage_pct: float | None = None,
+    snapshot_source: str | None = None,
 ):
     global _open_positions_count
     store_key = _activate_for_write()
@@ -2161,6 +2188,11 @@ def update_position(
                     pos["entry_at"] = pos["first_buy_at"]
                 if entry_15m_vol_ratio is not None:
                     pos["entry_15m_vol_ratio"] = float(entry_15m_vol_ratio)
+                # #711: freeze the tier at the first fill. The cycle reset above
+                # cleared it; the lazy lock in DecisionEngine stays as fallback.
+                if strategy_tier in ("stable", "volatile") and not pos.get("strategy_tier"):
+                    pos["strategy_tier"] = strategy_tier
+                    pos["strategy_tier_source"] = "entry"
                 attach_snapshot = True
             dust_reentry = (not was_open) and float(old_amount or 0) > DUST_AMOUNT_EPSILON
             if not was_open:
@@ -2343,7 +2375,7 @@ def update_position(
                 timeframe,
                 fill_price=current_price,
                 fee=fee,
-                source=source,
+                source=source or snapshot_source,
                 strategy_profile=strategy_profile,
                 strategy_tier=strategy_tier,
                 rationale_codes=rationale_codes,
@@ -2354,6 +2386,9 @@ def update_position(
                 size_before_mult=size_before_mult,
                 size_after_mult=size_after_mult,
                 cap_applied=cap_applied,
+                cost_tier=cost_tier,
+                coin_class=coin_class,
+                slippage_pct=slippage_pct,
             )
         except Exception as e:
             log(f"entry_snapshot attach failed for {symbol}: {e}", "WARNING")
@@ -2459,6 +2494,7 @@ def _active_lot_from_store_key(key: str, p: dict) -> dict:
         "highlight": highlight,
         # overlays needed by sniper / lock / board (not order-derived)
         "strategy_tier": p.get("strategy_tier"),
+        "strategy_tier_source": p.get("strategy_tier_source"),
         "dca_rounds": int(p.get("dca_rounds") or 0),
         "dca_heavy_used": bool(p.get("dca_heavy_used")),
         "recovery_hold": bool(p.get("recovery_hold")),
