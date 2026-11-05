@@ -1,13 +1,25 @@
 # Workflow — Trading bot
 
-Status: 2026-11-04 (first version 2026-11-01), written by Kay (Grok Bot lead). Operating rules are in [`AGENTS.md`](../AGENTS.md); this file
+Status: 2026-11-05 (first version 2026-11-01), written by Kay (Grok Bot lead). Operating rules are in [`AGENTS.md`](../AGENTS.md); this file
 describes who does what and how a change travels from ticket to merge.
 
 - Omnigent project: **Trading bot**, ID `adba8ee6896849cd82e22bec7a881691`
-- Workspace (Jens' Mac): `/Users/jholze/Documents/scripts/trading_bot`
+- Active Omnigent workspace (Jens' Mac): `/Users/jholze/Documents/scripts/trading_bot_omnigent`
+- Task worktrees: `/Users/jholze/Documents/scripts/trading_bot_omnigent/.worktrees/<slug>`
 - Repo: `jholze/xagent-trading-bot`
 - Omnigent host: Jens' Mac (host id from Jens' instruction or `list_hosts`); Kay's bot account: `trading-bot` (sees this project only, see `AGENTS.md` "Omnigent access")
 - PR base branch: **`staging`** (paper-trading bot). `main` is the release / live branch: Jens only.
+
+## Entry gate (Hindsight + Kay)
+
+Before research, analysis, a ticket, or an Omnigent session, follow [`AGENTS.md`](../AGENTS.md) rule 0:
+
+- Recall Hindsight bank `coding-agent::trading_bot` on the Mac at `http://127.0.0.1:8888`. Omnigent MCP is not the recall path.
+- Cite source refs `memory:<id>` / `doc:<id>`.
+- If the recall fails, write `RECALL_FAILED`. A silent skip is a process violation.
+- Kay sessions and tickets are prepared via the ops gate (`kay-entry`, or the equivalent Pflichtblock + Hindsight). Raw MCP create without Pflichtblock + Hindsight is a process violation.
+
+Closeout into Hindsight: evidence-backed lessons only. Retain only when the Hindsight LLM capability is ok. A pending queue is allowed. No bulk import. Reflect is not the default.
 
 ## Roles and models
 
@@ -29,8 +41,8 @@ in `config.json`).
 
 ## Flow
 
-1. **Ticket** — Lead writes a GitHub issue in English: problem, spec with `AC1…ACn`, acceptance tests, risk class
-   (money path yes/no). Behavior changes follow `docs/domain/spec-writing.md`.
+1. **Ticket** — Entry gate first (section above). Lead writes a GitHub issue in English: problem, spec with `AC1…ACn`, acceptance tests, risk class
+   (money path yes/no), and **Existing in memory (Hindsight)** (`memory:<id>` / `doc:<id>`, or `RECALL_FAILED`). Behavior changes follow `docs/domain/spec-writing.md`.
 2. **Coder** — creates the branch and its worktree, implements, adds tests, runs the unit suite locally.
 3. **PR** — against `staging`, English title, PR body with an `## Evidence` heading (test result, before/after metric).
    Money path: `docs/evidence/<pr-or-issue>.md` with a before/after table; the `owner-approved` label is set by Jens, or by Kay for staging merges.
@@ -67,11 +79,13 @@ Prefixes in use in this repo: `fix/`, `feat/`, `docs/`, `chore/`, `perf/`, `test
 On Jens' Mac every task gets its own worktree:
 
 ```bash
-cd /Users/jholze/Documents/scripts/trading_bot
+cd /Users/jholze/Documents/scripts/trading_bot_omnigent
 git fetch origin staging
-git worktree add -b <type>/<slug> /Users/jholze/Documents/scripts/trading_bot-worktrees/<branch-slug> origin/staging
-# <branch-slug> = branch name with "/" replaced by "-", e.g. fix-dca-trail-new-peak-558
+git worktree add -b <type>/<slug> /Users/jholze/Documents/scripts/trading_bot_omnigent/.worktrees/<slug> origin/staging
+# <slug> = branch name with "/" replaced by "-", e.g. fix-dca-trail-new-peak-558
 ```
+
+The active Omnigent workspace is that clone. Pass the clone, or the task worktree under `.worktrees/<slug>`, on `create_session`. Do not rewrite historical sessions. Older Mac task worktrees under `/Users/jholze/Documents/scripts/trading_bot-worktrees/` are historical inventory only (`docs/agent-onboarding.md` open question 15). New worktrees are not created there.
 
 Never work in the main checkout. Removing a worktree is Jens' decision. Kay's own worktrees on the Grok Bot box live
 under `/workspace/wt-<slug>`; they are scratch copies of the same branches and never replace the PR.

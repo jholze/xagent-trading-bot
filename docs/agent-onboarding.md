@@ -5,12 +5,16 @@ Answer from the repo and what you know. Never guess: write OPEN and add it to "O
 Never copy secrets, tokens, .env contents or credentials into this file. -->
 
 - Omnigent project ID: `adba8ee6896849cd82e22bec7a881691` ("Trading bot")
-- Workspace: `/Users/jholze/Documents/scripts/trading_bot`
+- Active Omnigent workspace: `/Users/jholze/Documents/scripts/trading_bot_omnigent`
+- Task worktrees: `/Users/jholze/Documents/scripts/trading_bot_omnigent/.worktrees/<slug>`
+- Hindsight recall (before research, analysis, ticket, or session): bank `coding-agent::trading_bot` via Mac `http://127.0.0.1:8888`. Omnigent MCP is not the recall path. Source refs `memory:<id>` / `doc:<id>`. On failure write `RECALL_FAILED` (no silent skip). Rule: `AGENTS.md` rule 0.
+- Kay sessions and tickets: ops gate `kay-entry` (or the equivalent Pflichtblock + Hindsight). Raw MCP create without Pflichtblock + Hindsight is a process violation.
+- Hindsight closeout: evidence-backed lessons only; retain only when the Hindsight LLM capability is ok; a pending queue is allowed; no bulk import; reflect is not the default.
 - Repo: `jholze/xagent-trading-bot`, default branch: `main`; integration / PR base branch: `staging`
 - Bot account handle: `trading-bot` (scope: this project only; access check 2026-11-04: `list_projects` shows only "Trading bot", a foreign project id returns `not_found`)
 - Omnigent host for sessions: Jens' Mac (host id from Jens' instruction or `list_hosts`, not repeated in this public repo)
 - Phase: production (real money, live trading state); `staging` = paper-trading bot
-- Filled in by / date: Kay (Grok Bot lead), 2026-11-01, updated 2026-11-04
+- Filled in by / date: Kay (Grok Bot lead), 2026-11-01, updated 2026-11-04 and 2026-11-05
 
 ## 1. Purpose
 
@@ -124,9 +128,9 @@ drawdown, measured on paper first; see the evidence rules in `AGENTS.md` and `do
 See [`docs/workflow.md`](workflow.md). Lead: Kay (Grok Bot lead). Coder: Grok 4.7 (`grok-4.7`). Reviewer: DeepSeek
 (`deepseek-v4-pro`) per PR. Final reviewer: Claude Opus (`claude-opus-5-5`), mandatory. Tester: separate role.
 Branch naming `<type>/<slug>-<issue>` (`fix/`, `feat/`, `docs/`, `chore/`, `perf/`, `test/`, `ci/`, `hotfix/`,
-`cursor/`), one worktree per task under `/Users/jholze/Documents/scripts/trading_bot-worktrees/<branch-slug>`, PR
-against `staging`, merge to `main` only by Jens; Kay may merge into `staging` as below. PR template: none in `.github/` (OPEN). Back channel: a session in the Omnigent
-project `adba8ee6896849cd82e22bec7a881691`, addressed to Jens' assistant.
+`cursor/`), one worktree per task under `/Users/jholze/Documents/scripts/trading_bot_omnigent/.worktrees/<slug>`, PR
+against `staging`, merge to `main` only by Jens; Kay may merge into `staging` as below. The older directory `trading_bot-worktrees/` is historical inventory (open question 15), not the active workspace. PR template: none in `.github/` (OPEN). Issue template: none under `.github/ISSUE_TEMPLATE` (OPEN). Back channel: a session in the Omnigent
+project `adba8ee6896849cd82e22bec7a881691`, addressed to Jens' assistant. Sessions and tickets for Kay go through `kay-entry` (or Pflichtblock + Hindsight) before any raw MCP create.
 
 Merge rule for this project (Jens, 2026-11-04; replaces the 2026-11-01 22:57 rule): Kay may merge into `staging` only proven improvements with evidence in the PR (tests, backtest or paper trading), for paper trading only, with a passed review gate and green CI `unit`. Jens keeps `main`, every deploy, the live paths `aria_bot.py`, `execution/`, `risk/`, `*.live.json`, and anything with real money: for those Kay opens the PR and stops. Code reaches `main` only through the `staging` → `main` release PR, opened and merged by Jens.
 
@@ -142,7 +146,7 @@ Model rule: Grok 4.7 codes, DeepSeek reviews every PR, Claude Opus final review 
 6. **Python typecheck.** None configured. Proposed default: no new gate; Ruff + tests only.
 7. **Coverage threshold.** None in CI. Proposed default: no global threshold; every AC has a test.
 8. **Desk UI viewports.** Proposed default: check 1280x800 and 390x844 for desk UI changes.
-9. **PR template.** None in `.github/`. Proposed default: add one with Summary / Spec (ACs) / Evidence / Risk (money path yes/no) / Reviews.
+9. **PR template and issue template.** None in `.github/` (no pull-request template, no `.github/ISSUE_TEMPLATE`). Proposed default: add a PR template with Summary / Spec (ACs) / Evidence / Risk (money path yes/no) / Reviews, and an issue template with **Existing in code** plus **Existing in memory (Hindsight)** (`memory:<id>` / `doc:<id>`, or `RECALL_FAILED`). Until that template exists, the issue body still carries those sections (`AGENTS.md` rule 0, `docs/workflow.md`).
 10. **Deploy config as high-risk.** `Dockerfile`, `railway*.toml`, `scripts/railway_start.sh`, `deploy/live_caps_overlay.json` are not in `ci/money_paths.json`. Proposed default: treat as high-risk (Claude Opus final review), Jens decides whether to add them to the gate.
 11. **Local bind default.** `aria_bot.py` defaults to `HOST=0.0.0.0`. Proposed default: agents always set `HOST=127.0.0.1`; a code change to the default needs a ticket (high-risk file).
 12. **Telegram E2E / staging checks as gates.** Only `unit` is required. Proposed default: E2E stays optional; staging soak (`docs/WQE_STAGING_SOAK.md`) is Jens' post-merge check.
