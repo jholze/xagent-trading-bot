@@ -201,10 +201,12 @@ class MemoryStore:
             q["ts_unix"] = {"$gte": since_u}
         lim = max(1, int(limit))
         try:
+            # Two-arg sort matches pymongo and unit fakes; Python re-sort below
+            # is the chronological source of truth once rows are loaded (#782).
             cur = (
                 self._col(COL_EVENTS)
                 .find(q)
-                .sort([("ts_unix", -1), ("timestamp", -1)])
+                .sort("ts_unix", -1)
                 .limit(lim)
             )
             out = []
@@ -214,6 +216,9 @@ class MemoryStore:
                     out.append(e)
             # Legacy rows without ts_unix sort as null (last). If the window is short,
             # over-fetch unindexed rows and rank by parsed time so MCP is not stuck.
+            # No Mongo .sort() here: RFC822 strings are not chronological, and the
+            # pre-backfill window is unordered by design — Python sort below heals it
+            # once enough rows are fetched; Hermes backfill then fills ts_unix (#782).
             if len(out) < lim:
                 q_legacy = dict(q)
                 q_legacy.pop("ts_unix", None)
@@ -254,15 +259,28 @@ class MemoryStore:
                     {"timestamp": {"$regex": "^[A-Za-z]"}},
                 ]
             }
+            ops = []
             for doc in col.find(query, projection={"timestamp": 1}).limit(batch):
                 raw = doc.get("timestamp")
                 iso = normalize_memory_timestamp(raw)
                 unix = memory_timestamp_unix(iso)
-                col.update_one(
-                    {"_id": doc["_id"]},
-                    {"$set": {"timestamp": iso, "ts_unix": unix}},
+                filt = {"_id": doc["_id"]}
+                patch = {"$set": {"timestamp": iso, "ts_unix": unix}}
+                ops.append((filt, patch))
+            if not ops:
+                return {"normalized": 0}
+            try:
+                from pymongo import UpdateOne
+
+                col.bulk_write(
+                    [UpdateOne(filt, patch) for filt, patch in ops],
+                    ordered=False,
                 )
-                normalized += 1
+                normalized = len(ops)
+            except Exception:
+                for filt, patch in ops:
+                    col.update_one(filt, patch)
+                    normalized += 1
         except Exception as e:
             log(f"memory backfill_event_timestamps failed: {e}", "WARNING")
             return {"normalized": normalized, "error": 1}

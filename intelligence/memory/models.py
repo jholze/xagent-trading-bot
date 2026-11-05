@@ -55,7 +55,11 @@ def parse_memory_timestamp(raw: Any) -> datetime | None:
 
 
 def normalize_memory_timestamp(raw: Any, *, fallback_now: bool = True) -> str:
-    """UTC ISO-8601 Zulu. Never leave RFC822 in ``MarketEvent.timestamp`` (#782)."""
+    """UTC ISO-8601 Zulu. Never leave RFC822 in ``MarketEvent.timestamp`` (#782).
+
+    When ``fallback_now`` is True, unparseable/empty values become ``utc_now_iso()``
+    so a garbage legacy string is not left as-is; valid ISO/RFC822 always round-trip.
+    """
     dt = parse_memory_timestamp(raw)
     if dt is None:
         return utc_now_iso() if fallback_now else ""
