@@ -11,6 +11,63 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def parse_memory_timestamp(raw: Any) -> datetime | None:
+    """Parse ISO-8601 or RFC822 (RSS pubDate) into an aware UTC datetime."""
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        dt = raw
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    s = str(raw).strip()
+    if not s:
+        return None
+    # Unix epoch seconds / millis
+    try:
+        if isinstance(raw, (int, float)) or (s[0].isdigit() and s.replace(".", "", 1).isdigit()):
+            v = float(s)
+            if v > 1e12:  # ms
+                v /= 1000.0
+            if v > 1e9:  # plausibly epoch seconds
+                return datetime.fromtimestamp(v, tz=timezone.utc)
+    except Exception:
+        pass
+    try:
+        iso = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(s)
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def normalize_memory_timestamp(raw: Any, *, fallback_now: bool = True) -> str:
+    """UTC ISO-8601 Zulu. Never leave RFC822 in ``MarketEvent.timestamp`` (#782)."""
+    dt = parse_memory_timestamp(raw)
+    if dt is None:
+        return utc_now_iso() if fallback_now else ""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def memory_timestamp_unix(raw: Any) -> float:
+    """Seconds since epoch for chronological sort; 0.0 if unparseable."""
+    dt = parse_memory_timestamp(raw)
+    return float(dt.timestamp()) if dt is not None else 0.0
+
+
 def _f(v: Any, default: float = 0.0) -> float:
     try:
         return float(v)
@@ -86,12 +143,15 @@ class MarketEvent:
     def __post_init__(self) -> None:
         if not self.timestamp:
             self.timestamp = utc_now_iso()
+        # Keep raw RSS RFC822 until to_doc / ingest rewrite so backfill can detect it (#782).
         self.impact_score = max(-1.0, min(1.0, _f(self.impact_score)))
         self.symbols = [str(s).upper().replace("-", "/") for s in (self.symbols or [])]
 
     def to_doc(self) -> dict[str, Any]:
         d = asdict(self)
         d["_id"] = self.event_id
+        d["timestamp"] = normalize_memory_timestamp(self.timestamp)
+        d["ts_unix"] = memory_timestamp_unix(d["timestamp"])
         return d
 
     @classmethod

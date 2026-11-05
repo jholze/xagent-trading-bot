@@ -180,6 +180,11 @@ def run_memory_cycle(store: MemoryStore | None = None) -> dict:
         log(f"memory macro cycle: {e}", "WARNING")
         out["macro"] = {"error": str(e)[:200]}
     try:
+        out["event_ts_backfill"] = store.backfill_event_timestamps(batch=2000)
+    except Exception as e:
+        log(f"memory event ts backfill: {e}", "WARNING")
+        out["event_ts_backfill"] = {"error": str(e)[:200]}
+    try:
         out["news"] = poll_and_ingest_news(store)
     except Exception as e:
         log(f"memory news cycle: {e}", "WARNING")

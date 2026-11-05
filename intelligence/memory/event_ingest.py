@@ -8,7 +8,12 @@ import re
 from typing import Any
 
 from intelligence.memory.embeddings import embed_event
-from intelligence.memory.models import GLOBAL_TENANT_ID, MarketEvent, utc_now_iso
+from intelligence.memory.models import (
+    GLOBAL_TENANT_ID,
+    MarketEvent,
+    normalize_memory_timestamp,
+    utc_now_iso,
+)
 from intelligence.memory.store import MemoryStore
 from logger import log
 
@@ -158,8 +163,26 @@ def ingest_news_item(
     eid = make_event_id(source, key)
     # dedupe — but merge symbols if we learn better tags for same article
     existing = store.get_event(eid)
+
+    def _touch_normalize(ev: MarketEvent, *, merged_syms: list[str] | None = None) -> MarketEvent:
+        """Rewrite RFC822 timestamps and optional symbol merges on re-see (#782)."""
+        changed = False
+        iso = normalize_memory_timestamp(ev.timestamp)
+        if iso != (ev.timestamp or ""):
+            ev.timestamp = iso
+            changed = True
+        if merged_syms is not None and merged_syms != list(ev.symbols or []):
+            ev.symbols = merged_syms
+            meta = dict(ev.metadata or {})
+            meta["symbols_merged"] = True
+            ev.metadata = meta
+            changed = True
+        if changed:
+            store.upsert_event(ev)
+        return ev
+
     if existing and not universe:
-        return existing
+        return _touch_normalize(existing)
     if symbols is not None:
         syms = list(symbols)
     elif universe:
@@ -171,13 +194,7 @@ def ingest_news_item(
     if existing:
         # merge symbol tags for better book coverage
         merged = list(dict.fromkeys(list(existing.symbols or []) + syms))[:12]
-        if merged != list(existing.symbols or []):
-            existing.symbols = merged
-            meta = dict(existing.metadata or {})
-            meta["symbols_merged"] = True
-            existing.metadata = meta
-            store.upsert_event(existing)
-        return existing
+        return _touch_normalize(existing, merged_syms=merged)
     impact = impact_from_text(text)
     et = (event_type or "news").strip() or "news"
     if force_event_type_on_impact and et == "news":
@@ -205,7 +222,7 @@ def ingest_news_item(
             meta["book_symbols"] = hit[:8]
     ev = MarketEvent(
         event_id=eid,
-        timestamp=published_at or utc_now_iso(),
+        timestamp=normalize_memory_timestamp(published_at) if published_at else utc_now_iso(),
         event_type=et,
         symbols=syms,
         impact_score=impact,
