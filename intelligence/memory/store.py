@@ -257,6 +257,8 @@ class MemoryStore:
         """
         batch = max(1, min(10000, int(batch)))
         normalized = 0
+        # ``rfc822`` counts RFC822 rows queued for rewrite in phase 1;
+        # ``normalized`` counts rows actually written (logging only).
         rfc822 = 0
         try:
             col = self._col(COL_EVENTS)
@@ -276,7 +278,9 @@ class MemoryStore:
                 if len(ops) >= batch:
                     break
                 remain = batch - len(ops)
-                for doc in col.find(query, projection={"timestamp": 1}).limit(remain):
+                for doc in col.find(
+                    query, projection={"timestamp": 1, "ts_unix": 1}
+                ).limit(remain):
                     raw = doc.get("timestamp")
                     iso = normalize_memory_timestamp(raw)
                     unix = memory_timestamp_unix(iso)
