@@ -1,0 +1,22 @@
+# xagent-trading-bot
+
+> Paper trading on branch `staging` (Railway env test). `main` is live — Jens only. Agent instructions live in AGENTS.md.
+
+This file is an agent index (llms.txt). Prefer linked Markdown over guessing.
+
+## Core
+
+- [AGENTS.md](../AGENTS.md): mandatory operating rules, merge/review, Omnigent + Hindsight
+- [docs/workflow.md](workflow.md): roles, branch flow, evidence
+- [docs/agent-onboarding.md](agent-onboarding.md): project facts questionnaire
+
+## Reference
+
+- [docs/reference/settings-features-options.md](reference/settings-features-options.md): settings/features/options entry
+- [docs/reference/settings-features-options.generated.md](reference/settings-features-options.generated.md): generated config + Telegram tables
+- [DOCUMENTATION.md](../DOCUMENTATION.md): human product documentation (Telegram narrative)
+- [config.json](../config.json): committed defaults (paper tree on staging)
+
+## Audit
+
+- [docs/audit/doku_audit_2026-11-05.md](audit/doku_audit_2026-11-05.md): settings/docs audit + Hindsight reconciliation

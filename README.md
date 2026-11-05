@@ -203,18 +203,16 @@ python3 scripts/reconcile_gate_positions.py   # Live-Modus
 
 ## Wichtige Defaults (`config.json`)
 
-| Setting | Wert |
-|---------|------|
-| `update_interval` | 600 (10 Min) |
-| `max_usdt_per_trade` | 25 |
-| `max_daily_trades` | 8 |
-| `trade_cooldown_hours` | 1.0 |
-| `notify_on_cycle` | true |
-| `observability.telegram_explanations.enabled` | true |
-| `observability.telegram_explanations.verbosity` | verbose |
-| `live.dry_run` | true (sicher) |
-| `live.dry_run_enhanced` | false (true = Sim-Wallet + Trending) |
-| `strategy_backtest.auto_run` | true |
+> **Nicht aus dieser Tabelle zitieren.** Die Zahlen hier sind historisch und weichen vom committed `config.json` auf `staging` ab. Agenten und Tickets lesen **[`docs/reference/settings-features-options.md`](docs/reference/settings-features-options.md)** (generierte Tabellen) und die Datei `config.json` auf dem Ziel-Branch. Stand Audit 05.11.2026 / Issue #780.
+
+| Setting | Hinweis |
+|---------|---------|
+| `update_interval` | Siehe `config.json` / generierte Referenz (nicht 600 aus alter README) |
+| `max_usdt_per_trade` / `max_daily_trades` / `trade_cooldown_hours` | Money-path — aktuelle Werte nur aus `config.json` |
+| `observability.telegram_explanations.*` | Erklärungen in Telegram; Details in der Referenz |
+| `live.dry_run` / `live.dry_run_enhanced` | Sicherheits-/Sim-Schalter — Werte in `config.json` |
+| `strategy_backtest.auto_run` | Siehe Referenz |
+| Telegram-Befehle | `DOCUMENTATION.md` §7 + generierte Befehlstabelle |
 
 ---
 

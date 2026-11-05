@@ -1,0 +1,35 @@
+name: Docs settings freshness
+
+# Regenerates the settings/features reference and fails if the committed
+# markdown drifted. Docs-only; no secrets; no money paths.
+
+on:
+  pull_request:
+    paths:
+      - "config.json"
+      - "notifications/telegram_commands/**"
+      - "scripts/generate_settings_reference.py"
+      - "docs/reference/settings-features-options.generated.md"
+      - ".github/workflows/docs-settings-freshness.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Regenerate settings reference
+        run: python3 scripts/generate_settings_reference.py
+      - name: Fail if generated docs drifted
+        run: |
+          if ! git diff --exit-code -- docs/reference/settings-features-options.generated.md; then
+            echo "::error::settings-features-options.generated.md is stale. Run python3 scripts/generate_settings_reference.py and commit."
+            exit 1
+          fi
+          echo "Generated settings reference is up to date."
