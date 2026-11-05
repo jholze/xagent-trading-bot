@@ -49,6 +49,9 @@ SCENARIO_TRIALS: dict[str, Trial] = {
     "p": Trial(11, "2026-11-04", "profit floor: arm 4/6/8 x floor 0.5/1/2, arm8+trail3+floor3, primary with close fill"),
     "p_t8_rerun": Trial(0, "2026-11-04", "same candidates as p, verdict for the trail variant"),
     "p_oct": Trial(0, "2026-11-04", "same candidates as p on the October book"),
+    "s": Trial(8, "2026-11-05", "full-stop caps 12/15/20/25 x {grace partial, forever pause after DCA}"),
+    "s_pause_rerun": Trial(0, "2026-11-05", "same candidates as s, verdict for cap20_dcapause"),
+    "s_oct": Trial(0, "2026-11-05", "same candidates as s on the October book"),
 }
 
 # Variants of the long walk-forward study (backtest/harness/longwf.py).
