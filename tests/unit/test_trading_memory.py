@@ -19,7 +19,13 @@ from intelligence.memory.event_ingest import (
     ingest_webhook_signal,
     ingest_x_post,
 )
-from intelligence.memory.models import CoinProfile, MarketEvent, TradeMemory
+from intelligence.memory.models import (
+    CoinProfile,
+    MarketEvent,
+    TradeMemory,
+    memory_timestamp_unix,
+    normalize_memory_timestamp,
+)
 from intelligence.memory.rebuild import compute_profile_from_trades, orders_to_trade_memories
 from intelligence.memory.reflector import reflect
 from intelligence.memory.retriever import compact_context, similar_coin_situations, similar_events
@@ -555,6 +561,92 @@ class TestNewsProviders(unittest.TestCase):
         events = store.list_events()
         self.assertTrue(events)
         self.assertTrue(any(e.event_type in ("news", "macro_news") for e in events))
+
+
+
+class TestMemoryEventTimestamps782(unittest.TestCase):
+    """RFC822 pubDate must not win lexicographic list_events sort (#782)."""
+
+    def test_normalize_rfc822_to_iso(self):
+        iso = normalize_memory_timestamp("Wed, 30 Sep 2026 23:20:59 +0000")
+        self.assertTrue(iso.startswith("2026-09-30T23:20:59"))
+        self.assertTrue(iso.endswith("Z"))
+        self.assertGreater(
+            memory_timestamp_unix("Thu, 05 Nov 2026 13:46:01 +0000"),
+            memory_timestamp_unix("Wed, 30 Sep 2026 23:20:59 +0000"),
+        )
+
+    def test_ingest_stores_iso_not_rfc822(self):
+        store = InMemoryMemoryStore()
+        ev = ingest_news_item(
+            title="Fresh headline about BTC",
+            url="https://example.com/fresh-782",
+            source="rss:decrypt.co",
+            published_at="Thu, 05 Nov 2026 13:46:01 +0000",
+            store=store,
+        )
+        self.assertIsNotNone(ev)
+        self.assertTrue(ev.timestamp.startswith("2026-11-05T"))
+        self.assertFalse(ev.timestamp[:1].isalpha())
+        doc = store.get_event(ev.event_id).to_doc()
+        self.assertIn("ts_unix", doc)
+        self.assertGreater(doc["ts_unix"], 0)
+
+    def test_list_events_chronological_with_mixed_raw_docs(self):
+        store = InMemoryMemoryStore()
+        # Bypass constructors to simulate legacy Mongo RFC822 rows already stored.
+        legacy = {
+            "_id": "rss:old",
+            "event_id": "rss:old",
+            "timestamp": "Wed, 30 Sep 2026 23:20:59 +0000",
+            "event_type": "news",
+            "symbols": ["BTC/USDT"],
+            "impact_score": 0.0,
+            "description": "old wed",
+            "source": "rss:decrypt.co",
+            "url": "https://example.com/old",
+            "metadata": {},
+            "embedding": [],
+            "tenant_id": "global",
+        }
+        store._docs["memory_market_events"]["rss:old"] = legacy
+        fresh = ingest_news_item(
+            title="November headline",
+            url="https://example.com/nov-782",
+            source="rss:decrypt.co",
+            published_at="Thu, 05 Nov 2026 13:46:01 +0000",
+            store=store,
+        )
+        rows = store.list_events(limit=5, tenant_id="default")
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertEqual(rows[0].event_id, fresh.event_id)
+        # Lexicographic string sort would put Wed above Thu; chronological must not.
+        self.assertGreater(
+            memory_timestamp_unix(rows[0].timestamp),
+            memory_timestamp_unix(rows[1].timestamp),
+        )
+
+    def test_backfill_rewrites_rfc822(self):
+        store = InMemoryMemoryStore()
+        store._docs["memory_market_events"]["rss:legacy"] = {
+            "_id": "rss:legacy",
+            "event_id": "rss:legacy",
+            "timestamp": "Wed, 30 Sep 2026 21:53:05 +0000",
+            "event_type": "structure_risk",
+            "symbols": ["CIO/USDT"],
+            "impact_score": 0.0,
+            "description": "legacy",
+            "source": "rss:www.theblock.co",
+            "url": "",
+            "metadata": {},
+            "embedding": [],
+            "tenant_id": "global",
+        }
+        out = store.backfill_event_timestamps(batch=10)
+        self.assertEqual(out["normalized"], 1)
+        doc = store._docs["memory_market_events"]["rss:legacy"]
+        self.assertTrue(str(doc["timestamp"]).startswith("2026-09-30T"))
+        self.assertIn("ts_unix", doc)
 
 
 class TestRiskManagerMemory(unittest.TestCase):

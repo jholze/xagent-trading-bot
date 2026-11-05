@@ -15,6 +15,8 @@ from intelligence.memory.models import (
     Lesson,
     MarketEvent,
     TradeMemory,
+    memory_timestamp_unix,
+    normalize_memory_timestamp,
 )
 from logger import log
 
@@ -192,19 +194,97 @@ class MemoryStore:
             q["symbols"] = {"$in": [sym, sym.split("/")[0], f"{sym.split('/')[0]}/USDT"]}
         if event_type:
             q["event_type"] = event_type
-        if since_iso:
-            q["timestamp"] = {"$gte": since_iso}
+        # Do not filter/sort on raw timestamp strings: RFC822 pubDates sort by weekday
+        # name and beat ISO-8601 lexicographically (#782). Prefer ts_unix.
+        since_u = memory_timestamp_unix(since_iso) if since_iso else None
+        if since_u is not None and since_u > 0:
+            q["ts_unix"] = {"$gte": since_u}
+        lim = max(1, int(limit))
         try:
-            cur = self._col(COL_EVENTS).find(q).sort("timestamp", -1).limit(int(limit))
+            # Two-arg sort matches pymongo and unit fakes; Python re-sort below
+            # is the chronological source of truth once rows are loaded (#782).
+            cur = (
+                self._col(COL_EVENTS)
+                .find(q)
+                .sort("ts_unix", -1)
+                .limit(lim)
+            )
             out = []
             for doc in cur:
                 e = MarketEvent.from_doc(doc)
                 if e:
                     out.append(e)
-            return out
+            # Legacy rows without ts_unix sort as null (last). If the window is short,
+            # over-fetch unindexed rows and rank by parsed time so MCP is not stuck.
+            # No Mongo .sort() here: RFC822 strings are not chronological, and the
+            # pre-backfill window is unordered by design — Python sort below heals it
+            # once enough rows are fetched; Hermes backfill then fills ts_unix (#782).
+            if len(out) < lim:
+                q_legacy = dict(q)
+                q_legacy.pop("ts_unix", None)
+                q_legacy["ts_unix"] = {"$exists": False}
+                need = lim - len(out)
+                legacy = []
+                for doc in self._col(COL_EVENTS).find(q_legacy).limit(max(need * 40, 200)):
+                    e = MarketEvent.from_doc(doc)
+                    if not e:
+                        continue
+                    if since_u is not None and memory_timestamp_unix(e.timestamp) < since_u:
+                        continue
+                    legacy.append(e)
+                legacy.sort(key=lambda x: memory_timestamp_unix(x.timestamp), reverse=True)
+                seen = {e.event_id for e in out}
+                for e in legacy:
+                    if e.event_id in seen:
+                        continue
+                    out.append(e)
+                    seen.add(e.event_id)
+                    if len(out) >= lim:
+                        break
+            out.sort(key=lambda x: memory_timestamp_unix(x.timestamp), reverse=True)
+            return out[:lim]
         except Exception as e:
             log(f"memory list_events failed: {e}", "WARNING")
             return []
+
+    def backfill_event_timestamps(self, *, batch: int = 2000) -> dict[str, int]:
+        """Rewrite RFC822 / missing ts_unix on memory_market_events (#782). Ledger-safe."""
+        batch = max(1, min(10000, int(batch)))
+        normalized = 0
+        try:
+            col = self._col(COL_EVENTS)
+            query = {
+                "$or": [
+                    {"ts_unix": {"$exists": False}},
+                    {"timestamp": {"$regex": "^[A-Za-z]"}},
+                ]
+            }
+            ops = []
+            for doc in col.find(query, projection={"timestamp": 1}).limit(batch):
+                raw = doc.get("timestamp")
+                iso = normalize_memory_timestamp(raw)
+                unix = memory_timestamp_unix(iso)
+                filt = {"_id": doc["_id"]}
+                patch = {"$set": {"timestamp": iso, "ts_unix": unix}}
+                ops.append((filt, patch))
+            if not ops:
+                return {"normalized": 0}
+            try:
+                from pymongo import UpdateOne
+
+                col.bulk_write(
+                    [UpdateOne(filt, patch) for filt, patch in ops],
+                    ordered=False,
+                )
+                normalized = len(ops)
+            except Exception:
+                for filt, patch in ops:
+                    col.update_one(filt, patch)
+                    normalized += 1
+        except Exception as e:
+            log(f"memory backfill_event_timestamps failed: {e}", "WARNING")
+            return {"normalized": normalized, "error": 1}
+        return {"normalized": normalized}
 
     # --- trades ---
     def upsert_trade(self, trade: TradeMemory) -> bool:
@@ -280,6 +360,8 @@ class MemoryStore:
             self._col(COL_PROFILES).create_index([("symbol", 1), ("tenant_id", 1)])
             self._col(COL_EVENTS).create_index([("timestamp", -1)])
             self._col(COL_EVENTS).create_index([("event_type", 1), ("timestamp", -1)])
+            self._col(COL_EVENTS).create_index([("ts_unix", -1)])
+            self._col(COL_EVENTS).create_index([("event_type", 1), ("ts_unix", -1)])
             self._col(COL_TRADES).create_index([("symbol", 1), ("tenant_id", 1)])
             self._col(COL_LESSONS).create_index([("created_at", -1)])
         except Exception as e:
@@ -324,6 +406,7 @@ class InMemoryMemoryStore(MemoryStore):
         self, *, symbol=None, event_type=None, since_iso=None, limit=50, tenant_id=None
     ):
         out = []
+        since_u = memory_timestamp_unix(since_iso) if since_iso else None
         for d in self._docs[COL_EVENTS].values():
             e = MarketEvent.from_doc(d)
             if not e:
@@ -332,15 +415,32 @@ class InMemoryMemoryStore(MemoryStore):
                 continue
             if event_type and e.event_type != event_type:
                 continue
-            if since_iso and e.timestamp < since_iso:
+            if since_u is not None and memory_timestamp_unix(e.timestamp) < since_u:
                 continue
             if symbol:
                 base = symbol.split("/")[0].upper()
                 if not any(base in s.upper() or s.upper() == symbol.upper() for s in e.symbols):
                     continue
             out.append(e)
-        out.sort(key=lambda x: x.timestamp, reverse=True)
+        out.sort(key=lambda x: memory_timestamp_unix(x.timestamp), reverse=True)
         return out[:limit]
+
+    def backfill_event_timestamps(self, *, batch: int = 2000) -> dict[str, int]:
+        normalized = 0
+        for _id, d in list(self._docs[COL_EVENTS].items()):
+            if normalized >= batch:
+                break
+            raw = d.get("timestamp")
+            iso = normalize_memory_timestamp(raw)
+            unix = memory_timestamp_unix(iso)
+            if d.get("timestamp") == iso and d.get("ts_unix") == unix:
+                continue
+            d = dict(d)
+            d["timestamp"] = iso
+            d["ts_unix"] = unix
+            self._docs[COL_EVENTS][_id] = d
+            normalized += 1
+        return {"normalized": normalized}
 
     def upsert_trade(self, trade: TradeMemory) -> bool:
         return self._put(COL_TRADES, trade.to_doc())
