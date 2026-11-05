@@ -184,6 +184,9 @@ python3 scripts/reconcile_gate_positions.py   # Live mode
 
 ## Important defaults (`config.json`)
 
+> **Do not quote this table.** Use [docs/reference/settings-features-options.md](docs/reference/settings-features-options.md) and committed `config.json` on the target branch (audit 2026-11-05 / #780).
+
+
 | Setting | Value |
 |---------|-------|
 | `update_interval` | 600 (10 min) |
