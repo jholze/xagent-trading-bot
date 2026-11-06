@@ -13,6 +13,7 @@ from core.config import BotConfig
 from core.models import TradeOrder
 from data_manager import get_config
 from risk import pre_trade_gate as ptg
+from core.tenant_context import tenant_context
 from risk.risk_manager import RiskManager
 from storage.order_ledger_v2 import MemoryOrderLedgerV2
 
@@ -363,13 +364,25 @@ def test_other_scope_ignored(ledger):
 
 
 def test_mongo_query_symbol_fills_read_only():
-    from storage.mongo_client import get_database
+    from storage.mongo_client import (
+        DEV_DB_NAME,
+        TEST_DB_NAME,
+        assert_safe_dev_db_mutation,
+        get_database,
+    )
     from storage.order_ledger_v2 import ORDERS_V2_COLLECTION, MongoOrderLedgerV2
 
     try:
         db = get_database()
     except Exception:
         pytest.skip("local mongo not reachable")
+    # Opus B5 (#767): never insert into the operator/staging ledger from a unit test.
+    db_name = getattr(db, "name", "") or ""
+    if db_name == DEV_DB_NAME or not (
+        db_name == TEST_DB_NAME or db_name.startswith("xagent_pytest")
+    ):
+        pytest.skip(f"refusing mutation on non-test db {db_name!r}")
+    assert_safe_dev_db_mutation(db_name, action="write")
     col = db[ORDERS_V2_COLLECTION]
     docs = [
         dict(_sell(-80, days_ago=5, tenant="henry", oid="m1"), _id="henry:demo:m1"),
@@ -507,6 +520,8 @@ def _run(gate, order, *, source="auto", rows=None, events=None, position=None, h
         st.enter_context(patch("risk.pre_trade_gate.load_history_rows", side_effect=hl))
         st.enter_context(patch("risk.pre_trade_gate.load_fact_events", return_value=list(events or [])))
         st.enter_context(patch("logger.log", side_effect=fake_log))
+        # Gate refuses ambient DEFAULT when no context is set (Opus B2).
+        st.enter_context(tenant_context("default", scope="demo"))
         dec = rm.evaluate(order, "4h", source=source)
     return dec, calls
 
@@ -681,6 +696,20 @@ def test_rm_enforce_scope_resolution_error_blocks():
     with patch("core.tenant_context.resolve_tenant_scope", side_effect=RuntimeError("no scope")):
         dec2, _ = _run(_gcfg("shadow"), _order(), rows=[])
     assert dec2.approved
+
+
+def test_rm_enforce_missing_tenant_context_blocks():
+    """Opus B2: ambient default must not judge henry/ctexp buys."""
+    with patch("core.tenant_context.current_tenant_context", return_value=None):
+        dec, _ = _run(_gcfg("enforce"), _order(), rows=[])
+    assert not dec.approved and dec.code == "pre_trade_gate_block"
+
+
+def test_rm_shadow_missing_tenant_context_does_not_block():
+    with patch("core.tenant_context.current_tenant_context", return_value=None):
+        dec, _ = _run(_gcfg("shadow"), _order(), rows=[])
+    assert dec.approved
+
 
 
 def test_truncated_history_is_flagged():
