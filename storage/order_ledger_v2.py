@@ -1042,10 +1042,12 @@ class MongoOrderLedgerV2:
         ``tenant_scope_status_day`` index prefix.
         """
         tids = sorted({str(t) for t in tenant_ids if t})
+        # Align with MemoryOrderLedgerV2 / is_executed_status: accept the
+        # canonical "filled" and the legacy alias "executed" (Opus B3 #767).
         filt: dict[str, Any] = {
             "tenant_id": {"$in": tids},
             "ledger_scope": scope,
-            "status": OrderStatus.EXECUTED.value,
+            "status": {"$in": [OrderStatus.EXECUTED.value, "executed"]},
             "day_key": {"$gte": since_day},
             "symbol": str(symbol or ""),
         }
