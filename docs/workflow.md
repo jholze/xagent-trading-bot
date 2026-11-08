@@ -75,7 +75,7 @@ targets `main`.
 
 Rules: [`AGENTS.md`](../AGENTS.md). Release decisions: [`docs/release-framework.md`](release-framework.md). Tickets and the board hold scope and status; this file does not write them. Skills [`docs/skills/release-planning/SKILL.md`](skills/release-planning/SKILL.md) and [`docs/skills/ticket-spec/SKILL.md`](skills/ticket-spec/SKILL.md) point at those rules and do not replace them. The scheduler that fires a job is the trigger; [`docs/operations/routines.md`](operations/routines.md) only maps it. Ticket shape: [`docs/domain/spec-writing.md`](domain/spec-writing.md) and [`docs/requirements-engineering-guide.md`](requirements-engineering-guide.md) §1a item 7, §4, and §5. A raw request is not Ready. Manual dry run: [`docs/releases/2026-11-08-intake-tabletop.md`](releases/2026-11-08-intake-tabletop.md).
 
-`scripts/kanban_status.py` still moves Status when it sees `omnigent:ready`, `review:lena`, and `review:viktor`. Those labels are retired for humans. The script is unchanged. Views on the board do not clear that debt. CI `unit` does not use those labels.
+`scripts/kanban_status.py` still moves Status when it sees `omnigent:ready`, `review:lena`, and `review:viktor`. Those labels are retired for humans. The script is unchanged. It does not set Done, it retains a Done it already finds, a freeze comment can move Backlog to Spec/Acceptance, and a merged staging soak pull request can move a card to Shadow before the parked check. Views on the board do not clear that debt. CI `unit` does not use those labels. Intake is not enforced by CI.
 
 Back channel: the lead reports to Jens' assistant in a session of the Omnigent project above.
 
