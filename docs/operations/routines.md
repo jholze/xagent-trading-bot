@@ -4,16 +4,16 @@ Status as of 8 November 2026. This file records who owns a trigger. It does not 
 
 The authority to fire a job is the scheduler that already owns that job. A release skill does not fire it. A merge of documentation does not change it.
 
-## Owner snapshot, not re-probed
+## Owner status evidence, 8 November 2026
 
-Supplied for this documentation pass. Not found as a cron in this repository. Not confirmed by reading a live scheduler in this pass.
+Supplied as the authoritative status for this documentation pass. Not found as a cron in this repository. Not re-read from the live scheduler in this pass. This map does not change either job. Reliability is not claimed.
 
-| Name | Cadence in the snapshot | State in the snapshot | Where it lives |
-| --- | --- | --- | --- |
-| Old daily job | 09:15 | paused | outside this git tree |
-| Ledger job | 09:30, Monday–Friday | active | outside this git tree |
+| Job | Cadence | State on 8 November 2026 | Last recorded run | Where it lives |
+| --- | --- | --- | --- | --- |
+| Old daily job | 09:15 | paused | Last success 30 October 2026, 09:20:28 MEZ | outside this git tree |
+| Ledger job | 09:30, Monday–Friday | reactivated 7 November 2026 | Last displayed run 29 October 2026, 09:31:31 MEZ, failed. No subsequent weekday run yet. | outside this git tree |
 
-Changing either job is out of scope. The snapshot is not a release approval and not permission to trade.
+The 09:30 job is therefore not shown to be reliable. A reactivation date is not a successful run. Neither row is a release approval or permission to trade.
 
 ## Scheduler that is in git
 

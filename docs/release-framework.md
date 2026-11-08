@@ -28,13 +28,15 @@ Historical plans under `plans/` and design notes under `docs/umbau/` stay in the
 | --- | --- |
 | SemVer major, minor, patch | The three numbers of a tag `vMAJOR.MINOR.PATCH`. Patch means a fix or mini-improvement of a feature that already exists. No new feature. |
 | Main release | Jens's term for an accepted `staging` → `main` release of one frozen scope. It is not the word "major", and it does not imply a number. |
-| Current patch line | Maintenance of existing features only. Board view 9. Version number blocked. |
+| Current patch line | Maintenance of existing features only. Board view 9. SemVer **unnumbered** until proved. |
 | Next Main release | Planned board option, already renamed in place: **v2.2.0 Short + real Gate futures testnet PLANNED** (option `845f1cf9`). Not a tag, not a GitHub Release, not a runtime version. Milestone v2.1.0 is not this slice. [#642](https://github.com/jholze/xagent-trading-bot/issues/642) is unchanged and does not freeze the feature list. |
 | Later candidate | Seasonality research. Board view 11. No version and no date. |
 
-## Version numbers are blocked
+## What is assigned, and what is not
 
-No SemVer is assigned for the patch line or for the Short slice. This file does not invent `v1.2.1`, `v1.8.1`, `v2.0.1`, `v2.1.0`, `v2.1.1`, or `v2.1.0-rc.32`.
+The planned name **`v2.2.0 Short + real Gate futures testnet PLANNED`** is already assigned. It is board option `845f1cf9`, renamed in place. That assignment is a plan label. It is not a git tag, not a published GitHub Release, not owner acceptance of a build, and not a runtime version.
+
+The maintenance line has **no number**. This file does not invent `v1.2.1`, `v1.8.1`, `v2.0.1`, `v2.1.0`, `v2.1.1`, or `v2.1.0-rc.32` for it. `v2.1.x` in #642 is the planned hotfix series after a future `v2.1.0` Klein-Live tag, not the current runtime.
 
 **Do not repurpose milestone #10 `v2.1.0` as the Short target.** Its text remains a Klein-Live freeze: first named `staging` → `main` cut, SHA `842ac8c`, live-candidate caps. Open issues on it include [#642](https://github.com/jholze/xagent-trading-bot/issues/642) (1000 USDT spot long, tenant henry first) and [#488](https://github.com/jholze/xagent-trading-bot/issues/488). Closed [#644](https://github.com/jholze/xagent-trading-bot/issues/644) is a spec under #642. The parent left that milestone and its history in place.
 
@@ -151,3 +153,4 @@ This release-policy pull request is later. It does not inherit #792's review, do
 | 0 | 8 November 2026 | Policy created. Milestone #10 left as Klein-Live. Slices point at board views 9, 10, and 11. No strategy GO. No tag. Automation debt recorded and left in the script. |
 | 1 | 8 November 2026, 14:22 | Planned Short name aligned to the number #642 already reserved. Not a published tag. Maintenance lineage left unproved. |
 | 2 | 8 November 2026, 14:24 MEZ | Board option `845f1cf9` recorded under the parent's readback as `v2.2.0 Short + real Gate futures testnet PLANNED`. View 10 recorded as updated. This file does not write that option. Repo rules stay unmerged. |
+| 3 | 8 November 2026 | Planned name distinguished from tag, publication, acceptance, and runtime. Seasonality order stated as #567 then #571 then #572. Routine status times recorded. Intake dry run rewritten so the complete examples are visible and labeled as simulation. |
