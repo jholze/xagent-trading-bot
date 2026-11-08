@@ -1,5 +1,11 @@
 # Trading Bot Kanban — Status automation
 
+**Human rule (8 November 2026).** Approval is [`AGENTS.md`](../AGENTS.md). Do not set `omnigent:ready`, `review:lena`, `review:viktor`, or `veto:*`, and do not wait on Lena, Viktor, Marcus, or Kay as that chain. Build-ready means [`docs/requirements-engineering-guide.md`](requirements-engineering-guide.md) §1a item 7, not the Ready to Work column below. A board Done card is not delivery. This page does not authorize a deploy, a main merge, or a strategy activation.
+
+**Automation debt, still true, not fixed here.** [`scripts/kanban_status.py`](../scripts/kanban_status.py) `ready_chain_green()` still requires `omnigent:ready` + `review:lena` + `review:viktor` and no veto, and `decide_status()` can move Status to Ready to Work on that chain. [`.github/workflows/kanban-status.yml`](../.github/workflows/kanban-status.yml) still runs that script. Those files are out of scope for a documentation-only change. New board views do not disable the script. CI job `unit` does not read those labels. Until a later reviewed change updates the script, do not claim the board automation is clean.
+
+The sections below are the historical description of that unedited script. They are not instructions to follow.
+
 Board: [Trading Bot Kanban](https://github.com/users/jholze/projects/1/views/1)
 Repo: `jholze/xagent-trading-bot`
 Dev branch: `staging`. Prod branch: `main` (never merge / push here).

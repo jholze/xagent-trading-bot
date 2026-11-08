@@ -125,7 +125,7 @@ drawdown, measured on paper first; see the evidence rules in `AGENTS.md` and `do
 
 ## 9. Workflow and roles
 
-See [`docs/workflow.md`](workflow.md). Lead: Kay (Grok Bot lead). Coder: Grok 4.7 (`grok-4.7`). Reviewer: DeepSeek
+See [`docs/workflow.md`](workflow.md). Release naming and the blocked version gate: [`docs/release-framework.md`](release-framework.md). A raw request is not a build-ready ticket: [`docs/requirements-engineering-guide.md`](requirements-engineering-guide.md) §1a item 7. Lead: Kay (Grok Bot lead). Coder: Grok 4.7 (`grok-4.7`). Reviewer: DeepSeek
 (`deepseek-v4-pro`) per PR. Final reviewer: Claude Opus (`claude-opus-5-5`), mandatory. Tester: separate role.
 Branch naming `<type>/<slug>-<issue>` (`fix/`, `feat/`, `docs/`, `chore/`, `perf/`, `test/`, `ci/`, `hotfix/`,
 `cursor/`), one worktree per task under `/Users/jholze/Documents/scripts/trading_bot_omnigent/.worktrees/<slug>`, PR

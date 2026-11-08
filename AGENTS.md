@@ -56,6 +56,13 @@ These rules are fixed by Jens (2026-11-01, updated 2026-11-04 and 2026-11-05). T
    | Human product docs | `README.md`, `DOCUMENTATION.md` |
    | Domain thresholds | `docs/domain/` |
    | Docs audit 2026-11-05 | `docs/audit/doku_audit_2026-11-05.md` |
+   | Version and release policy | `docs/release-framework.md` |
+   | Release plan and note template | `docs/releases/2026-11-plan.md`, `docs/releases/RELEASE_NOTES_TEMPLATE.md` |
+   | Routine map (not a scheduler) | `docs/operations/routines.md` |
+   | Release procedure (skill, not a second policy) | `docs/skills/release-planning/SKILL.md` |
+   | Ticket procedure (skill, not a second policy) | `docs/skills/ticket-spec/SKILL.md` |
+
+   The two skills say when to follow this file and when to stop. They do not authorize a release, a tag, a deploy, a `main` merge, a key read, or an order. They are files in this repository, not a global install. Version numbers stay blocked until `docs/release-framework.md` says the lineage gate has passed. Milestone #10 `v2.1.0` is not repurposed by this map.
 
 1. **Model rule** (not a Grok-only setup):
    - Coder: **Grok 4.7** (`grok-4.7`).

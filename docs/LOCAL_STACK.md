@@ -1,7 +1,9 @@
 # Local stack — Railway staging parity (Mac)
 
 > **GitHub:** [#132](https://github.com/jholze/xagent-trading-bot/issues/132)  
-> **Goal:** Same *service shape* as Railway env `test`, on your Mac, before `deploy_staging.sh`.
+> **Goal:** Same *service shape* as Railway env `test`, on your Mac.
+>
+> **Deploy line retired (8 November 2026).** Do not run `scripts/deploy_staging.sh` and do not push `staging`. Agents do not deploy. The local commands below are the local stack. Release rules: [`docs/release-framework.md`](release-framework.md).
 
 ## Service map
 
@@ -125,7 +127,8 @@ Manual steps after the gate is green:
 bash scripts/local_stack_bot.sh     # operator path / Telegram
 # exercise the feature
 bash scripts/local_stack_health.sh
-# then from branch staging: bash scripts/deploy_staging.sh
+# Historical line, do not run: bash scripts/deploy_staging.sh
+# A staging merge auto-deploys paper. Agents do not push staging.
 ```
 
 ## Port rationale

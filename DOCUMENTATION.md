@@ -4,6 +4,8 @@
 
 Stand: 23. Juni 2026 · Version 2.0
 
+> **Versionshinweis (8. November 2026).** „Version 2.0“ ist das Datumslabel dieser Datei. Es ist keine laufende Version. Verbindlich: [docs/release-framework.md](docs/release-framework.md). Abschnitt 17 unten ist historisch und wird nicht ausgeführt.
+
 Dieses Dokument ist die zentrale Übersicht: Architektur, Intervalle, Strategien, **Volatile-Altcoin-Profil** (inkl. **Exit Ladder**, **ATR-Trailing-Stop**, **1h-Timeframe**), **Runtime-Architektur** (Async-Notifications, Ledger-Lock, Rebuy-Cooldown), **Hermes-Memory-Fallback**, Telegram-Befehle (inkl. **`/ask`**), **Transparenz für Einsteiger**, Demo-Modus, X/Twitter, Hermes und Sandbox.
 
 ---
@@ -1226,7 +1228,11 @@ Spam-Schutz: CMC-Digest nur bei **geänderten** Signalen; X-Digest überspringt 
 
 ---
 
-## 17. Branch-Workflow: feature → staging → main
+## 17. Branch-Workflow (historisch, außer Kraft seit 8. November 2026)
+
+**Nicht ausführen.** Die Checkliste in diesem Abschnitt (Branch `feature/*` von `main`, `scripts/deploy_staging.sh`, direkter Push von `staging`, Merge von `main` zurück nach `staging`) widerspricht [`AGENTS.md`](AGENTS.md). Aktuell: Pull Requests nach `staging`, niemand pusht `staging` oder `main`, kein Deploy-Skript durch Agenten. Release-Regeln: [docs/release-framework.md](docs/release-framework.md) und [docs/workflow.md](docs/workflow.md). Der Text darunter bleibt stehen, damit die alte Anweisung prüfbar ist.
+
+### Historischer Text vom 23. Juni 2026
 
 Branches wechseln **Code und getrackte Config** — nicht automatisch die Laufzeit-JSONs des Bots.
 

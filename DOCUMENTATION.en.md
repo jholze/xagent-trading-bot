@@ -4,6 +4,8 @@
 
 As of: June 23, 2026 · Version 2.0
 
+> **Version note (8 November 2026).** "Version 2.0" is this file's date label. It is not a running version. Authority: [docs/release-framework.md](docs/release-framework.md). Section 17 below is historical and is not executed.
+
 This document is the central overview: architecture, intervals, strategies, **Volatile Altcoin profile** (including **Exit Ladder**, **ATR trailing stop**, **1h timeframe**), **runtime architecture** (async notifications, ledger lock, rebuy cooldown), **Hermes memory fallback**, Telegram commands (including **`/ask`**), **transparency for beginners**, demo mode, X/Twitter, Hermes, and sandbox.
 
 ---
@@ -1234,7 +1236,11 @@ Spam protection: CMC digest only on **changed** signals; X digest skips posts al
 
 ---
 
-## 17. Branch workflow: feature → staging → main
+## 17. Branch workflow (historical, retired 8 November 2026)
+
+**Do not run.** The checklist in this section (`feature/*` from `main`, `scripts/deploy_staging.sh`, a direct push of `staging`, merging `main` back and pushing `staging`) conflicts with [`AGENTS.md`](AGENTS.md). Current rule: pull requests target `staging`, nobody pushes `staging` or `main`, agents do not run deploy scripts. Release rules: [docs/release-framework.md](docs/release-framework.md) and [docs/workflow.md](docs/workflow.md). The text below is kept so the old instruction can be audited.
+
+### Historical text from 23 June 2026
 
 Switching branches changes **code and tracked config** — not automatically the bot's runtime JSON files.
 
