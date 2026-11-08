@@ -62,7 +62,7 @@ These rules are fixed by Jens (2026-11-01, updated 2026-11-04 and 2026-11-05). T
    | Release procedure (skill, not a second policy) | `docs/skills/release-planning/SKILL.md` |
    | Ticket procedure (skill, not a second policy) | `docs/skills/ticket-spec/SKILL.md` |
 
-   The two skills say when to follow this file and when to stop. They do not authorize a release, a tag, a deploy, a `main` merge, a key read, or an order. They are files in this repository, not a global install. Version numbers stay blocked until `docs/release-framework.md` says the lineage gate has passed. Milestone #10 `v2.1.0` is not repurposed by this map.
+   The two skills say when to follow this file and when to stop. They do not authorize a release, a tag, a deploy, a `main` merge, a key read, or an order. They are files in this repository, not a global install. The live board option `845f1cf9` is named `v2.2.0 Short + real Gate futures testnet PLANNED` (parent readback 8 November 2026, 14:24 MEZ). That name is not a published tag. The current maintenance line stays unnumbered. Milestone #10 `v2.1.0` is not repurposed by this map. These rules are not merged and do not enforce themselves.
 
 1. **Model rule** (not a Grok-only setup):
    - Coder: **Grok 4.7** (`grok-4.7`).

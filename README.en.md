@@ -2,7 +2,7 @@
 
 **Language:** [Deutsch](README.md) · English
 
-> **Version note, 8 November 2026.** "Version 2.0.0" in the title is the June 2026 product-doc label. It is not a running SemVer, not a GitHub Release, and not the deployed commit. Numbers stay blocked until lineage and scope are confirmed. Milestone `v2.1.0` stays Klein-Live and is not the Short target. Rules: [docs/release-framework.md](docs/release-framework.md). Plan: [docs/releases/2026-11-plan.md](docs/releases/2026-11-plan.md).
+> **Version note, 8 November 2026, 14:24 MEZ.** "Version 2.0.0" in the title is the June 2026 product-doc label, not a running version. The maintenance line is unnumbered. The existing board option `845f1cf9` reads `v2.2.0 Short + real Gate futures testnet PLANNED` ([view 10](https://github.com/users/jholze/projects/1/views/10)). That is not a tag and not a runtime. Milestone `v2.1.0` stays Klein-Live. The rules in [docs/release-framework.md](docs/release-framework.md) are unmerged. Plan: [docs/releases/2026-11-plan.md](docs/releases/2026-11-plan.md).
 
 **Autonomous crypto agent:** Technical analysis (RSI, Bollinger, volume) + X/Twitter signals + CMC sentiment → trading decisions with risk limits, cooldowns, and Telegram control.
 

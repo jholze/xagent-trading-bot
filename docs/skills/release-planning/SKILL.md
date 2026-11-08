@@ -26,7 +26,8 @@ Repository procedure. Not a global skill install. Not permission to execute a re
 
 - Keep SemVer major, minor, and patch distinct from the owner phrase "Main release".
 - Leave milestone #10 `v2.1.0` as the Klein-Live record (SHA `842ac8c`, live-candidate caps). Do not repurpose it.
-- Leave the version as **blocked** until the framework's three-part gate passes. Do not invent a fix list for view 9.
+- Cite the live board option `845f1cf9`, text `v2.2.0 Short + real Gate futures testnet PLANNED`, as planned metadata already set by the parent. Do not publish a tag, do not create a milestone, and do not treat #642 or #694 or #529 as a frozen build.
+- Leave the maintenance number **unproved**. Do not call `v2.1.x` the running version. Do not invent a fix list for view 9.
 - Treat view 10 as candidates (#694, #529) until a freeze names the scope. #694 does not revive FBR. A negative climax result stays a NO-GO for activation.
 - For any `staging` → `main` acceptance, review the whole `main`…`staging` range. At the 8 November 2026 SHAs that range is 963 commits. No automatic merge.
 - Separate planned, tested, staging, futures testnet, and main in the note.

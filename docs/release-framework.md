@@ -29,14 +29,24 @@ Historical plans under `plans/` and design notes under `docs/umbau/` stay in the
 | SemVer major, minor, patch | The three numbers of a tag `vMAJOR.MINOR.PATCH`. Patch means a fix or mini-improvement of a feature that already exists. No new feature. |
 | Main release | Jens's term for an accepted `staging` → `main` release of one frozen scope. It is not the word "major", and it does not imply a number. |
 | Current patch line | Maintenance of existing features only. Board view 9. Version number blocked. |
-| Next Main release | The Short slice. Board view 10 lists candidates only. No version number. Milestone v2.1.0 is not this slice. |
+| Next Main release | Planned board option, already renamed in place: **v2.2.0 Short + real Gate futures testnet PLANNED** (option `845f1cf9`). Not a tag, not a GitHub Release, not a runtime version. Milestone v2.1.0 is not this slice. [#642](https://github.com/jholze/xagent-trading-bot/issues/642) is unchanged and does not freeze the feature list. |
 | Later candidate | Seasonality research. Board view 11. No version and no date. |
 
 ## Version numbers are blocked
 
 No SemVer is assigned for the patch line or for the Short slice. This file does not invent `v1.2.1`, `v1.8.1`, `v2.0.1`, `v2.1.0`, `v2.1.1`, or `v2.1.0-rc.32`.
 
-**Do not repurpose milestone #10 `v2.1.0` as the Short target.** Read on 8 November 2026, the milestone text is a Klein-Live freeze: first named `staging` → `main` cut, SHA `842ac8c`, live-candidate caps, later hotfixes `v2.1.x`, next staging train `v2.2.0-rc.N`. Open issues on it include [#642](https://github.com/jholze/xagent-trading-bot/issues/642) (1000 USDT spot long, tenant henry first) and [#488](https://github.com/jholze/xagent-trading-bot/issues/488). Closed [#644](https://github.com/jholze/xagent-trading-bot/issues/644) is a spec under #642. The parent left that milestone and its history in place. A Short plan that needs a number waits until lineage and a fixed scope are confirmed. Until then the board views below are the slice map, not a milestone rename.
+**Do not repurpose milestone #10 `v2.1.0` as the Short target.** Its text remains a Klein-Live freeze: first named `staging` → `main` cut, SHA `842ac8c`, live-candidate caps. Open issues on it include [#642](https://github.com/jholze/xagent-trading-bot/issues/642) (1000 USDT spot long, tenant henry first) and [#488](https://github.com/jholze/xagent-trading-bot/issues/488). Closed [#644](https://github.com/jholze/xagent-trading-bot/issues/644) is a spec under #642. The parent left that milestone and its history in place.
+
+**Planned name, already on the board.** Parent readback 8 November 2026, 14:24 MEZ: existing option `845f1cf9` was renamed in place to `v2.2.0 Short + real Gate futures testnet PLANNED`. [View 10](https://github.com/users/jholze/projects/1/views/10) filter and name were updated to that option. That rename is implemented board metadata. It is not a commit in this pull request, and this pull request does not write the board again.
+
+No new milestone was created. [#642](https://github.com/jholze/xagent-trading-bot/issues/642) and milestone #10 `v2.1.0` were left as they were. #642 still reserves `v2.2.0` as the next named main release and does not freeze the Short feature list. [#694](https://github.com/jholze/xagent-trading-bot/issues/694) and [#529](https://github.com/jholze/xagent-trading-bot/issues/529) carry Planning-P2 dated addenda that keep their historical acceptance criteria. Both stay candidates, not Ready.
+
+Checked the same afternoon: 48 git tag refs under `tags/v`, 42 GitHub releases, 11 milestones. The ref `tags/v2.2.0` returned 404. The board string is not a published tag, not a GitHub Release, and not a runtime version. Maintenance stays unnumbered until the lineage gate passes.
+
+The rules in this file are proposed repository text. They are unmerged. They do not move a card, and they do not stop an agent who skips them. The parent's redacted readback `final_v220_readback.redacted.json` under `/workspace/umbau/release_structure_2026-11-08/` was hash-checked on the parent box. That file is not in this checkout, so no hash is copied here.
+
+In the same issue, `v2.1.1`, `v2.1.2`, and the rest of `v2.1.x` are the planned hotfix line after a future `v2.1.0` Klein-Live tag. They are not the verified current runtime. The current maintenance number stays unproved until the lineage gate below passes. Do not fill it with `v2.1.x`.
 
 ### Inventory that blocks a guess (read 8 November 2026)
 
@@ -86,7 +96,8 @@ New views do not mean the legacy board automation is clean. See the debt below.
 
 1. **8 November 2026, 13:54–13:58.** Current line: patches and mini-improvements of existing features only. No new features. Next Main release: Short trading plus authenticated real Gate.io futures testnet from `staging`. Mocks do not satisfy that. Seasonality is a later candidate, outside the Short release. Freeze ticket scope before acceptance. A change after freeze is a dated revision. The first five `staging` → `main` releases after this decision are with Jens. Every merge to `main` stays Jens only.
 2. **14:09.** Procedures have durable homes in the repository. Skills point at the rules. They are not a second policy.
-3. **14:14 board audit.** Milestone #10 stays Klein-Live. Versions stay blocked until lineage and fixed scope are confirmed. Use the three views above. No strategy GO.
+3. **14:14 board audit.** Milestone #10 stays Klein-Live. Use the three views above. No strategy GO.
+4. **14:22 and 14:24 version check.** The planned Short name is the live board option `v2.2.0 Short + real Gate futures testnet PLANNED` (`845f1cf9`). It is not published. No new milestone. Maintenance stays unnumbered. `v2.1.x` in #642 is the planned hotfix line after `v2.1.0`, not the running version.
 
 ## Gates that stay shut
 
@@ -123,6 +134,8 @@ That retirement is not a cleaned automation. Still in the tree, and not modified
 
 **Blocker:** views 9–11 and a documentation banner do not disable the script. Claiming the board automation is clean would be false until a later change, outside this docs-only pull request, updates `scripts/kanban_status.py` and is reviewed on its own. [`docs/kanban-status.md`](kanban-status.md) keeps the old column text as a description of that unedited script and says not to follow it as a human rule.
 
+Manual readback, 8 November 2026, not a workflow dispatch: #529, #566, #567, #571, #572, and #694 do not carry `omnigent:ready`, `review:lena`, and `review:viktor` together. The script never sets Done. A card already on Done stays there (`retain Done`). Ordinary issue-body edits are not in the workflow `on:` list, and project Release fields or view edits are not either, so those writes do not run the script. A comment that matches the freeze expression can move Backlog to Spec/Acceptance. A merged `staging` pull request that matches the soak expression sets Shadow before `decide_status()` looks at `parked`, so a parked issue can still move to Shadow. The parent's redacted files at `/workspace/umbau/release_structure_2026-11-08/` were not in this checkout and were not re-hashed. The legacy labels are not removed.
+
 `DOCUMENTATION.en.md` §17 and `DOCUMENTATION.md` §17 still contained a `feature/*` / `deploy_staging.sh` / push-`staging` checklist. Those sections are marked historical in this change. The sentences are still in the file so the old instruction can be audited. They are not to be run.
 
 ## Pull request #792 is a different change
@@ -135,4 +148,6 @@ This release-policy pull request is later. It does not inherit #792's review, do
 
 | Rev | Date | Change |
 | --- | --- | --- |
-| 0 | 8 November 2026 | Policy created. Versions blocked. Milestone #10 left as Klein-Live. Slices point at board views 9, 10, and 11. No strategy GO. No tag. Automation debt recorded and left in the script. Intake stays in the requirements guide; the tabletop is a manual dry run. |
+| 0 | 8 November 2026 | Policy created. Milestone #10 left as Klein-Live. Slices point at board views 9, 10, and 11. No strategy GO. No tag. Automation debt recorded and left in the script. |
+| 1 | 8 November 2026, 14:22 | Planned Short name aligned to the number #642 already reserved. Not a published tag. Maintenance lineage left unproved. |
+| 2 | 8 November 2026, 14:24 MEZ | Board option `845f1cf9` recorded under the parent's readback as `v2.2.0 Short + real Gate futures testnet PLANNED`. View 10 recorded as updated. This file does not write that option. Repo rules stay unmerged. |

@@ -2,7 +2,7 @@
 
 **Language:** Deutsch · [English](README.en.md)
 
-> **Versionsstand 8. November 2026.** „Version 2.0.0“ im Titel ist das Produktdoku-Label vom Juni 2026. Es ist keine laufende SemVer-Version, kein GitHub-Release und kein Beleg für den deployten Commit. Nummern sind blockiert, bis Herkunft und Umfang bestätigt sind. Milestone `v2.1.0` bleibt Klein-Live und ist nicht das Short-Ziel. Regeln: [docs/release-framework.md](docs/release-framework.md). Plan: [docs/releases/2026-11-plan.md](docs/releases/2026-11-plan.md).
+> **Versionsstand 8. November 2026, 14:24 MEZ.** „Version 2.0.0“ im Titel ist das Produktdoku-Label vom Juni 2026, keine laufende Version. Die Wartungslinie ist unnummeriert. Auf dem Board heißt die bestehende Option `845f1cf9`: `v2.2.0 Short + real Gate futures testnet PLANNED` ([View 10](https://github.com/users/jholze/projects/1/views/10)). Das ist kein Tag und kein Laufzeitstand. Milestone `v2.1.0` bleibt Klein-Live. Die Regeln in [docs/release-framework.md](docs/release-framework.md) sind ungemergt. Plan: [docs/releases/2026-11-plan.md](docs/releases/2026-11-plan.md).
 
 **Autonomer Krypto-Agent:** Technische Analyse (RSI, Bollinger, Volumen) + X/Twitter-Signale + CMC-Sentiment → Handelsentscheidungen mit Risiko-Limits, Cooldowns und Telegram-Steuerung.
 

@@ -9,7 +9,7 @@ Policy: [`docs/release-framework.md`](../release-framework.md). Calendar: [`docs
 | Field | Value |
 | --- | --- |
 | Slice | current patch line / next Main release (Short) / other (name it) |
-| SemVer | **blocked** until the lineage gate and the fixed scope are confirmed. Do not reuse milestone #10 `v2.1.0` for Short. |
+| SemVer | Maintenance line: **unnumbered** until the lineage gate passes. Do not write a `v2.1.x` runtime. Short slice: board option `845f1cf9`, text `v2.2.0 Short + real Gate futures testnet PLANNED`. Not a tag until scope is frozen and Jens accepts a tag. Do not reuse milestone #10. |
 | Git tag | none until Jens accepts the number |
 | Branch | |
 | Commit SHA | full 40-character SHA of the reviewed head |
