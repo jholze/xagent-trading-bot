@@ -661,6 +661,12 @@ class GateExecutionAdapter(ExecutionAdapter):
         return amount
 
     def execute(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:
+        from strategies.ctx_axes import entry_blocked_by_oracle_timeout
+
+        if entry_blocked_by_oracle_timeout(order):
+            return self._rejected_result(
+                order, "oracle redis timeout; fail closed, no order"
+            )
         self._precision_unverified = False
         exchange = None
         try:

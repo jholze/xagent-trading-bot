@@ -115,6 +115,72 @@ def get_latest_snapshot(*, allow_redis: bool = True) -> dict[str, Any] | None:
     return None
 
 
+# Order-path read (#765). Under 200 ms even when the socket hits the cap,
+# so a timeout cannot sit on p99. No in-process snapshot is consulted.
+ORDER_PATH_REDIS_TIMEOUT_SEC = 0.19
+
+_order_client = None
+_order_client_lock = threading.Lock()
+
+
+class OracleReadTimeout(TimeoutError):
+    """The order-path Redis read did not finish inside its budget."""
+
+
+def reset_order_path_client() -> None:
+    global _order_client
+    with _order_client_lock:
+        client = _order_client
+        _order_client = None
+    if client is not None:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def _order_path_client():
+    global _order_client
+    import redis
+    from bus.redis_client import redis_url_from_env
+
+    with _order_client_lock:
+        if _order_client is None:
+            _order_client = redis.Redis.from_url(
+                redis_url_from_env(),
+                socket_timeout=ORDER_PATH_REDIS_TIMEOUT_SEC,
+                socket_connect_timeout=ORDER_PATH_REDIS_TIMEOUT_SEC,
+                decode_responses=True,
+            )
+        return _order_client
+
+
+def get_order_path_redis_snapshot() -> dict[str, Any] | None:
+    """Redis GET of the oracle snapshot. Does not read the in-process cache.
+
+    A socket timeout raises ``OracleReadTimeout``. A missing key (Redis
+    answered) returns None. A connection failure returns None so a process
+    with no Redis still imports; it is not a timeout and it is not a cache hit.
+    """
+    import redis
+
+    try:
+        raw = _order_path_client().get(_redis_key())
+    except (redis.TimeoutError, TimeoutError) as exc:
+        raise OracleReadTimeout(str(exc)) from exc
+    except Exception:
+        return None
+    if not raw:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def snapshot_is_fresh(snapshot: dict[str, Any] | None, *, now: datetime | None = None) -> bool:
     if not snapshot:
         return False

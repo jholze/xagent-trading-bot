@@ -111,21 +111,45 @@ def compute_volume_rel(df, timeframe) -> float | None:
 def read_oracle_state() -> str | None:
     """Market-oracle snapshot ``state`` (fallback key ``regime``), uppercased.
 
-    Empty / missing snapshot → None. Store unavailable or raising → None,
-    logged at DEBUG. Imports the store lazily so callers without Redis still
-    import this module.
+    The order path reads Redis directly. A socket timeout raises
+    ``OracleReadTimeout`` and does not fall back to the in-process cache.
+    An empty snapshot or a connection failure returns None. Other errors
+    return None and are logged at DEBUG.
     """
-    try:
-        from services.market_oracle.store import get_latest_snapshot
+    from services.market_oracle.store import OracleReadTimeout, get_order_path_redis_snapshot
 
-        snap = get_latest_snapshot()
-        if not snap:
-            return None
-        raw = snap.get("state") or snap.get("regime") or ""
-        text = str(raw).strip().upper()
-        return text or None
+    try:
+        snap = get_order_path_redis_snapshot()
+    except OracleReadTimeout:
+        raise
     except Exception as exc:
         from logger import log
 
         log(f"read_oracle_state: snapshot unavailable: {exc}", "DEBUG")
         return None
+    if not snap:
+        return None
+    raw = snap.get("state") or snap.get("regime") or ""
+    text = str(raw).strip().upper()
+    return text or None
+
+
+def entry_blocked_by_oracle_timeout(order) -> bool:
+    """True when a new BUY/SHORT must not be sent because the oracle read timed out.
+
+    Sells, covers, and stops are not blocked. An order that already carries
+    ``ctx_oracle_state`` from a finished read is not blocked. A timeout does
+    not consult the in-process cache.
+    """
+    side = str(getattr(order, "type", "") or "").upper()
+    if side not in ("BUY", "SHORT"):
+        return False
+    if getattr(order, "ctx_oracle_state", None):
+        return False
+    from services.market_oracle.store import OracleReadTimeout
+
+    try:
+        read_oracle_state()
+    except OracleReadTimeout:
+        return True
+    return False

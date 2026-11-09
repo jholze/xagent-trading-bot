@@ -2027,7 +2027,21 @@ class DecisionEngine:
 
         # Diagnostic ctx axes — write-only, never read by risk/registry.
         # Oracle snapshot is market-wide: one store read per evaluate().
-        analysis.ctx_oracle_state = read_oracle_state()
+        # A Redis timeout does not fall back to cache. A new buy is not a
+        # decision when that read does not finish (#765).
+        from services.market_oracle.store import OracleReadTimeout
+
+        try:
+            analysis.ctx_oracle_state = read_oracle_state()
+        except OracleReadTimeout:
+            analysis.ctx_oracle_state = None
+            if str(execution_action).upper() in ("BUY", "SHORT"):
+                analysis.action = "HOLD"
+                analysis.recommended = False
+                analysis.should_notify = False
+                analysis.rationale = (
+                    (analysis.rationale or "") + " | oracle redis timeout; fail closed"
+                ).strip(" |")
         analysis.ctx_volume_rel, analysis.ctx_volume_window_days = compute_volume_rel_window(
             getattr(market, "ohlcv_df", None), market.timeframe
         )

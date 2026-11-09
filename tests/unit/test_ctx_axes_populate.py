@@ -147,7 +147,7 @@ def test_compute_volume_rel_matches_window_tuple_first_element():
 
 def test_read_oracle_state_uppercases_state():
     with patch(
-        "services.market_oracle.store.get_latest_snapshot",
+        "services.market_oracle.store.get_order_path_redis_snapshot",
         return_value={"state": "risk_off"},
     ):
         assert read_oracle_state() == "RISK_OFF"
@@ -155,7 +155,7 @@ def test_read_oracle_state_uppercases_state():
 
 def test_read_oracle_state_regime_fallback():
     with patch(
-        "services.market_oracle.store.get_latest_snapshot",
+        "services.market_oracle.store.get_order_path_redis_snapshot",
         return_value={"regime": "crash"},
     ):
         assert read_oracle_state() == "CRASH"
@@ -163,7 +163,7 @@ def test_read_oracle_state_regime_fallback():
 
 def test_read_oracle_state_none_snapshot():
     with patch(
-        "services.market_oracle.store.get_latest_snapshot",
+        "services.market_oracle.store.get_order_path_redis_snapshot",
         return_value=None,
     ):
         assert read_oracle_state() is None
@@ -171,7 +171,7 @@ def test_read_oracle_state_none_snapshot():
 
 def test_read_oracle_state_empty_state_is_none():
     with patch(
-        "services.market_oracle.store.get_latest_snapshot",
+        "services.market_oracle.store.get_order_path_redis_snapshot",
         return_value={"state": "", "regime": ""},
     ):
         assert read_oracle_state() is None
@@ -179,7 +179,7 @@ def test_read_oracle_state_empty_state_is_none():
 
 def test_read_oracle_state_raising_returns_none():
     with patch(
-        "services.market_oracle.store.get_latest_snapshot",
+        "services.market_oracle.store.get_order_path_redis_snapshot",
         side_effect=RuntimeError("redis down"),
     ):
         assert read_oracle_state() is None
