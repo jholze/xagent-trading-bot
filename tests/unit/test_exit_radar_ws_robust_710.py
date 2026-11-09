@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -392,3 +394,82 @@ def test_run_loop_sends_no_protocol_ping_timeout_by_default():
             h._run_loop()
         assert seen and seen[0]["ping_interval"] == 20
         assert seen[0].get("ping_timeout") == expect
+
+
+def _ref_row(symbol: str) -> dict:
+    return {
+        "symbol": symbol,
+        "timeframe": "1h",
+        "tenant_id": "default",
+        "average_entry": 1.0,
+        "atr_pct": 3.0,
+        "atr_source": "reference",
+        "position": {"current_price": 1.0},
+    }
+
+
+def test_hanging_atr_fetch_does_not_block_update_book():
+    """#797: update_book runs first; a hung fetch is cut at the 3s budget."""
+    release = threading.Event()
+    order: list = []
+
+    def hang(symbol, timeframe, price):
+        order.append(("fetch", symbol, time.monotonic()))
+        release.wait(30)
+        return 9.0
+
+    class Hub:
+        def update_book(self, rows):
+            order.append(("book", time.monotonic(), [row.get("atr_source") for row in rows]))
+
+    started = time.monotonic()
+    try:
+        with patch.object(hub_mod, "_load_open_book", return_value=[_ref_row("AAA/USDT")]):
+            hub_mod.publish_open_book(
+                Hub(),
+                {"exit_realtime": {"live_atr": True}},
+                fetch_fn=hang,
+                budget_sec=hub_mod.ATR_FETCH_WALL_SEC,
+            )
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == "exit-rt-atr" and thread is not threading.current_thread():
+                thread.join(timeout=2.0)
+
+    assert hub_mod.ATR_FETCH_WALL_SEC == 3.0
+    assert order[0][0] == "book"
+    assert order[0][2] == ["reference"]
+    assert order[0][1] - started < 0.5
+    assert any(item[0] == "fetch" for item in order)
+    fetch_at = next(item[2] for item in order if item[0] == "fetch")
+    assert order[0][1] <= fetch_at
+    assert elapsed < hub_mod.ATR_FETCH_WALL_SEC + 1.5
+    assert not any(
+        thread.name == "exit-rt-atr" and thread.is_alive() for thread in threading.enumerate()
+    )
+
+
+def test_atr_refresh_reuses_one_market_service():
+    made: list = []
+
+    class Svc:
+        def __init__(self):
+            made.append(self)
+
+    seen: list = []
+
+    def fetch(symbol, timeframe, price, service=None):
+        seen.append(service)
+        return 4.5
+
+    rows = [_ref_row("AAA/USDT"), _ref_row("BBB/USDT")]
+    with patch("services.market_service.MarketService", Svc), patch.object(
+        hub_mod, "_fetch_live_atr_pct", fetch
+    ):
+        filled = hub_mod.fill_live_atr(rows, raw={"exit_realtime": {"live_atr": True}}, budget_sec=3.0)
+    assert len(made) == 1
+    assert len(seen) == 2 and all(item is made[0] for item in seen)
+    assert filled is not None
+    assert [row["atr_source"] for row in filled] == ["live", "live"]
