@@ -18,7 +18,9 @@ from execution.gate_adapter import (
     _GATE_TEXT_PAYLOAD_MAX_BYTES,
     _GATE_TEXT_PREFIX,
     _clamp_gate_client_order_id,
+    _legacy_gate_client_order_id,
 )
+from execution.recovery import _order_ids
 from tests.unit.test_order_lifecycle import SYMBOL, _closed, _real_adapter
 
 
@@ -89,6 +91,20 @@ def _short_order(key: str) -> TradeOrder:
         client_order_id=clamped,
         idempotency_key=key,
     )
+
+
+def test_recovery_looks_up_pre_deploy_26_char_id_and_current_clamp():
+    """#763: a raw key from before the hash clamp must still be a lookup id."""
+    legacy = _legacy_gate_client_order_id(OLD)
+    current = _clamp_gate_client_order_id(OLD)
+    assert legacy != current
+    assert len(legacy.encode("utf-8")) == _GATE_TEXT_PAYLOAD_MAX_BYTES
+    assert set(legacy) <= _GATE_TEXT_ALLOWED
+    assert "." not in legacy
+    ids = _order_ids({"client_order_id": OLD, "idempotency_key": OLD, "status": "active"})
+    assert OLD in ids
+    assert current in ids
+    assert legacy in ids
 
 
 def test_recovery_after_uncertain_create_ignores_older_autoshort(monkeypatch):

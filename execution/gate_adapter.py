@@ -326,6 +326,27 @@ def _clamp_gate_client_order_id(key: str) -> str:
     return legal
 
 
+def _legacy_gate_client_order_id(key: str) -> str:
+    """Pre-#753 Gate payload: hyphen-stripped legal text, cut at 26 bytes.
+
+    Structured keys such as ``autoshort|SYM|tf|source|price`` used to lose
+    the tail. Recovery still has to look that cut up for orders that were
+    already on the exchange. The current clamp (``head.sha256``) is a
+    different string. Short keys and pure-hex tokens match the current clamp.
+    """
+    raw = (key or "").strip()
+    if not raw:
+        return ""
+    legal = "".join(ch for ch in raw if ch in _GATE_TEXT_ALLOWED)
+    if not legal:
+        return ""
+    compact = legal.replace("-", "")
+    encoded = compact.encode("utf-8")
+    if len(encoded) <= _GATE_TEXT_PAYLOAD_MAX_BYTES:
+        return compact
+    return encoded[:_GATE_TEXT_PAYLOAD_MAX_BYTES].decode("ascii")
+
+
 _CANCEL_STATUS = frozenset({"canceled", "cancelled"})
 _CANCEL_FINISH_AS = frozenset({"cancelled", "canceled"})
 # Zero-fill only. Not part of ``_CANCEL_FINISH_AS``: ``ioc`` with filled > 0

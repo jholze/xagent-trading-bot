@@ -36,3 +36,12 @@ Positions at −20% or worse should not exist; entry quality has to improve. Tha
 `main` `config.json` has a `risk` object and, as of 2026-11-10, no `fail_closed_guards` key. Since #754 a missing or malformed key is `deny` in code, so shipping that code to live without an explicit key changes live from the old implicit `log` to `deny`. Explicit `"log"` still selects the old behavior.
 
 The prepared recommendation is an explicit `"deny"` on main. Jens selects the value. The proposed diff is in `docs/evidence/764.md` and `tests/fixtures/fail_closed_guards_764/proposal.json`. It is not applied to `config.json` or to a running tenant. #764 stays open.
+
+## Gate clientOrderId
+
+Gate `text` / ccxt `clientOrderId` is `t-` plus a payload of at most 26 bytes. Charset is `[0-9A-Za-z_.-]`. Two payload formats exist for the same persisted key:
+
+- **Current** (`execution/gate_adapter.py` `_clamp_gate_client_order_id`, #753). An over-long structured key (for example `autoshort|SYM|tf|source|price`) becomes `<11-character head>.<14-hex sha256 of the raw key>`. A pure-hex token (uuid4) stays a 26-character cut so an in-flight id still matches.
+- **Legacy** (before #753, `_legacy_gate_client_order_id`). Hyphen-stripped legal text, then the first 26 characters. The source tail and the price were dropped, so two different structured keys could share one id.
+
+Startup recovery (`execution/recovery.py` `_order_ids`) looks up both formats for `client_order_id` and `idempotency_key`. A row written before the format change is found by the legacy cut. A row written after it is found by the current clamp. Short keys are the same string in both formats.

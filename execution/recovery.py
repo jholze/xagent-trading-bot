@@ -23,6 +23,7 @@ from execution.gate_adapter import (
     _canceled_or_rejected_status,
     _ccxt_status_token,
     _clamp_gate_client_order_id,
+    _legacy_gate_client_order_id,
     _finish_as_from_raw,
     _partial_remainder_cancel,
     _zero_fill_cancel_status,
@@ -525,11 +526,19 @@ def _needs_order_reconcile(order: dict) -> bool:
 
 
 def _clamped_client_lookup(token: str) -> str:
-    """Gate payload for a stored client/idempotency key, or '' if we would mint."""
+    """Current Gate payload for a stored key, or '' if we would mint a new id."""
     raw = str(token or "").strip()
     if not raw or not any(ch in _GATE_TEXT_ALLOWED for ch in raw):
         return ""
     return _clamp_gate_client_order_id(raw)
+
+
+def _legacy_client_lookup(token: str) -> str:
+    """Pre-#753 26-character cut for the same stored key, or ''."""
+    raw = str(token or "").strip()
+    if not raw or not any(ch in _GATE_TEXT_ALLOWED for ch in raw):
+        return ""
+    return _legacy_gate_client_order_id(raw)
 
 
 def _order_ids(order: dict) -> list[str]:
@@ -547,12 +556,13 @@ def _order_ids(order: dict) -> list[str]:
         if token and token not in seen:
             seen.add(token)
             out.append(token)
-    # Historical rows stored the unclamped uuid4; also try the Gate payload.
+    # Historical rows stored the unclamped key. Try the current clamp and the
+    # pre-#753 26-character cut. Gate may still hold the old cut.
     for raw in (order.get("client_order_id"), order.get("idempotency_key")):
-        clamped = _clamped_client_lookup(raw)
-        if clamped and clamped not in seen:
-            seen.add(clamped)
-            out.append(clamped)
+        for candidate in (_clamped_client_lookup(raw), _legacy_client_lookup(raw)):
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                out.append(candidate)
     return out
 
 
