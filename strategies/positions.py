@@ -1955,9 +1955,15 @@ _ENTRY_SNAPSHOT_KEYS = (
 )
 
 
-def _entry_snapshot_captured_at() -> str:
-    """UTC ISO-8601 with numeric offset for ``entry_snapshot.captured_at``."""
-    return datetime.now(timezone.utc).isoformat()
+def _entry_snapshot_captured_at(fill_time: str | None = None) -> str:
+    """UTC ISO-8601. Never later than the fill stamp (captured_at <= fill)."""
+    from core.time_utils import ledger_datetime_utc
+
+    now = datetime.now(timezone.utc)
+    fill = ledger_datetime_utc(fill_time) if fill_time else None
+    if fill is not None and now > fill:
+        return fill.isoformat()
+    return now.isoformat()
 
 
 def _build_entry_snapshot(
@@ -1979,10 +1985,11 @@ def _build_entry_snapshot(
     cost_tier=None,
     coin_class=None,
     slippage_pct=None,
+    fill_time: str | None = None,
 ) -> dict:
     """Fixed-key opening snapshot. Unknown inputs are null; codes default to []."""
     return {
-        "captured_at": _entry_snapshot_captured_at(),
+        "captured_at": _entry_snapshot_captured_at(fill_time),
         "fill_price": fill_price,
         "fee": fee,
         "source": source,
@@ -2023,6 +2030,7 @@ def _attach_and_persist_entry_snapshot(
     cost_tier=None,
     coin_class=None,
     slippage_pct=None,
+    fill_time: str | None = None,
 ) -> None:
     """Attach ``entry_snapshot`` on first fill and persist. Caller is first fill only."""
     key = get_key(symbol, timeframe)
@@ -2047,6 +2055,7 @@ def _attach_and_persist_entry_snapshot(
             cost_tier=cost_tier,
             coin_class=coin_class,
             slippage_pct=slippage_pct,
+            fill_time=fill_time,
         )
     flush_positions(force=True)
 
@@ -2088,6 +2097,7 @@ def update_position(
     store = _store_for_key(store_key)
     was_open = False
     attach_snapshot = False
+    snapshot_fill_time = None
     with _positions_lock:
         pos = _ensure_key(store, key)
         was_open = is_open_position(pos)
@@ -2194,6 +2204,7 @@ def update_position(
                     pos["strategy_tier"] = strategy_tier
                     pos["strategy_tier_source"] = "entry"
                 attach_snapshot = True
+                snapshot_fill_time = fill_time
             dust_reentry = (not was_open) and float(old_amount or 0) > DUST_AMOUNT_EPSILON
             if not was_open:
                 pos.pop("basis_fee_estimated", None)
@@ -2233,6 +2244,7 @@ def update_position(
                 pos["dca_total_usdt"] = 0.0
                 pos.pop("entry_snapshot", None)
                 attach_snapshot = True
+                snapshot_fill_time = opened
                 recipe = str(short_recipe or "").strip()
                 src = str(exit_source or "").strip()
                 if recipe == "climax_fade" or src == "climax_fade":
@@ -2389,6 +2401,7 @@ def update_position(
                 cost_tier=cost_tier,
                 coin_class=coin_class,
                 slippage_pct=slippage_pct,
+                fill_time=snapshot_fill_time,
             )
         except Exception as e:
             log(f"entry_snapshot attach failed for {symbol}: {e}", "WARNING")

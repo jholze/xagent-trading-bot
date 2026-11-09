@@ -104,6 +104,20 @@ def test_snapshot_keeps_cost_provenance(svc):
     assert snap["captured_at"]
 
 
+def test_snapshot_captured_at_not_after_fill(svc):
+    """DeepSeek residual: captured_at <= the fill timestamp, not only truthy."""
+    from core.time_utils import ledger_datetime_utc
+
+    _open_as_large_cap(svc)
+    pos = get_position(SYM, TF)
+    snap = pos["entry_snapshot"]
+    fill = pos.get("entry_at") or pos.get("first_buy_at") or pos.get("last_trade_at")
+    captured = ledger_datetime_utc(snap["captured_at"])
+    filled = ledger_datetime_utc(fill)
+    assert captured is not None and filled is not None
+    assert captured <= filled
+
+
 def test_late_freeze_is_marked(svc):
     with patch(_CLASSIFY, return_value="mid_cap"):
         res = svc.execute_buy(SYM, TF, price=1.0, usdt_amount=100.0, source="gainer_relvol")
