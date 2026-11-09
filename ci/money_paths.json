@@ -6,6 +6,10 @@
     "services/gainer_signal/",
     "services/dca_sniper/"
   ],
+  "patterns": [
+    "aria_bot.py",
+    "*.live.json"
+  ],
   "config_json": {
     "path": "config.json",
     "key_prefixes": [

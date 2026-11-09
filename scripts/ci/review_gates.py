@@ -15,7 +15,9 @@ Money-path pull requests pass only when both of the following hold:
   issue number cited as ``#<id>`` in the title or body, and that file
   contains the before/after table.
 
-Money-path files are listed in ``ci/money_paths.json``. ``config.json``
+Money-path files are listed in ``ci/money_paths.json``. ``prefixes`` are
+directory prefixes. ``patterns`` are fnmatch globs matched against the full
+path and the basename (``aria_bot.py``, ``*.live.json``). ``config.json``
 counts only when a changed key is under one of ``key_prefixes``.
 
 Outside GitHub Actions the script skips (exit 0). Inside Actions a missing
@@ -24,6 +26,7 @@ pull-request payload fails closed.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -86,16 +89,31 @@ def is_money_config_path(path: str, key_prefixes: list[str]) -> bool:
     return False
 
 
+def _matches_money_pattern(name: str, pattern: str) -> bool:
+    """True when ``pattern`` matches the repo path or its basename.
+
+    ``*.live.json`` must hit ``orders.live.json`` and ``data/orders.live.json``.
+    ``fnmatch`` treats ``*`` as crossing ``/``, and the basename check keeps
+    the same result if that ever changes.
+    """
+    normalized = name.replace("\\", "/")
+    base = normalized.rsplit("/", 1)[-1]
+    return fnmatch.fnmatchcase(normalized, pattern) or fnmatch.fnmatchcase(base, pattern)
+
+
 def money_path_touched(
     files: list[str],
     config_paths: set[str] | None,
     rules: dict,
 ) -> bool:
     prefixes = tuple(rules["prefixes"])
+    patterns = tuple(rules.get("patterns") or [])
     config_file = str(rules["config_json"]["path"])
     key_prefixes = list(rules["config_json"]["key_prefixes"])
     for name in files:
         normalized = name.replace("\\", "/")
+        if any(_matches_money_pattern(normalized, pattern) for pattern in patterns):
+            return True
         if normalized == config_file:
             if config_paths is None:
                 return True
