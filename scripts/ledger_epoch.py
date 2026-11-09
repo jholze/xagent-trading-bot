@@ -12,7 +12,8 @@ Replaces the reset half of ``snapshot_and_fresh_start.py`` (see
   (``orders_v2``, ``order_day_stats``), the NAV curve (``portfolio_nav_daily``),
   every ``obs_*`` stream (120-day TTL, gap E) and memory (gap D).
 * ``verify`` re-checks sha256, line counts, the ledger summary and, against
-  Mongo, the document counts.
+  Mongo, the document counts plus a canonical content sha. An in-place edit
+  that keeps the count the same still fails (#796, residual of #759).
 * ``reset`` and ``restore`` are dry runs unless ``--apply``. ``--apply`` also
   needs ``--confirm-writers-stopped`` (gap F) and a verified, fresh backup.
 * ``--apply`` takes the bot's writer lease (#306) for every tenant/scope it
@@ -134,6 +135,14 @@ def _sha256_file(path: Path) -> str:
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             h.update(chunk)
+    return h.hexdigest()
+
+
+def _sha256_docs(docs: list[dict]) -> str:
+    """Same bytes ``_write_jsonl`` would hash. Key order does not matter."""
+    h = hashlib.sha256()
+    for doc in docs:
+        h.update((_dump_line(doc) + "\n").encode("utf-8"))
     return h.hexdigest()
 
 
@@ -343,7 +352,13 @@ def manifest_digest(out_dir: Path) -> str:
 
 
 def verify(out_dir: Path, db=None, *, allow_growth: bool = False) -> dict:
-    """Check files (sha256, lines, parse, summary) and optionally Mongo counts."""
+    """Check files (sha256, lines, parse, summary) and optionally Mongo.
+
+    Against Mongo, the document count and a canonical content sha are both
+    checked. ``allow_growth`` only softens a higher count. An in-place edit
+    (same count, different sha) is always a failure. ``reset`` calls this
+    again under the writer lease.
+    """
     out_dir = Path(out_dir)
     problems: list[str] = []
     warnings: list[str] = []
@@ -377,13 +392,20 @@ def verify(out_dir: Path, db=None, *, allow_growth: bool = False) -> dict:
         if info.get("kind") in ("ledger", "archive") and len(parts) == 4:
             raw[(parts[1], parts[2], info["collection"])] = docs
         if db is not None:
-            live = db[info["collection"]].count_documents(_filter_from_json(info["filter"]))
+            live_docs = list(
+                db[info["collection"]].find(_filter_from_json(info["filter"])).sort("_id", 1)
+            )
+            live = len(live_docs)
             backed = int(info.get("count", 0))
             if live < backed:
                 problems.append(f"{rel}: Mongo has {live} docs, backup {backed} (data lost since backup?)")
             elif live > backed:
                 msg = f"{rel}: Mongo has {live} docs, backup {backed} (writers still running?)"
                 (warnings if allow_growth else problems).append(msg)
+            elif _sha256_docs(live_docs) != info.get("sha256"):
+                problems.append(
+                    f"{rel}: content sha256 mismatch (in-place edit; document count still {live})"
+                )
     recomputed = _summaries_from_raw(list(manifest.get("tenants") or []), raw)
     if recomputed != (manifest.get("summary") or {}):
         problems.append("ledger summary recomputed from files differs from manifest")
