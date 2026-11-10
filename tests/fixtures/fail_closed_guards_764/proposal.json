@@ -1,0 +1,17 @@
+{
+  "issue": 764,
+  "status": "not_applied",
+  "approved": false,
+  "issue_remains_open": true,
+  "decided_by": null,
+  "recommendation": "explicit deny",
+  "recommendation_is_not_approval": true,
+  "target_ref": "main",
+  "target_file": "config.json",
+  "main_has_key_on_2026_11_10": false,
+  "staging_checked_in_value": "deny",
+  "proposed_value": "deny",
+  "explicit_log_keeps_previous_live_behavior": "log",
+  "missing_key_in_code_since_754": "deny",
+  "proposed_diff": "--- a/config.json\n+++ b/config.json\n@@ main risk object, first key (not applied)\n   \"risk\": {\n+    \"fail_closed_guards\": \"deny\",\n     \"dca_reserve_pct\": 18,\n"
+}

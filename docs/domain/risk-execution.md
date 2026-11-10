@@ -29,4 +29,10 @@ Positions at −20% or worse should not exist; entry quality has to improve. Tha
 
 `config.json` key `risk` (cash floor, position capacity, daily buy caps, `partial_stop_ratio`, position locks, and the rest of that object). Real tenant overrides are in Mongo and are not readable from this repo. Tenant merge is `config.json` → profile preset → tenant body (`core/trading_profiles.py` `apply_effective_config`). A list under `risk` is replaced by the tenant list, not concatenated.
 
-`risk.fail_closed_guards` is `deny` on the checked-in config: a guard that raises denies the order.
+`risk.fail_closed_guards` is `deny` on the checked-in staging config: a guard that raises denies the order.
+
+## #764 main value (not decided)
+
+`main` `config.json` has a `risk` object and, as of 2026-11-10, no `fail_closed_guards` key. Since #754 a missing or malformed key is `deny` in code, so shipping that code to live without an explicit key changes live from the old implicit `log` to `deny`. Explicit `"log"` still selects the old behavior.
+
+The prepared recommendation is an explicit `"deny"` on main. Jens selects the value. The proposed diff is in `docs/evidence/764.md` and `tests/fixtures/fail_closed_guards_764/proposal.json`. It is not applied to `config.json` or to a running tenant. #764 stays open.
