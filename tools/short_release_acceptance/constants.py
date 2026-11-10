@@ -34,12 +34,11 @@ FROZEN_SAFETY_CAP_PCT = Decimal("20")
 RELEASE_FLAG_KEY = "short_release_acceptance"
 CODER_MODEL = "grok-4.7"
 REQUIRED_REVIEWERS = ("deepseek-v4-pro", "claude-opus-5-5")
-OFFLINE_PRODUCERS = frozenset(
-    {
-        "short_release_acceptance.compose",
-        "short_release_acceptance.attempt_acceptance",
-    }
-)
+# Exact producer ids that may classify as actual acceptance. No trimming.
+ACCEPTED_PRODUCERS = frozenset({"separate_authorized_run"})
+ISSUE_412_ACTIONS = frozenset({"leave_closed_not_planned"})
+ALLOWED_ASSET_CLASSES = frozenset({"perp"})
+ALLOWED_MANIFEST_MODES = frozenset({"paper", "testnet"})
 REQUIRED_AC_IDS = ("AC-E2E-1", "AC-E2E-2", "AC-E2E-3", "AC-E2E-4")
 VERDICT_NOT_VERIFIED = "NOT_VERIFIED"
 VERDICT_NO_GO = "NO-GO"
@@ -111,20 +110,18 @@ OWNER_BY_STAGE = {
     "trace": "D-LIN",
 }
 
-# Import paths published by open predecessor PRs, or None when no module
-# exists on staging. Resolution is informational. This package does not
-# copy those modules and does not call them to admit a production entry.
-OWNER_IMPORTS: dict[str, tuple[str, str] | None] = {
-    "D-EXH": ("services.short_signal_feed", "measure_exhaustion"),
-    "T220-01": ("execution.futures_testnet_route", "check_futures_url"),
-    "676": ("execution.partial_fill_delta", "apply_fill_snapshot"),
-    "T220-02": ("execution.short_protection", "plan_protection"),
-    "FREEZE": ("execution.paper_testnet_freeze", "reconcile_usdt"),
-    "T220-03": None,
-    "T220-05": None,
-    "T220-04": None,
-    "D-LIN": None,
-    "existing-decision-risk": None,
+# Module names are documentation only. This package must not import them.
+OWNER_MODULES = {
+    "D-EXH": "services.short_signal_feed",
+    "T220-01": "execution.futures_testnet_route",
+    "676": "execution.partial_fill_delta",
+    "T220-02": "execution.short_protection",
+    "FREEZE": "execution.paper_testnet_freeze",
+    "T220-03": "strategies.short_admission",
+    "T220-05": "strategies.short_cover",
+    "T220-04": "services.portfolio_service",
+    "D-LIN": "strategies.positions",
+    "existing-decision-risk": "risk.risk_manager",
 }
 
 FAULT_OWNERS = {
@@ -149,23 +146,8 @@ AC-E2E-3: Given evidence rows classified fixture/manual/actual with candidate SH
 AC-E2E-4: Given no explicit operation manifest, acceptance command cannot contact an exchange or enable a tenant. Prepare only a disabled manual runbook/manifest for a future exact tenant/origin/actions/budget/time/SHA authorization and evidence-redaction checklist; no automatic authentication/credential discovery.
 """
 
-SECRET_KEY_NAMES = frozenset(
-    {
-        "api_key",
-        "apikey",
-        "api_secret",
-        "secret",
-        "passphrase",
-        "password",
-        "token",
-        "access_token",
-        "private_key",
-        "authorization",
-        "signature",
-        "credentials",
-    }
-)
-SECRET_VALUE_MARKERS = ("-----BEGIN", "api_key=", "api_secret=", "GATE_API", "AKIA")
+# Applied to a key after lowercasing and removing "-" and "_".
+SECRET_KEY_PATTERN = r"api.?key|secret|private.?key|token|bearer|passphrase|password"
 REDACTION_FLAGS = (
     "secrets_redacted",
     "account_ids_redacted",

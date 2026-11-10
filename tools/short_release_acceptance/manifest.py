@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -11,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from tools.short_release_acceptance.constants import (
     ALLOWED_ACTIONS,
+    ALLOWED_MANIFEST_MODES,
     AUTHORIZATION_SENTINEL,
     FORBIDDEN_ACTIONS,
     FROZEN_AGGREGATE_STOP_RISK_PCT,
@@ -23,15 +25,21 @@ from tools.short_release_acceptance.constants import (
     FROZEN_STOP_RISK_PCT,
     FROZEN_TIMEZONE,
     FROZEN_WEEKDAYS,
+    OPEN_PARAMETERS,
     REDACTION_FLAGS,
     RESERVED_TENANTS,
-    SECRET_KEY_NAMES,
-    SECRET_VALUE_MARKERS,
+    SECRET_KEY_PATTERN,
     to_decimal,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+OUTPUT_DIR = REPO_ROOT / "tools" / "short_release_acceptance" / "output"
 _BERLIN = ZoneInfo(FROZEN_TIMEZONE)
+_SECRET_KEY = re.compile(SECRET_KEY_PATTERN)
+_SECRET_ASSIGNMENT = re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*=")
+_BEARER_VALUE = re.compile(r"(?i)(?:^|[\s\"'])bearer\s+\S+")
+_LONG_HEX = re.compile(r"^[0-9a-fA-F]{32,}$")
+_LONG_BASE64 = re.compile(r"^[A-Za-z0-9+/]{32,}={0,2}$")
 
 
 class ManifestError(ValueError):
@@ -112,6 +120,8 @@ def funding_proof_ok(proof: Any) -> bool:
         return False
     if any(character not in "0123456789abcdef" for character in proof_sha):
         return False
+    if proof_sha == "0" * 64:
+        return False
     return not civil_window_reasons(
         proof.get("entry_at"),
         proof.get("exit_at"),
@@ -121,22 +131,52 @@ def funding_proof_ok(proof: Any) -> bool:
     )
 
 
-def _walk_secrets(value: Any, reasons: list[str]) -> None:
+def _secret_key_name(name: Any) -> bool:
+    normalized = str(name).lower().replace("-", "").replace("_", "")
+    # The redaction checklist names the word it requires to be removed.
+    if normalized in {"secretsredacted", "nocredentialsinevidence"}:
+        return False
+    return _SECRET_KEY.search(normalized) is not None
+
+
+def _secret_value_text(text: str, *, key: str | None) -> bool:
+    if _SECRET_ASSIGNMENT.search(text) or _BEARER_VALUE.search(text):
+        return True
+    compact = text.strip()
+    if key == "candidate_sha" and re.fullmatch(r"[0-9a-f]{40}", compact):
+        return False
+    if _LONG_HEX.fullmatch(compact):
+        return True
+    if _LONG_BASE64.fullmatch(compact) and not _LONG_HEX.fullmatch(compact):
+        return True
+    return False
+
+
+def _walk_secrets(value: Any, reasons: list[str], *, key: str | None = None) -> None:
     if isinstance(value, dict):
-        for key, item in value.items():
-            if str(key).strip().lower() in SECRET_KEY_NAMES:
+        for child_key, item in value.items():
+            if _secret_key_name(child_key):
                 reasons.append("secret_key")
-            _walk_secrets(item, reasons)
+            _walk_secrets(item, reasons, key=str(child_key))
         return
     if isinstance(value, list):
         for item in value:
-            _walk_secrets(item, reasons)
+            _walk_secrets(item, reasons, key=key)
         return
-    if isinstance(value, str):
-        for marker in SECRET_VALUE_MARKERS:
-            if marker in value:
-                reasons.append("secret_value")
-                return
+    if isinstance(value, str) and _secret_value_text(value, key=key):
+        reasons.append("secret_value")
+
+
+def _open_parameter_reasons(value: Any, reasons: list[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in OPEN_PARAMETERS and item is not None:
+                reasons.append("unfrozen_value")
+            _open_parameter_reasons(item, reasons)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _open_parameter_reasons(item, reasons)
 
 
 def _limits_reasons(limits: Any) -> list[str]:
@@ -180,10 +220,8 @@ def _window_reasons(window: Any) -> list[str]:
         reasons.append("max_holding")
     if window.get("same_calendar_day") is not True:
         reasons.append("same_day")
-    if "execution_buffer_minutes" not in window:
-        reasons.append("buffer_missing")
-    elif window.get("execution_buffer_minutes") is not None:
-        reasons.append("buffer_not_frozen")
+    if window.get("execution_buffer_minutes") is not None:
+        reasons.append("unfrozen_value")
     if any(key in window for key in ("entry_at", "exit_at", "settlement_at", "due_at")):
         reasons.extend(
             civil_window_reasons(
@@ -251,9 +289,14 @@ def validate_manifest(document: Any) -> dict[str, Any]:
         for flag in REDACTION_FLAGS:
             if redaction.get(flag) is not True:
                 reasons.append("redaction_incomplete")
-    shorts = document.get("shorts")
-    if isinstance(shorts, dict) and shorts.get("allow_live") is True:
+    if document.get("mode") not in ALLOWED_MANIFEST_MODES:
+        reasons.append("mode_rejected")
+    if document.get("allow_live") is not False:
         reasons.append("allow_live_refused")
+    shorts = document.get("shorts")
+    if isinstance(shorts, dict) and shorts.get("allow_live") is not False:
+        reasons.append("allow_live_refused")
+    _open_parameter_reasons(document, reasons)
     _walk_secrets(document, reasons)
     # A prepared document still cannot run: the buffer is unmeasured and this
     # package has no execution branch.
@@ -272,20 +315,18 @@ def _validation(complete: bool, reasons: list[str]) -> dict[str, Any]:
 
 
 def _refuse_unsafe_path(destination: Path) -> Path:
+    """Allow a JSON file only inside this package's output directory."""
     path = Path(destination)
     if not path.is_absolute():
         path = Path.cwd() / path
     resolved = path.resolve()
-    data_dir = (REPO_ROOT / "data").resolve()
+    output = OUTPUT_DIR.resolve()
     try:
-        resolved.relative_to(data_dir)
+        resolved.relative_to(output)
     except ValueError:
-        pass
-    else:
-        raise ManifestError("data_dir_write_refused")
-    name = resolved.name
-    if name == "config.json" or ".env" in name or name.endswith(".live.json"):
-        raise ManifestError("refused_path")
+        raise ManifestError("output_dir_required") from None
+    if resolved == output or resolved.suffix != ".json":
+        raise ManifestError("json_suffix_required")
     return resolved
 
 

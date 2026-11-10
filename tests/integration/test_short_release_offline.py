@@ -9,6 +9,8 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -275,7 +277,8 @@ def test_ac_e2e_1_scanner_to_cover():
     forged["authenticated_testnet_pass"] = True
     forged_result = classify_row(forged, index_sha=CANDIDATE_SHA)
     assert forged_result["authenticated_testnet_pass"] is False
-    assert forged_result["release_verdict"] == "NOT_VERIFIED"
+    assert forged_result["release_verdict"] == "NO-GO"
+    assert forged_result["reason"] == "producer_not_allowlisted"
     assert _data_snapshot() == before
     committed = json.loads((REPO / "config.json").read_text(encoding="utf-8"))
     assert committed["shorts"]["allow_live"] is False
@@ -533,7 +536,7 @@ def _actual_row(sha: str = CANDIDATE_SHA) -> dict:
 
 def test_ac_e2e_3_evidence_kind_and_sha_guard():
     index = phase1_evidence_index(CANDIDATE_SHA)
-    classified = classify_index(index)
+    classified = classify_index(index, expected_sha=CANDIDATE_SHA)
     assert classified["release_verdict"] == "NOT_VERIFIED"
     assert classified["authenticated_testnet_pass"] is False
     assert classified["authenticated_passes"] == 0
@@ -543,12 +546,15 @@ def test_ac_e2e_3_evidence_kind_and_sha_guard():
         )
     )
     assert committed == phase1_evidence_index(committed["candidate_sha"])
-    assert classify_index(committed)["authenticated_passes"] == 0
+    assert classify_index(committed, expected_sha=committed["candidate_sha"])["authenticated_passes"] == 0
+    stale_index = classify_index(committed, expected_sha="a" * 40)
+    assert stale_index["release_verdict"] == "NO-GO"
+    assert stale_index["reason"] == "stale_sha"
 
     drill = classify_row(_actual_row(), index_sha=CANDIDATE_SHA)
     assert drill["release_verdict"] == "ACCEPTED"
     assert drill["authenticated_testnet_pass"] is True
-    assert classify_index(index)["release_verdict"] == "NOT_VERIFIED"
+    assert classify_index(index, expected_sha=CANDIDATE_SHA)["release_verdict"] == "NOT_VERIFIED"
 
     stale = _actual_row()
     stale["reviewers"][0]["head"] = "a" * 40
@@ -645,6 +651,8 @@ def _complete_manifest(**overrides) -> dict:
         "config_authorization": AUTHORIZATION_SENTINEL,
         "orders_authorization": AUTHORIZATION_SENTINEL,
         "redaction": {flag: True for flag in REDACTION_FLAGS},
+        "mode": "paper",
+        "allow_live": False,
         "shorts": {"allow_live": False},
     }
     document.update(overrides)
@@ -686,9 +694,13 @@ def test_ac_e2e_4_no_operation_without_manifest(tmp_path, monkeypatch):
     assert template_check["executable"] is False
     assert attempt_acceptance(template, transport=transport)["executed"] is False
 
-    written = prepare_disabled_manifest(complete, tmp_path / "manifest.json")
+    from tools.short_release_acceptance.manifest import OUTPUT_DIR
+
+    output = OUTPUT_DIR / "disabled-manifest.json"
+    written = prepare_disabled_manifest(complete, output)
     assert written["executed"] is False
-    saved = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    saved = json.loads(output.read_text(encoding="utf-8"))
+    output.unlink()
     assert saved["enabled"] is False
     assert saved["execution_authorized"] is False
     assert saved["executable"] is False
@@ -732,11 +744,11 @@ def test_ac_e2e_4_manifest_rejects_unfrozen_or_secret_values():
 
     window = copy.deepcopy(_complete_manifest()["window"])
     window["execution_buffer_minutes"] = 15
-    assert "buffer_not_frozen" in validate_manifest(_complete_manifest(window=window))["reasons"]
+    assert "unfrozen_value" in validate_manifest(_complete_manifest(window=window))["reasons"]
     missing_buffer = copy.deepcopy(window)
     missing_buffer["execution_buffer_minutes"] = None
     del missing_buffer["execution_buffer_minutes"]
-    assert "buffer_missing" in validate_manifest(_complete_manifest(window=missing_buffer))["reasons"]
+    assert validate_manifest(_complete_manifest(window=missing_buffer))["structurally_complete"] is True
 
     for tenant in ("default", "henry", "Henry", ""):
         assert validate_manifest(_complete_manifest(tenant_id=tenant))["structurally_complete"] is False
@@ -781,4 +793,35 @@ def test_harness_imports_no_trading_or_network_stack():
         text = path.read_text(encoding="utf-8")
         assert "create_order" not in text
         assert "urlopen" not in text
+        assert "importlib" not in text
         assert "import services.trading_service" not in text
+
+
+def test_compose_does_not_import_trading_stack():
+    script = """
+import json, sys
+from tools.short_release_acceptance import compose_offline_chain
+compose_offline_chain(
+    candidate={"asset_class": "perp", "as_of": "2026-11-10T12:00:00+00:00", "threshold_status": "unmeasured", "candidate_id": "c", "signal": None},
+    config={},
+    mode="paper",
+    tenant_id="fixture-tenant",
+    mode_proof={},
+)
+banned = ("execution", "ccxt", "requests", "urllib3", "pymongo", "storage", "services", "data_manager")
+loaded = []
+for name in sys.modules:
+    for prefix in banned:
+        if name == prefix or name.startswith(prefix + "."):
+            loaded.append(name)
+print(json.dumps(sorted(set(loaded))))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == []

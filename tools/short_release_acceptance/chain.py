@@ -13,6 +13,7 @@ from typing import Any
 
 from tools.short_release_acceptance.constants import (
     AC_REVISION,
+    ALLOWED_ASSET_CLASSES,
     ENTRY_SNAPSHOT_KEYS,
     FROZEN_CLEARANCE,
     FROZEN_MAX_HOLDING_HOURS,
@@ -23,6 +24,7 @@ from tools.short_release_acceptance.constants import (
     OWNER_BY_STAGE,
     RELEASE_FLAG_KEY,
     REQUIRED_STAGES,
+    VERDICT_NO_GO,
     VERDICT_NOT_VERIFIED,
     to_decimal,
 )
@@ -96,22 +98,35 @@ def _payload(stage: dict[str, Any]) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _assess_fills(payload: dict[str, Any], reasons: list[str]) -> None:
+def _assess_fills(payload: dict[str, Any]) -> tuple[list[str], Decimal | None]:
+    reasons: list[str] = []
     snapshots = payload.get("snapshots")
     if payload.get("confirmed") is not True:
         reasons.append("fill_unconfirmed")
     if not isinstance(snapshots, list) or not snapshots:
         reasons.append("fill_missing")
-        return
+        return reasons, None
     seen: list[str] = []
     cumulative = Decimal("0")
+    malformed = False
     for snapshot in snapshots:
         if not isinstance(snapshot, dict):
             reasons.append("fill_qty_invalid")
+            malformed = True
             continue
-        trade_ids = snapshot.get("trade_ids") or []
+        trade_ids = snapshot.get("trade_ids")
+        if not isinstance(trade_ids, list):
+            reasons.append("fill_malformed")
+            malformed = True
+            continue
         if not trade_ids:
             reasons.append("fill_missing_trade_id")
+            malformed = True
+            continue
+        if any(not isinstance(trade_id, str) or not trade_id for trade_id in trade_ids):
+            reasons.append("fill_malformed")
+            malformed = True
+            continue
         for trade_id in trade_ids:
             if trade_id in seen:
                 reasons.append("duplicate_trade_id")
@@ -120,10 +135,15 @@ def _assess_fills(payload: dict[str, Any], reasons: list[str]) -> None:
         reported = to_decimal(snapshot.get("cumulative_qty"))
         if delta is None or reported is None or delta <= 0:
             reasons.append("fill_qty_invalid")
+            malformed = True
             continue
         cumulative += delta
         if reported != cumulative:
             reasons.append("fill_cumulative_mismatch")
+            malformed = True
+    if malformed:
+        return reasons, None
+    return reasons, cumulative
 
 
 def _assess_ledger(payload: dict[str, Any], reasons: list[str]) -> str:
@@ -282,8 +302,10 @@ def _assess_stages(
         if payload.get("order_submitted") is True:
             reasons.append("order_submitted")
     fill = by_name.get("fill")
+    filled_qty: Decimal | None = None
     if fill is not None:
-        _assess_fills(_payload(fill), reasons)
+        fill_reasons, filled_qty = _assess_fills(_payload(fill))
+        reasons.extend(fill_reasons)
     protection = by_name.get("protection")
     if protection is not None:
         payload = _payload(protection)
@@ -302,6 +324,16 @@ def _assess_stages(
         clearance = assess_clearance(payload.get("clearance"))
         if clearance != "ok":
             reasons.append(f"clearance_{clearance}")
+        if filled_qty is not None and residual is not None and residual > 0:
+            tick = None
+            clearance_block = payload.get("clearance")
+            if isinstance(clearance_block, dict):
+                tick = to_decimal(clearance_block.get("tick"))
+            limit = FROZEN_TOLERANCE
+            if tick is not None and tick > 0:
+                limit = min(tick, FROZEN_TOLERANCE)
+            if abs(filled_qty - residual) > limit:
+                reasons.append("residual_fill_mismatch")
     cover = by_name.get("cover")
     if cover is not None:
         payload = _payload(cover)
@@ -349,9 +381,14 @@ def _assess_stages(
     trace = by_name.get("trace")
     if trace is not None:
         _assess_trace(_payload(trace), decision_payload, reasons)
+        cover_id = cover.get("stage_id") if isinstance(cover, dict) else None
+        fill_id = fill.get("stage_id") if isinstance(fill, dict) else None
         for link in _payload(trace).get("exit_links") or []:
-            if isinstance(link, dict) and fill is not None and link.get("entry_order_id") != fill.get("stage_id"):
+            if not isinstance(link, dict):
                 reasons.append("exit_unlinked")
+                continue
+            if link.get("entry_order_id") != fill_id or link.get("exit_id") != cover_id:
+                reasons.append("exit_target_mismatch")
     accepted_ids = seen_ids if "wrong_tenant" not in reasons else []
     return {
         "linked": not reasons,
@@ -374,8 +411,7 @@ def _gate_reasons(candidate: Any, config: Any, mode: Any, mode_proof: Any) -> li
         reasons.append("malformed_mode")
     if not _mode_proof_ok(mode_proof):
         reasons.append("mode_proof_rejected")
-    asset = candidate.get("asset_class")
-    if asset in {None, "", "unknown", "stock_token", "equity_token"}:
+    if candidate.get("asset_class") not in ALLOWED_ASSET_CLASSES:
         reasons.append("asset_class_denied")
     if candidate.get("stale") is True or not candidate.get("as_of"):
         reasons.append("stale_source")
@@ -411,6 +447,17 @@ def compose_offline_chain(
     rehearsed = (
         1 if scope == "fixture_plumbing" and not gate and structural["linked"] else 0
     )
+    no_go_reasons = {
+        "fill_malformed",
+        "stage_malformed",
+        "residual_fill_mismatch",
+        "exit_target_mismatch",
+    }
+    release_verdict = (
+        VERDICT_NO_GO
+        if no_go_reasons.intersection(structural["reasons"])
+        else VERDICT_NOT_VERIFIED
+    )
     evidence_row = {
         "row_id": "ac-e2e-1-compose",
         "ac_id": "AC-E2E-1",
@@ -441,7 +488,7 @@ def compose_offline_chain(
         "data_writes": 0,
         "orders_submitted": 0,
         "integration_wired": INTEGRATION_WIRED,
-        "release_verdict": VERDICT_NOT_VERIFIED,
+        "release_verdict": release_verdict,
         "authenticated_testnet_pass": False,
         "issue_412": ISSUE_412_STATE,
         "structural_rehearsal_ok": structural["linked"],

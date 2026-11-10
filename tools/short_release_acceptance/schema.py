@@ -7,13 +7,14 @@ import re
 from typing import Any
 
 from tools.short_release_acceptance.constants import (
+    ACCEPTED_PRODUCERS,
     AC_REVISION,
     CANONICAL_AC_TEXT,
     CODER_MODEL,
     DRAFT_ID,
     EVIDENCE_KINDS,
+    ISSUE_412_ACTIONS,
     ISSUE_412_STATE,
-    OFFLINE_PRODUCERS,
     REQUIRED_AC_IDS,
     REQUIRED_REVIEWERS,
     SCHEMA_VERSION,
@@ -36,6 +37,10 @@ def _result(verdict: str, reason: str, authenticated: bool) -> dict[str, Any]:
         "reason": reason,
         "authenticated_testnet_pass": authenticated,
     }
+
+
+def _fold(value: Any) -> str:
+    return value.casefold() if isinstance(value, str) else ""
 
 
 def _stale(row: dict[str, Any], index_sha: str) -> bool:
@@ -74,9 +79,14 @@ def _tester_ok(row: dict[str, Any], index_sha: str) -> bool:
         return False
     if row.get("tester_head") != index_sha:
         return False
-    if not isinstance(model, str) or not model or model == CODER_MODEL:
+    folded = _fold(model)
+    if not folded or folded == _fold(CODER_MODEL):
         return False
-    if model in REQUIRED_REVIEWERS:
+    reviewer_names = {_fold(name) for name in REQUIRED_REVIEWERS}
+    for review in row.get("reviewers") or []:
+        if isinstance(review, dict):
+            reviewer_names.add(_fold(review.get("model")))
+    if folded in reviewer_names:
         return False
     return True
 
@@ -88,7 +98,7 @@ def classify_row(row: Any, *, index_sha: str, ac_hash: str | None = None) -> dic
         return _result(VERDICT_NO_GO, "row_malformed", False)
     if row.get("acceptance_executed_by_this_package") is True:
         return _result(VERDICT_NO_GO, "this_package_cannot_execute", False)
-    if row.get("issue_412_action") in {"reopen", "close"}:
+    if row.get("issue_412_action") not in ISSUE_412_ACTIONS:
         return _result(VERDICT_NO_GO, "issue_412_untouched", False)
     kind = row.get("kind")
     if kind not in EVIDENCE_KINDS:
@@ -101,8 +111,8 @@ def classify_row(row: Any, *, index_sha: str, ac_hash: str | None = None) -> dic
         return _result(VERDICT_NO_GO, "fixture_claimed_authenticated_pass", False)
     if kind != "actual":
         return _result(VERDICT_NOT_VERIFIED, f"{kind}_is_not_authenticated_pass", False)
-    if row.get("producer") in OFFLINE_PRODUCERS:
-        return _result(VERDICT_NOT_VERIFIED, "offline_producer", False)
+    if row.get("producer") not in ACCEPTED_PRODUCERS:
+        return _result(VERDICT_NO_GO, "producer_not_allowlisted", False)
     missing: list[str] = []
     if row.get("ac_revision_hash") != expected_hash:
         missing.append("ac_revision")
@@ -119,7 +129,16 @@ def classify_row(row: Any, *, index_sha: str, ac_hash: str | None = None) -> dic
     return _result(VERDICT_ACCEPTED, "actual_shape_complete", True)
 
 
-def classify_index(index: Any) -> dict[str, Any]:
+def classify_index(index: Any, *, expected_sha: str) -> dict[str, Any]:
+    """Compare the index to the real candidate head. A missing or other SHA is NO-GO."""
+    if not isinstance(expected_sha, str) or _SHA40.fullmatch(expected_sha) is None:
+        return {
+            "release_verdict": VERDICT_NO_GO,
+            "reason": "expected_sha_invalid",
+            "authenticated_testnet_pass": False,
+            "authenticated_passes": 0,
+            "rows": [],
+        }
     if not isinstance(index, dict):
         return {
             "release_verdict": VERDICT_NO_GO,
@@ -128,7 +147,15 @@ def classify_index(index: Any) -> dict[str, Any]:
             "authenticated_passes": 0,
             "rows": [],
         }
-    index_sha = index.get("candidate_sha")
+    if index.get("candidate_sha") != expected_sha:
+        return {
+            "release_verdict": VERDICT_NO_GO,
+            "reason": "stale_sha",
+            "authenticated_testnet_pass": False,
+            "authenticated_passes": 0,
+            "rows": [],
+        }
+    index_sha = expected_sha
     ac_hash = canonical_ac_hash()
     if index.get("ac_revision_hash") not in (None, ac_hash):
         return {

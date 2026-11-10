@@ -18,6 +18,19 @@ from tools.short_release_acceptance.constants import (
 )
 
 
+def _string_ids(value: Any) -> list[str] | None:
+    if value is None:
+        return []
+    if isinstance(value, str) or not isinstance(value, list):
+        return None
+    cleaned: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return None
+        cleaned.append(item)
+    return cleaned
+
+
 def judge_fault(trace: Any) -> dict[str, Any]:
     if not isinstance(trace, dict):
         return _result(False, ["trace_malformed"], VERDICT_NO_GO, "dependency_open")
@@ -29,6 +42,18 @@ def judge_fault(trace: Any) -> dict[str, Any]:
     owner_result = trace.get("owner_result")
     if not isinstance(owner_result, dict) or owner_result.get("deny_new_entry") is not True:
         return _result(False, ["owner_result_missing"], VERDICT_NOT_VERIFIED, "dependency_open")
+
+    client_ids = _string_ids(trace.get("client_order_ids"))
+    orphan_ids = _string_ids(trace.get("orphan_ids"))
+    cancel_ids = _string_ids(trace.get("cancel_ids"))
+    reduce_orders = trace.get("reduce_orders")
+    if (
+        client_ids is None
+        or orphan_ids is None
+        or cancel_ids is None
+        or (reduce_orders is not None and not isinstance(reduce_orders, list))
+    ):
+        return _result(False, ["trace_malformed"], VERDICT_NO_GO, "fixture")
 
     violations: list[str] = []
     if trace.get("opening_orders"):
@@ -42,7 +67,6 @@ def judge_fault(trace: Any) -> dict[str, Any]:
         violations.append("reduce_only_cover_missing")
     elif any(not isinstance(item, dict) or item.get("reduce_only") is not True for item in covers):
         violations.append("reduce_only_cover_missing")
-    client_ids = list(trace.get("client_order_ids") or [])
     if len(client_ids) != len(set(client_ids)):
         violations.append("duplicate")
     if trace.get("side") == "short":
@@ -61,7 +85,7 @@ def judge_fault(trace: Any) -> dict[str, Any]:
         violations.append("residual_unknown")
     else:
         total = Decimal("0")
-        for order in trace.get("reduce_orders") or []:
+        for order in reduce_orders or []:
             if not isinstance(order, dict) or order.get("reduce_only") is not True:
                 violations.append("reduce_order_invalid")
                 continue
@@ -88,9 +112,7 @@ def judge_fault(trace: Any) -> dict[str, Any]:
     if fault == "restart_orphan":
         if trace.get("adopted") is True:
             violations.append("orphan_adopted")
-        orphan_ids = set(trace.get("orphan_ids") or [])
-        cancel_ids = set(trace.get("cancel_ids") or [])
-        if orphan_ids & cancel_ids:
+        if set(orphan_ids) & set(cancel_ids):
             violations.append("orphan_canceled")
         if trace.get("inhibits_entries") is not True:
             violations.append("entries_not_inhibited")

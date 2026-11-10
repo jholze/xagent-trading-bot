@@ -4,6 +4,8 @@
   "execution_authorized": false,
   "executable": false,
   "global_kill_switch": false,
+  "mode": "paper",
+  "allow_live": false,
   "tenant_id": null,
   "origin": "https://api-testnet.gateapi.io:443",
   "actions": ["SHORT", "protective_stop", "COVER"],

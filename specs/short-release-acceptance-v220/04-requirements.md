@@ -84,3 +84,16 @@ The production path named in AC-E2E-1 stays unwired (`INTEGRATION_WIRED` is fals
 | --- | --- | --- | --- | --- | --- |
 | Rev 0 | 2026-11-10 | AC-E2E-1..4 | Draft text, not issued | Sprint D-E2E | Marcus: H OK at 18:21; not an activation approval |
 | Rev 1 | 2026-11-10 | AC-E2E-1..4 unchanged | Phase-1 judge, schema, disabled manifest. Production hook stays off | Launch phase split while B/C/F are open | Phase split pending Marcus check; freeze 18:40 used as start values |
+| Rev 2 | 2026-11-10 | AC-E2E-1..4 unchanged | Offline judge no longer imports owner modules. `classify_index` requires the real candidate SHA. Actual rows need an allowlisted producer. Manifest writer is confined to `tools/short_release_acceptance/output/`. | Opus review on `c357a33b` | Kay, same day |
+
+## Rev 2 review fixes
+
+- Owner module names are static strings. `compose_offline_chain` does not import `execution`, `services`, `storage`, `ccxt`, `requests`, or `pymongo`.
+- `classify_index(index, *, expected_sha)` returns `NO-GO` when the index SHA is missing or differs from that head, including an internally consistent older SHA.
+- `kind=actual` is `ACCEPTED` only when `producer` is exactly `separate_authorized_run`. A trailing space is `NO-GO`. Fixture and compose rows cannot be relabeled into acceptance.
+- `issue_412_action` must be exactly `leave_closed_not_planned`.
+- Phase-1 asset class allowlist is `perp`. Tokenized stocks are denied.
+- `permit_minutes`, `permit_amount`, `exhaustion_thresholds`, and `execution_buffer_minutes` may be absent or null. Any other value makes the manifest incomplete. `mode` must be `paper` or `testnet`. `allow_live` must be false.
+- Secret keys are matched after lowercasing and removing `-` and `_`. Values that look like assignments, bearer tokens, or long hex/base64 blobs are refused, and the writer does not create the file.
+- A quantity gap between the confirmed residual and the filled amount above one tick and above 0.01 is `NO-GO`. Exit links must name the cover stage and the fill stage.
+- Malformed ids return `NO-GO` and do not raise.

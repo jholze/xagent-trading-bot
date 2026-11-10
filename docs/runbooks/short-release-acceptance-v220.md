@@ -32,9 +32,12 @@ Frozen 2026-11-10 18:40 Europe/Berlin as paper/testnet start values. They are no
 Rows live in `specs/short-release-acceptance-v220/evidence-schema.json`. Kinds are `fixture`, `manual`, and `actual`.
 
 - A fixture or manual row is `NOT_VERIFIED`. It cannot report an authenticated pass.
+- `classify_index` takes the real candidate head SHA. If the index SHA is missing or different, the verdict is `NO-GO`, even when the rows agree with each other.
 - A stale candidate, reviewer, or tester SHA is `NO-GO`.
-- An `actual` row still needs both `deepseek-v4-pro` and `claude-opus-5-5` on that SHA, a separate tester who is not the coder and not either reviewer, and venue-account funding proof. Synthetic or indicative funding is not proof.
-- This package's own producer ids cannot be relabeled into acceptance. `acceptance_executed_by_this_package` cannot be true.
+- An `actual` row is accepted only from the producer id `separate_authorized_run`, spelled exactly. Any other producer, including a trailing space, is `NO-GO`. It also needs both `deepseek-v4-pro` and `claude-opus-5-5` on that SHA, a separate tester who is not the coder and not either reviewer (compared case-insensitively), and venue-account funding proof. Synthetic funding, a non-hex proof SHA, and an all-zero proof SHA are not proof.
+- `issue_412_action` must be `leave_closed_not_planned`.
+- The disabled manifest writer can create a `.json` file only under `tools/short_release_acceptance/output/`.
+- `mode` must be `paper` or `testnet`, and `allow_live` must be false. Unfrozen buffer, permit, and exhaustion fields must be absent or null.
 - The checked-in index `specs/short-release-acceptance-v220/evidence-index.json` is a fixture index. Its sample SHA is not a reviewed head.
 
 ## Offline check
