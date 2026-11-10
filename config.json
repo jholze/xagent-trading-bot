@@ -166,7 +166,21 @@
     "testnet_futures": {
       "enabled": false,
       "tenants": [],
-      "_doc": "Fail-closed Gate futures testnet for SHORT/COVER. Both enabled=true AND the current tenant id listed in tenants (exact string match, non-empty list) are required. There is no single boolean that flips all four tenants — turning it on for everyone means naming every tenant explicitly, a visible deliberate act. Missing keys, wrong types, empty tenants, or an unnamed tenant reject the order."
+      "paper_start": {
+        "_frozen_at": "2026-11-10T18:40+01:00",
+        "_authority": "Kay, owner-delegated by Jens 2026-11-10 18:40 Europe/Berlin. Paper/testnet start values only. Not live, not keys, not a strategy approval.",
+        "liq_clearance_fraction": "0.05",
+        "liq_clearance_min_ticks": 1,
+        "host_allowlist": ["https://api-testnet.gateapi.io:443"],
+        "legacy_host_fallback": false,
+        "reconciliation_tolerance_usdt": "0.01",
+        "reconciliation_tolerance_may_widen": false,
+        "adl_block_new_short": ["warning", "elevated", "unknown"],
+        "adl_keep_protection": true,
+        "emergency_permit_default": false,
+        "emergency_auto_close": false
+      },
+      "_doc": "Fail-closed Gate futures testnet for SHORT/COVER. Both enabled=true AND the current tenant id listed in tenants (exact string match, non-empty list) are required. There is no single boolean that flips all four tenants — turning it on for everyone means naming every tenant explicitly, a visible deliberate act. Missing keys, wrong types, empty tenants, or an unnamed tenant reject the order. paper_start holds the 2026-11-10 18:40 paper/testnet freeze (clearance, host, tolerance, ADL, emergency permit)."
     }
   },
   "trade_cooldown_hours": 0.35,
