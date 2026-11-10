@@ -3,6 +3,10 @@
 Nothing here writes into ``data/``: command context lives in a tmp file.
 Frozen short/cover confirm assertions in ``test_short_cover_confirm.py``
 stay in that file.
+
+#529 Rev 1 names the coin-button payload change: ``shortcoin:<TICKER>``
+replaces ``shortcoin:<display index>`` in the assertions below. Cover
+callbacks are unchanged.
 """
 
 from __future__ import annotations
@@ -163,7 +167,7 @@ class TestShortCoverWizards512(unittest.TestCase):
         callbacks = _callbacks(tg)
         self.assertEqual(
             [c for c in callbacks if c != ctx.CANCEL_CALLBACK],
-            ["shortcoin:1", "shortcoin:2"],
+            ["shortcoin:ARIA", "shortcoin:SOL"],
         )
         self.assertIn(ctx.CANCEL_CALLBACK, callbacks)
         self.assertTrue(all(
@@ -183,7 +187,7 @@ class TestShortCoverWizards512(unittest.TestCase):
             self.assertTrue(handle("/short"))
             req.assert_not_called()
             tg.clear()
-            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}1")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA")))
             req.assert_not_called()
             callbacks = _callbacks(tg)
             self.assertIn(f"{SHORT_AMT_CALLBACK_PREFIX}25", callbacks)
@@ -216,7 +220,7 @@ class TestShortCoverWizards512(unittest.TestCase):
         self._patch_short_stack()
         with patch(f"{SC}.request_short_confirmation"):
             self.assertTrue(handle("/short"))
-            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}1")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA")))
         callbacks = _callbacks(tg)
         self.assertIn(f"{SHORT_AMT_CALLBACK_PREFIX}40", callbacks)
         self.assertNotIn(f"{SHORT_AMT_CALLBACK_PREFIX}50", callbacks)
@@ -227,11 +231,11 @@ class TestShortCoverWizards512(unittest.TestCase):
         self._patch_short_stack()
         with patch(f"{SC}.request_short_confirmation") as req:
             self.assertTrue(handle("/short"))
-            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}1")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA")))
             tg.clear()
             self.assertTrue(handle_callback(_query(SHORT_BACK_CALLBACK)))
             req.assert_not_called()
-        self.assertEqual(_callbacks(tg)[:2], ["shortcoin:1", "shortcoin:2"])
+        self.assertEqual(_callbacks(tg)[:2], ["shortcoin:ARIA", "shortcoin:SOL"])
         self.assertEqual(ctx.get_context(CHAT)["meta"]["state"], "short_awaiting_coin")
 
     def test_shortcoin_missing_chat_id_fails_closed(self):
