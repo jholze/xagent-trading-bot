@@ -28,13 +28,19 @@ from strategies.short_policy import resolve_short_params
 
 _REPO = Path(__file__).resolve().parents[2]
 _BERLIN = ZoneInfo("Europe/Berlin")
-_PAPER = {
-    "tenant_id": "fixture-tenant",
-    "market": "paper",
-    "live": False,
-    "readback_ok": True,
-    "as_of": "2026-11-10T15:00:00+00:00",
-}
+def _proof(moment, **overrides):
+    body = {
+        "tenant_id": "fixture-tenant",
+        "market": "paper",
+        "live": False,
+        "readback_ok": True,
+        "margin_mode": "isolated",
+        "position_mode": "one_way",
+        "leverage": "1",
+        "as_of": int(moment.timestamp()),
+    }
+    body.update(overrides)
+    return body
 
 
 def _on(**shorts):
@@ -53,6 +59,7 @@ def _pos(*, opened, amount=1.0, entry=100.0, mark_tier="volatile"):
         "strategy_tier": mark_tier,
         "entry_at": stamp,
         "symbol": "AAA/USDT",
+        "sandbox_path": "v220_paper",
     }
 
 
@@ -186,7 +193,7 @@ def test_ac3_session_due_and_budget():
         config_raw=_on(),
         schedule={**base, "session_boundary": "inclusive"},
         calendar=_calendar(now),
-        mode_proof=_PAPER,
+        mode_proof=_proof(now),
     )
     assert inclusive.open is True
     assert inclusive.reasons == ()
@@ -197,7 +204,7 @@ def test_ac3_session_due_and_budget():
         config_raw=_on(),
         schedule={**base, "session_boundary": "exclusive"},
         calendar=_calendar(now),
-        mode_proof=_PAPER,
+        mode_proof=_proof(now),
     )
     assert exclusive.open is False
     assert "outside_due" in exclusive.reasons
@@ -208,7 +215,7 @@ def test_ac3_session_due_and_budget():
         config_raw=_on(),
         schedule={**base, "session_boundary": "inclusive"},
         calendar=_calendar(now),
-        mode_proof=_PAPER,
+        mode_proof=_proof(now),
     )
     assert later.open is False
 
@@ -224,21 +231,21 @@ def test_ac3_session_due_and_budget():
     assert schedule_allows_entry(
         now=fits,
         opened=opened,
-        planned_exit=fits + timedelta(minutes=10),
+        planned_exit=fits,
         config_raw=_on(),
         schedule=tight,
         calendar=_calendar(fits),
-        mode_proof=_PAPER,
+        mode_proof=_proof(fits),
     ).open is True
     misses = datetime(2026, 11, 10, 17, 50, tzinfo=_BERLIN)
     missed = schedule_allows_entry(
         now=misses,
         opened=opened,
-        planned_exit=fits + timedelta(minutes=10),
+        planned_exit=misses,
         config_raw=_on(),
         schedule=tight,
         calendar=_calendar(misses),
-        mode_proof=_PAPER,
+        mode_proof=_proof(misses),
     )
     assert missed.open is False
     assert "outside_due" in missed.reasons
@@ -252,7 +259,7 @@ def test_ac3_session_due_and_budget():
         config_raw=_on(),
         schedule=missing_budget,
         calendar=_calendar(fits),
-        mode_proof=_PAPER,
+        mode_proof=_proof(fits),
     )
     assert unknown.open is False
     assert "buffer_unknown" in unknown.reasons
@@ -271,7 +278,7 @@ def test_ac3_session_due_and_budget():
         config_raw=_on(),
         schedule=later_session,
         calendar=_calendar(opened),
-        mode_proof=_PAPER,
+        mode_proof=_proof(opened),
     )
     assert loosened.open is False
     assert "cutoff_loosened" in loosened.reasons
@@ -282,7 +289,7 @@ def test_ac3_session_due_and_budget():
         config_raw=_on(),
         schedule=later_session,
         calendar=_calendar(opened),
-        mode_proof=_PAPER,
+        mode_proof=_proof(opened),
     )
     assert past_cap.open is False
 
@@ -365,7 +372,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(saturday),
-        mode_proof=_PAPER,
+        mode_proof=_proof(saturday),
     )
     assert weekend.open is False
     assert "weekend_denied" in weekend.reasons
@@ -376,7 +383,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(saturday, weekend_admission=True),
-        mode_proof=_PAPER,
+        mode_proof=_proof(saturday),
     )
     assert opened_ok.open is False
     assert "weekend_denied" in opened_ok.reasons
@@ -395,7 +402,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(tuesday),
-        mode_proof=_PAPER,
+        mode_proof=_proof(tuesday),
     ).open is True
 
     stale_at = tuesday - timedelta(seconds=3601)
@@ -407,7 +414,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=stale,
-        mode_proof=_PAPER,
+        mode_proof=_proof(tuesday),
     )
     assert aged.open is False and "calendar_stale" in aged.reasons
     exact = _calendar(tuesday - timedelta(seconds=3600), max_age_seconds=3600)
@@ -418,7 +425,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=exact,
-        mode_proof=_PAPER,
+        mode_proof=_proof(tuesday),
     ).open is True
     missing_windows = _calendar(tuesday)
     del missing_windows["maintenance"]
@@ -429,7 +436,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=missing_windows,
-        mode_proof=_PAPER,
+        mode_proof=_proof(tuesday),
     ).reasons
 
     start = datetime(2026, 11, 10, 12, 0, tzinfo=_BERLIN)
@@ -442,7 +449,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(start, maintenance=[window]),
-        mode_proof=_PAPER,
+        mode_proof=_proof(start),
     ).open is False
     assert schedule_allows_entry(
         now=end,
@@ -451,7 +458,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(end, maintenance=[window]),
-        mode_proof=_PAPER,
+        mode_proof=_proof(end),
     ).open is False
     after = end + timedelta(seconds=1)
     assert schedule_allows_entry(
@@ -461,7 +468,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(after, maintenance=[window]),
-        mode_proof=_PAPER,
+        mode_proof=_proof(after),
     ).open is True
     exclusive_window = dict(window, boundary="exclusive")
     assert schedule_allows_entry(
@@ -471,7 +478,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(start, maintenance=[exclusive_window]),
-        mode_proof=_PAPER,
+        mode_proof=_proof(start),
     ).open is True
     inside = start + timedelta(seconds=1)
     assert schedule_allows_entry(
@@ -481,7 +488,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(inside, maintenance=[exclusive_window]),
-        mode_proof=_PAPER,
+        mode_proof=_proof(inside),
     ).open is False
     assert schedule_allows_entry(
         now=end,
@@ -490,7 +497,7 @@ def test_ac5_weekend_calendar_and_funding():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(end, maintenance=[exclusive_window]),
-        mode_proof=_PAPER,
+        mode_proof=_proof(end),
     ).open is True
 
     entry = datetime(2026, 11, 10, 12, tzinfo=timezone.utc)
@@ -552,7 +559,7 @@ def test_freeze_cutoff_same_day_and_no_buffer_default():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(now),
-        mode_proof=_PAPER,
+        mode_proof=_proof(now),
     ).open is True
     at_cutoff = datetime(2026, 11, 10, 20, 0, tzinfo=_BERLIN)
     denied = schedule_allows_entry(
@@ -562,7 +569,7 @@ def test_freeze_cutoff_same_day_and_no_buffer_default():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(at_cutoff),
-        mode_proof=_PAPER,
+        mode_proof=_proof(at_cutoff),
     )
     assert denied.open is False
     assert "after_cutoff" in denied.reasons
@@ -573,7 +580,7 @@ def test_freeze_cutoff_same_day_and_no_buffer_default():
         config_raw=_on(),
         schedule=_sched(),
         calendar=_calendar(now),
-        mode_proof=_PAPER,
+        mode_proof=_proof(now),
     )
     assert next_day.open is False
     assert "same_calendar_day" in next_day.reasons
@@ -584,7 +591,7 @@ def test_freeze_cutoff_same_day_and_no_buffer_default():
         config_raw=_on(),
         schedule=None,
         calendar=_calendar(now),
-        mode_proof=_PAPER,
+        mode_proof=_proof(now),
     )
     assert bare.open is False
     assert "buffer_unknown" in bare.reasons
@@ -613,3 +620,150 @@ def test_missing_mode_proof_denies_entry():
     )
     assert decision.open is False
     assert "mode_proof_missing" in decision.reasons
+
+
+def test_live_and_mainnet_deny_entry():
+    now = datetime(2026, 11, 10, 12, tzinfo=_BERLIN)
+    live = _on()
+    live["shorts"]["allow_live"] = True
+    denied = schedule_allows_entry(
+        now=now,
+        opened=now,
+        planned_exit=now + timedelta(hours=2),
+        config_raw=live,
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    )
+    assert denied.open is False
+    assert "live_denied" in denied.reasons
+    mainnet = schedule_allows_entry(
+        now=now,
+        opened=now,
+        planned_exit=now + timedelta(hours=2),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_proof(now, market="mainnet"),
+    )
+    assert "live_denied" in mainnet.reasons
+
+
+def test_cest_cutoff_uses_europe_berlin():
+    # 18:00 UTC on 2026-06-16 is 20:00 Europe/Berlin (CEST, UTC+2).
+    at_cutoff = datetime(2026, 6, 16, 18, 0, tzinfo=timezone.utc)
+    before = at_cutoff - timedelta(seconds=1)
+    opened = datetime(2026, 6, 16, 16, 0, tzinfo=_BERLIN)
+    planned = datetime(2026, 6, 16, 20, 0, tzinfo=_BERLIN)
+    assert schedule_allows_entry(
+        now=before,
+        opened=opened,
+        planned_exit=planned,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(before.astimezone(_BERLIN)),
+        mode_proof=_proof(before),
+    ).open is True
+    denied = schedule_allows_entry(
+        now=at_cutoff,
+        opened=opened,
+        planned_exit=planned,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(at_cutoff.astimezone(_BERLIN)),
+        mode_proof=_proof(at_cutoff),
+    )
+    assert denied.open is False
+    assert "after_cutoff" in denied.reasons
+
+
+def test_cover_boundaries_halt_and_untagged_lots():
+    cfg = _on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.5})
+    opened = datetime(2026, 11, 10, 10, 0, tzinfo=_BERLIN)
+    exact = evaluate_short_cover(
+        _pos(opened=opened),
+        100.2,
+        now=opened + timedelta(hours=4),
+        config_raw=cfg,
+    )
+    assert exact is not None and exact["source"] == "time_cap"
+    earlier = evaluate_short_cover(
+        _pos(opened=opened),
+        100.2,
+        now=opened + timedelta(hours=4) - timedelta(seconds=1),
+        config_raw=cfg,
+    )
+    assert earlier is None
+    assert resolve_sandbox_hold(
+        lot={"time_cap_hours": Decimal("5"), "sandbox_path": "v220_paper"},
+        config_raw=cfg,
+    ).valid is False
+    late = schedule_allows_entry(
+        now=opened,
+        opened=opened,
+        planned_exit=datetime(2026, 11, 10, 21, 0, tzinfo=_BERLIN),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(opened),
+        mode_proof=_proof(opened),
+    )
+    assert late.open is False
+    night = datetime(2026, 11, 10, 23, 0, tzinfo=_BERLIN)
+    morning = datetime(2026, 11, 11, 1, 0, tzinfo=_BERLIN)
+    rolled = evaluate_short_cover(
+        _pos(opened=night),
+        100.2,
+        now=morning,
+        config_raw=cfg,
+    )
+    assert rolled["state"] == "overdue"
+    halted = evaluate_short_cover(
+        _pos(opened=opened),
+        100.2,
+        now=opened + timedelta(hours=1),
+        config_raw=cfg,
+        halted=True,
+    )
+    assert halted["state"] == "overdue"
+    untagged = _pos(opened=opened)
+    del untagged["sandbox_path"]
+    stable = {
+        "shorts": {
+            "sandbox_expiry_v220": {"enabled": True},
+            "allow_live": False,
+            "stable": {"time_cap_hours": 8, "stop_margin_pct": 0.5},
+        }
+    }
+    untagged["strategy_tier"] = "stable"
+    held = evaluate_short_cover(
+        untagged,
+        100.2,
+        now=opened + timedelta(hours=5),
+        config_raw=stable,
+    )
+    assert held is None
+    no_price = _pos(opened=opened, entry=0)
+    del no_price["sandbox_path"]
+    assert evaluate_short_cover(no_price, 0, now=opened, config_raw=cfg) is None
+    future = schedule_allows_entry(
+        now=opened,
+        opened=opened + timedelta(seconds=6),
+        planned_exit=opened + timedelta(hours=2),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(opened),
+        mode_proof=_proof(opened),
+    )
+    assert future.open is False
+    assert "clock_skew" in future.reasons
+    completion = schedule_allows_entry(
+        now=datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN),
+        opened=datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN),
+        planned_exit=datetime(2026, 11, 10, 19, 30, tzinfo=_BERLIN),
+        config_raw=_on(),
+        schedule=_sched(reconcile_budget_seconds=3600),
+        calendar=_calendar(datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)),
+        mode_proof=_proof(datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)),
+    )
+    assert completion.open is False
+    assert "outside_due" in completion.reasons

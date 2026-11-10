@@ -17,7 +17,7 @@ from strategies.short_math import (
     should_stop_or_liquidate,
     stop_price,
 )
-from strategies.short_expiry import cover_time_decision, sandbox_expiry_enabled, unpriced_cover
+from strategies.short_expiry import cover_time_decision, lot_uses_sandbox_expiry, unpriced_cover
 from strategies.short_policy import resolve_short_params
 
 
@@ -51,7 +51,7 @@ def evaluate_short_cover(
         return None
     px = float(mark or 0)
     entry = float((pos or {}).get("average_entry") or 0)
-    if sandbox_expiry_enabled(config_raw) and (price_stale or timed_out or px <= 0 or entry <= 0):
+    if lot_uses_sandbox_expiry(pos, config_raw) and (price_stale or timed_out or px <= 0 or entry <= 0):
         return unpriced_cover()
     if px <= 0 or entry <= 0:
         return None
@@ -113,7 +113,7 @@ def evaluate_short_cover(
             "rationale": f"RSI {rsi_f:.1f} <= {rsi_lo:g} while short in profit",
         }
     n = now or datetime.now(timezone.utc)
-    if sandbox_expiry_enabled(config_raw):
+    if lot_uses_sandbox_expiry(pos, config_raw):
         return cover_time_decision(
             pos,
             now=n,

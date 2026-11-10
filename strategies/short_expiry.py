@@ -1,9 +1,10 @@
-"""Default-off intraday hold for draft T220-05.
+"""Default-off intraday hold for the v2.2.0 paper/testnet path.
 
-Missing flag stays off. A sandbox hold must be finite, positive, and strictly
-under 24 hours. The untouched stack keeps the existing 4 hour base. Explicit
-24 hour or 72 hour overlays are invalid and are not substituted. Session
-clocks come from the caller. This module does not price funding.
+The flag applies only to lots tagged ``sandbox_path = v220_paper``. Untagged
+lots, including stable-tier shorts, keep the existing cover rules. A tagged
+hold is at most 4 hours and must finish by 20:00:00 Europe/Berlin on the same
+calendar day, Monday to Friday. Missing execution or reconcile budgets deny
+a new entry. This module does not price funding.
 """
 
 from __future__ import annotations
@@ -17,7 +18,10 @@ from zoneinfo import ZoneInfo
 
 from core.time_utils import ledger_datetime_utc
 from strategies.short_math import is_short
+from strategies.short_mode_proof import clock_skew_seconds, parse_sandbox_mode_proof
 from strategies.short_policy import _tier_key, shorts_allow_live, shorts_config
+
+SANDBOX_PATH = "v220_paper"
 
 FLAG_KEY = "sandbox_expiry_v220"
 _EXISTING_DEFAULT_HOURS = Decimal("4")
@@ -58,6 +62,13 @@ class FundingWindow:
 def sandbox_expiry_enabled(config_raw: Mapping[str, Any] | None) -> bool:
     block = shorts_config(config_raw).get(FLAG_KEY)
     return isinstance(block, dict) and block.get("enabled") is True
+
+
+def lot_uses_sandbox_expiry(pos: Mapping[str, Any] | None, config_raw: Mapping[str, Any] | None) -> bool:
+    """True only for a v2.2.0 paper/testnet lot while the flag is on."""
+    if not sandbox_expiry_enabled(config_raw) or not isinstance(pos, dict):
+        return False
+    return pos.get("sandbox_path") == SANDBOX_PATH
 
 
 def protection_allowed(*, position_side: str | None, reduce_only: bool) -> bool:
@@ -109,14 +120,14 @@ def schedule_allows_entry(
     if not sandbox_expiry_enabled(config_raw):
         return ScheduleDecision(False, ("sandbox_disabled",))
     reasons: list[str] = []
-    proof_missing, proof_live = _proof_flags(mode_proof)
-    if shorts_allow_live(config_raw) or proof_live:
+    proof = parse_sandbox_mode_proof(mode_proof, now=now, config_raw=config_raw)
+    if shorts_allow_live(config_raw) or proof.live or proof.reason == "live_denied":
         reasons.append("live_denied")
+    elif not proof.allowed:
+        reasons.append(proof.reason)
     hold = resolve_sandbox_hold(symbol=symbol, tier=tier, lot=lot, config_raw=config_raw)
     if not hold.valid or hold.hours is None:
         reasons.append("hold_invalid")
-    if proof_missing:
-        reasons.append("mode_proof_missing")
     if isinstance(position_side, str) and position_side.strip().lower() == "long":
         reasons.append("long_not_flipped")
     reasons.extend(_calendar_reasons(now, calendar))
@@ -130,30 +141,31 @@ def schedule_allows_entry(
         reasons.append("session_unknown")
     else:
         reasons.extend(_clock_reasons(now_utc, opened_utc, planned_utc))
+        skew = timedelta(seconds=clock_skew_seconds(config_raw))
+        if opened_utc > now_utc + skew:
+            reasons.append("clock_skew")
         session_end, boundary, session_reason = _frozen_session(schedule, opened_utc)
         if session_reason:
             reasons.append(session_reason)
         elif hold.valid and hold.hours is not None and budget is not None and session_end is not None:
             cap_end = opened_utc + _hours_td(hold.hours)
-            ready = now_utc + timedelta(seconds=budget)
-            outside = _holding_overdue(
-                now_utc,
-                cap_end=cap_end,
-                session_end=session_end,
-                boundary=boundary,
-                session_required=True,
-            ) or not _exit_inside(
-                ready,
-                cap_end=cap_end,
-                session_end=session_end,
-                boundary=boundary,
-                session_required=True,
-            ) or not _exit_inside(
-                planned_utc,
-                cap_end=cap_end,
-                session_end=session_end,
-                boundary=boundary,
-                session_required=True,
+            completion = planned_utc + timedelta(seconds=budget)
+            outside = (
+                planned_utc > cap_end
+                or not _exit_inside(
+                    planned_utc,
+                    cap_end=cap_end,
+                    session_end=session_end,
+                    boundary=boundary,
+                    session_required=True,
+                )
+                or not _exit_inside(
+                    completion,
+                    cap_end=cap_end,
+                    session_end=session_end,
+                    boundary=boundary,
+                    session_required=True,
+                )
             )
             if outside:
                 reasons.append("outside_due")
@@ -176,8 +188,8 @@ def report_sandbox_exposure(
     amount = float((pos or {}).get("amount") or 0) if isinstance(pos, dict) else 0.0
     if not is_short(pos) or amount <= 0:
         return ExposureReport("flat", True, "qty_zero")
-    if not sandbox_expiry_enabled(config_raw):
-        return ExposureReport("inactive", False, "sandbox_disabled")
+    if not lot_uses_sandbox_expiry(pos, config_raw):
+        return ExposureReport("inactive", False, "untagged")
     if price_stale or timed_out or halted is not False:
         return ExposureReport("overdue", False, "unconfirmed")
     return _exposure_from_clock(pos, now=now, config_raw=config_raw, schedule=schedule)
@@ -227,6 +239,8 @@ def cover_time_decision(
     symbol: str | None = None,
 ) -> dict[str, Any] | None:
     """Sandbox time cap. None means the lot is still inside the hold."""
+    if not lot_uses_sandbox_expiry(pos, config_raw):
+        return None
     if halted is True:
         return _overdue("halted")
     hold = resolve_sandbox_hold(
