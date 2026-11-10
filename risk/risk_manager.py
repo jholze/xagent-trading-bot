@@ -2173,9 +2173,20 @@ class RiskManager:
         mode = ptg.gate_mode(raw)
         if mode == ptg.MODE_OFF or rs.is_manual_source(source):
             return None, None
-        from core.tenant_context import resolve_tenant_id, resolve_tenant_scope
+        from core.tenant_context import (
+            current_tenant_context,
+            resolve_tenant_id,
+            resolve_tenant_scope,
+        )
 
         sym = order.symbol
+        # Opus B2 (#767 catch-up): refuse ambient DEFAULT_TENANT when no
+        # tenant_context is set. Background threads without a context would
+        # otherwise read `default`'s history for henry/ctexp buys.
+        if current_tenant_context() is None:
+            raise RuntimeError(
+                "pre_trade_gate: no tenant context (refuse ambient default)"
+            )
         tenant = resolve_tenant_id()
         scope = resolve_tenant_scope()  # errors go to _pre_trade_gate_crashed (fail closed)
         dca_ext = None
