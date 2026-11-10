@@ -365,14 +365,21 @@ def _build_command(command: str, text: str, meta: dict) -> str | None:
         token = parts[0]
         coin_token = token if token.replace(".", "").isdigit() else token.upper()
         if state == "short_awaiting_usdt":
-            coin = str(meta.get("coin") or "").strip()
-            if not coin:
+            from notifications.telegram_commands.short_commands import (
+                _positive_finite_usdt,
+                _stable_symbol,
+                short_size_block_reason,
+            )
+
+            if short_size_block_reason(meta, current_chat_id()):
+                return None
+            symbol = _stable_symbol(str(meta.get("coin") or ""))
+            if symbol is None:
                 return None
             usdt = parts[1] if len(parts) > 1 else parts[0]
-            val = safe_float(usdt)
-            if val is None or val <= 0:
+            if _positive_finite_usdt(usdt) is None:
                 return None
-            return f"/short {coin} {usdt}"
+            return f"/short {symbol} {usdt}"
         if state == "short_awaiting_coin":
             if len(parts) > 1:
                 return f"/short {coin_token} {parts[1]}"
@@ -447,6 +454,18 @@ def try_resolve(chat_id: str | int, text: str) -> bool:
 
     command = entry.get("command", "")
     meta = entry.get("meta") or {}
+    if command == "short" and str(meta.get("state") or "") == "short_awaiting_usdt":
+        from notifications.telegram_commands.short_commands import (
+            _short_menu_text,
+            short_size_block_reason,
+        )
+
+        reason = short_size_block_reason(meta, chat_id)
+        if reason:
+            send_telegram_message(_short_menu_text("usdt_expired"))
+            if reason == "symbol":
+                clear_context(chat_id)
+            return True
     built = _build_command(command, text, meta)
     if not built:
         if command == "sell" and str(meta.get("state") or "") == "sell_awaiting_pct":

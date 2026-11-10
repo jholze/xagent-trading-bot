@@ -3,6 +3,10 @@
 Nothing here writes into ``data/``: command context lives in a tmp file.
 Frozen short/cover confirm assertions in ``test_short_cover_confirm.py``
 stay in that file.
+
+#529 Rev 1 names the coin-button payload change: ``shortcoin:<TICKER>``
+replaces ``shortcoin:<display index>`` in the assertions below. Cover
+callbacks are unchanged.
 """
 
 from __future__ import annotations
@@ -93,6 +97,22 @@ class TestShortCoverWizards512(unittest.TestCase):
         ctx.set_chat_id("")
         self.tmp.cleanup()
 
+    def _arm_bound_size(self, coin: str) -> None:
+        from core.tenant_context import tenant_snapshot
+
+        tid, scope, _owner = tenant_snapshot()
+        ctx.set_chat_id(CHAT)
+        ctx.set_context(
+            CHAT,
+            "short",
+            state="short_awaiting_usdt",
+            coin=coin,
+            label=coin,
+            tenant_id=tid,
+            scope=scope,
+            bound_chat_id=CHAT,
+        )
+
     def _install_capture(self, tg: list):
         from notifications.telegram_commands import command_context as cmdctx
         from notifications.telegram_commands import short_commands as scmod
@@ -163,7 +183,7 @@ class TestShortCoverWizards512(unittest.TestCase):
         callbacks = _callbacks(tg)
         self.assertEqual(
             [c for c in callbacks if c != ctx.CANCEL_CALLBACK],
-            ["shortcoin:1", "shortcoin:2"],
+            ["shortcoin:ARIA/USDT", "shortcoin:SOL/USDT"],
         )
         self.assertIn(ctx.CANCEL_CALLBACK, callbacks)
         self.assertTrue(all(
@@ -183,7 +203,7 @@ class TestShortCoverWizards512(unittest.TestCase):
             self.assertTrue(handle("/short"))
             req.assert_not_called()
             tg.clear()
-            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}1")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA/USDT")))
             req.assert_not_called()
             callbacks = _callbacks(tg)
             self.assertIn(f"{SHORT_AMT_CALLBACK_PREFIX}25", callbacks)
@@ -216,7 +236,7 @@ class TestShortCoverWizards512(unittest.TestCase):
         self._patch_short_stack()
         with patch(f"{SC}.request_short_confirmation"):
             self.assertTrue(handle("/short"))
-            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}1")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA/USDT")))
         callbacks = _callbacks(tg)
         self.assertIn(f"{SHORT_AMT_CALLBACK_PREFIX}40", callbacks)
         self.assertNotIn(f"{SHORT_AMT_CALLBACK_PREFIX}50", callbacks)
@@ -227,11 +247,11 @@ class TestShortCoverWizards512(unittest.TestCase):
         self._patch_short_stack()
         with patch(f"{SC}.request_short_confirmation") as req:
             self.assertTrue(handle("/short"))
-            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}1")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA/USDT")))
             tg.clear()
             self.assertTrue(handle_callback(_query(SHORT_BACK_CALLBACK)))
             req.assert_not_called()
-        self.assertEqual(_callbacks(tg)[:2], ["shortcoin:1", "shortcoin:2"])
+        self.assertEqual(_callbacks(tg)[:2], ["shortcoin:ARIA/USDT", "shortcoin:SOL/USDT"])
         self.assertEqual(ctx.get_context(CHAT)["meta"]["state"], "short_awaiting_coin")
 
     def test_shortcoin_missing_chat_id_fails_closed(self):
@@ -375,7 +395,7 @@ class TestShortCoverWizards512(unittest.TestCase):
         self._patch_short_stack(prices={"ARIA/USDT": 0.05})
 
         def _run_typed():
-            ctx.set_context(CHAT, "short", state="short_awaiting_usdt", coin="ARIA", label="ARIA")
+            self._arm_bound_size("ARIA/USDT")
             with patch(f"{SC}.request_short_confirmation") as mock_confirm, \
                  patch(f"{SC}.send_telegram_buttons"):
                 self.assertTrue(ctx.try_resolve(CHAT, "25"))
@@ -383,7 +403,7 @@ class TestShortCoverWizards512(unittest.TestCase):
                 return mock_confirm.call_args.kwargs
 
         def _run_button():
-            ctx.set_context(CHAT, "short", state="short_awaiting_usdt", coin="ARIA", label="ARIA")
+            self._arm_bound_size("ARIA/USDT")
             with patch(f"{SC}.request_short_confirmation") as mock_confirm, \
                  patch(f"{SC}.send_telegram_buttons"), \
                  patch(f"{SC}.answer_callback_query"):
@@ -399,7 +419,7 @@ class TestShortCoverWizards512(unittest.TestCase):
 
     def test_invalid_short_amount_reasks_instead_of_defaulting(self):
         self._patch_short_stack()
-        ctx.set_context(CHAT, "short", state="short_awaiting_usdt", coin="ARIA", label="ARIA")
+        self._arm_bound_size("ARIA/USDT")
         with patch(f"{SC}.send_telegram_buttons") as mock_btn, \
              patch(f"{SC}.request_short_confirmation") as mock_confirm:
             self.assertTrue(ctx.try_resolve(CHAT, "nope"))
@@ -407,18 +427,34 @@ class TestShortCoverWizards512(unittest.TestCase):
             self.assertTrue(mock_btn.called)
         entry = ctx.get_context(CHAT)
         self.assertEqual(entry["meta"]["state"], "short_awaiting_usdt")
-        self.assertEqual(entry["meta"]["coin"], "ARIA")
+        self.assertEqual(entry["meta"]["coin"], "ARIA/USDT")
 
     def test_short_cover_build_command_unstated_meta_unchanged(self):
         self.assertEqual(ctx._build_command("short", "H", {}), "/short H")
         self.assertEqual(ctx._build_command("cover", "H", {}), "/cover H")
-        self.assertEqual(
+        self.assertIsNone(
             ctx._build_command(
                 "short",
                 "25",
                 {"state": "short_awaiting_usdt", "coin": "ARIA"},
+            )
+        )
+        from core.tenant_context import tenant_snapshot
+
+        tid, scope, _owner = tenant_snapshot()
+        self.assertEqual(
+            ctx._build_command(
+                "short",
+                "25",
+                {
+                    "state": "short_awaiting_usdt",
+                    "coin": "ARIA/USDT",
+                    "tenant_id": tid,
+                    "scope": scope,
+                    "bound_chat_id": CHAT,
+                },
             ),
-            "/short ARIA 25",
+            "/short ARIA/USDT 25",
         )
         self.assertEqual(
             ctx._build_command(
