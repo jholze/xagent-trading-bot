@@ -20,7 +20,7 @@ Regenerate: `python3 scripts/generate_settings_reference.py`
 | Watchlist Quality Engine (WQE) block | `watchlist_quality` | `<dict len=8>` |  |
 | DCA sniper block | `dca_sniper` | `<dict len=54>` |  |
 | Gainer signal block | `gainer_signal` | `<dict len=8>` |  |
-| Shorts block | `shorts` | `<dict len=17>` |  |
+| Shorts block | `shorts` | `<dict len=16>` |  |
 | Sandbox block | `sandbox` | `<dict len=6>` |  |
 | MCP block | `mcp` | `<dict len=6>` |  |
 | Memory/RAG block | `memory` | `<dict len=18>` |  |
@@ -76,7 +76,7 @@ Regenerate: `python3 scripts/generate_settings_reference.py`
 | `rule_switches` | `<dict len=5>` | Per-tenant feature rule switches (see specs/tenant-rule-switches). |
 | `sandbox` | `<dict len=6>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
 | `sell_policy` | `<dict len=6>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
-| `shorts` | `<dict len=17>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
+| `shorts` | `<dict len=16>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
 | `stable_altcoin` | `<dict len=25>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
 | `stop_loss_pct` | `50.0` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
 | `strategies` | `<list len=6>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |

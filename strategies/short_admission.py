@@ -17,7 +17,16 @@ from decimal import Decimal
 from typing import Any, Mapping
 
 from core.time_utils import ledger_datetime_utc
-from strategies.short_mode_proof import opened_regimes, parse_sandbox_mode_proof, regime_max_age_seconds
+from strategies.short_mode_proof import (
+    LEGACY_MARGIN_CAP_PCT,
+    MAX_EXPOSURE_PCT,
+    MAX_STOP_LOSS_PCT,
+    MAX_STOP_LOSS_PCT_ALL,
+    opened_regimes,
+    parse_sandbox_mode_proof,
+    regime_max_age_seconds,
+    tightened_decimal,
+)
 from strategies.short_policy import shorts_allow_live, shorts_config
 
 FLAG_KEY = "sandbox_admission_v220"
@@ -223,19 +232,31 @@ def _frozen_limits(
     reserve = _reservation_sum(profile.get("reservations") if "reservations" in profile else None)
     if reserve is None:
         reasons.append("reservation_unknown")
-    exposure_cap, cap_reason = _ceiling(profile, "max_exposure_pct", Decimal(defaults["max_exposure_pct"]))
+    exposure_cap, cap_reason = _ceiling(
+        profile,
+        "max_exposure_pct",
+        tightened_decimal(config_raw, "max_exposure_pct", MAX_EXPOSURE_PCT),
+    )
     if cap_reason:
         reasons.append(cap_reason)
-    stop_cap, stop_reason = _ceiling(profile, "max_stop_loss_pct", Decimal(defaults["max_stop_loss_pct"]))
+    stop_cap, stop_reason = _ceiling(
+        profile,
+        "max_stop_loss_pct",
+        tightened_decimal(config_raw, "max_stop_loss_pct", MAX_STOP_LOSS_PCT),
+    )
     if stop_reason:
         reasons.append(stop_reason)
     book_cap, book_reason = _ceiling(
-        profile, "max_stop_loss_pct_all", Decimal(defaults["max_stop_loss_pct_all"])
+        profile,
+        "max_stop_loss_pct_all",
+        tightened_decimal(config_raw, "max_stop_loss_pct_all", MAX_STOP_LOSS_PCT_ALL),
     )
     if book_reason:
         reasons.append(book_reason)
     legacy_cap, legacy_reason = _ceiling(
-        profile, "legacy_margin_cap_pct", Decimal(defaults["legacy_margin_cap_pct"])
+        profile,
+        "legacy_margin_cap_pct",
+        tightened_decimal(config_raw, "legacy_margin_cap_pct", LEGACY_MARGIN_CAP_PCT),
     )
     if legacy_reason:
         reasons.append(legacy_reason)
@@ -243,7 +264,7 @@ def _frozen_limits(
     configured_cap = _number(configured)
     if configured_cap is None:
         reasons.append("legacy_cap_unknown")
-    elif configured_cap > Decimal(defaults["legacy_margin_cap_pct"]):
+    elif configured_cap > LEGACY_MARGIN_CAP_PCT:
         reasons.append("legacy_cap_raised")
     elif legacy_cap is not None:
         legacy_cap = min(legacy_cap, configured_cap)
@@ -256,6 +277,7 @@ def _frozen_limits(
         and notional is not None
         and reserve is not None
         and open_notional is not None
+        and open_notional >= 0
         and exposure_cap is not None
         and quantum is not None
     ):

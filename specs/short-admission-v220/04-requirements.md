@@ -15,12 +15,12 @@ Paper/testnet start defaults, used only when `shorts.sandbox_admission_v220.enab
 - Total short exposure is open short notional plus pending, uncertain, and reserved plus the candidate. The total is at most 10% of virtual equity. Exact 10% passes. One supplied quote quantum over fails. Missing open notional denies.
 - Stop loss at most 0.25% of equity per position, and that stop plus other short stops at most 0.75%.
 - `shorts.max_margin_pct` stays 20. A configured or profile cap above 20% is denied. `leverage_default` stays 2 for the existing path. NAV at or below zero denies.
-- Regime cells open only from `shorts.sandbox_v220.paper_start.opened_regimes` in config. The committed list is empty, so every cell denies. A caller `opened_regimes` value does not open a cell and is denied. Regime age uses the config ceiling (60 seconds). A caller cannot raise it. A missing clock (`now` is none) denies. A future or older-than-ceiling `regime_as_of` denies.
+- Regime cells are read only from `shorts.testnet_futures.paper_start.opened_regimes`, which #807 owns. This PR does not edit `config.json`. If that key is absent, every cell stays closed. A caller `opened_regimes` value does not open a cell and is denied. Regime age uses the 60 second code ceiling. Config and callers cannot raise it. A missing clock (`now` is none) denies. A future or older-than-ceiling `regime_as_of` denies.
 - Mode proof uses `strategies/short_mode_proof.py` (same allowed/reason/margin_mode/position_mode result as PR #804; that module is not on staging). Age above 60 seconds denies. `margin_mode` must be `isolated` and `position_mode` `one_way`.
 - Missing or unknown `existing_side` denies. A non-numeric `existing_qty` denies. A long with no quantity denies. A long with positive quantity is not flipped.
 - `product_kind` `stock_token`, missing, or `unknown` denies a new short (`short_path_deferred`). `stock_exclusion_applied` stays false. Reduce-only cover stays allowed.
 
-A missing profile still denies and is not filled with zero equity. The admission flag still defaults off. `paper_start` is committed with every regime cell closed; it does not enable the flag.
+A missing profile still denies and is not filled with zero equity. The admission flag still defaults off. Numeric caps, 60 seconds, and the closed regime default are code constants. Config may only tighten them.
 
 ## Rev 0 — superseded
 

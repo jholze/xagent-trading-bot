@@ -2,21 +2,28 @@
 
 PR #804's ``ModeProof`` (allowed, reason, margin_mode, position_mode) is not
 on staging. This module is the shared contract for admission and expiry.
-The age ceiling comes from ``shorts.sandbox_v220.paper_start`` and is never
-raised by a caller. Missing config uses 60 seconds, which is also the
-hard maximum.
+Numeric ceilings are code constants. ``shorts.testnet_futures.paper_start``
+(owned by #807) may only tighten them. A missing profile fails closed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
+from decimal import Decimal
 from typing import Any, Mapping
 
 from core.time_utils import ledger_datetime_utc
 from strategies.short_policy import shorts_config
 
 DEFAULT_MAX_AGE_SECONDS = 60
+MAX_CLOCK_SKEW_SECONDS = 5
+MAX_EXPOSURE_PCT = Decimal("10")
+MAX_STOP_LOSS_PCT = Decimal("0.25")
+MAX_STOP_LOSS_PCT_ALL = Decimal("0.75")
+LEGACY_MARGIN_CAP_PCT = Decimal("20")
+MAX_HOLD_HOURS = Decimal("4")
+CUTOFF_LOCAL = time(20, 0, 0)
 PAPER_MARKETS = frozenset({"paper", "futures_usdt_testnet"})
 ACCEPTED_MARGIN = frozenset({"isolated"})
 ACCEPTED_POSITION = frozenset({"one_way"})
@@ -34,44 +41,68 @@ class SandboxModeProof:
 
 
 def paper_start(config_raw: Mapping[str, Any] | None) -> dict[str, Any]:
-    block = shorts_config(config_raw).get("sandbox_v220")
+    """Read #807's profile. Absent means fail closed, not a looser default."""
+    block = shorts_config(config_raw).get("testnet_futures")
     if isinstance(block, dict) and isinstance(block.get("paper_start"), dict):
         return dict(block["paper_start"])
     return {}
 
 
-def _bounded_seconds(config_raw: Mapping[str, Any] | None, key: str) -> int:
-    raw = paper_start(config_raw).get(key, DEFAULT_MAX_AGE_SECONDS)
-    if isinstance(raw, bool):
-        return DEFAULT_MAX_AGE_SECONDS
+def tightened_int(config_raw: Mapping[str, Any] | None, key: str, ceiling: int) -> int:
+    raw = paper_start(config_raw).get(key)
+    if isinstance(raw, bool) or raw is None:
+        return ceiling
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        return DEFAULT_MAX_AGE_SECONDS
-    if value < 0:
-        return DEFAULT_MAX_AGE_SECONDS
-    return min(value, DEFAULT_MAX_AGE_SECONDS)
+        return ceiling
+    if value < 0 or value > ceiling:
+        return ceiling
+    return value
+
+
+def tightened_decimal(config_raw: Mapping[str, Any] | None, key: str, ceiling: Decimal) -> Decimal:
+    raw = paper_start(config_raw).get(key)
+    if raw is None or isinstance(raw, bool):
+        return ceiling
+    try:
+        value = Decimal(str(raw).strip())
+    except Exception:
+        return ceiling
+    if not value.is_finite() or value <= 0 or value > ceiling:
+        return ceiling
+    return value
+
+
+def tightened_cutoff(config_raw: Mapping[str, Any] | None) -> time:
+    raw = paper_start(config_raw).get("cutoff_local")
+    if not isinstance(raw, str):
+        return CUTOFF_LOCAL
+    parts = raw.strip().split(":")
+    if len(parts) < 2:
+        return CUTOFF_LOCAL
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+        second = int(parts[2]) if len(parts) > 2 else 0
+        candidate = time(hour, minute, second)
+    except (TypeError, ValueError):
+        return CUTOFF_LOCAL
+    if candidate > CUTOFF_LOCAL:
+        return CUTOFF_LOCAL
+    return candidate
 
 
 def mode_proof_max_age_seconds(config_raw: Mapping[str, Any] | None) -> int:
-    return _bounded_seconds(config_raw, "mode_proof_max_age_seconds")
+    return tightened_int(config_raw, "mode_proof_max_age_seconds", DEFAULT_MAX_AGE_SECONDS)
 
 
 def regime_max_age_seconds(config_raw: Mapping[str, Any] | None) -> int:
-    return _bounded_seconds(config_raw, "regime_max_age_seconds")
+    return tightened_int(config_raw, "regime_max_age_seconds", DEFAULT_MAX_AGE_SECONDS)
 
 
 def clock_skew_seconds(config_raw: Mapping[str, Any] | None) -> int:
-    raw = paper_start(config_raw).get("clock_skew_seconds", 5)
-    if isinstance(raw, bool):
-        return 5
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return 5
-    if value < 0:
-        return 5
-    return min(value, 5)
+    return tightened_int(config_raw, "clock_skew_seconds", MAX_CLOCK_SKEW_SECONDS)
 
 
 def opened_regimes(config_raw: Mapping[str, Any] | None) -> frozenset[str]:

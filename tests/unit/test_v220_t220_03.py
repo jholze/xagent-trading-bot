@@ -68,7 +68,7 @@ def _on(*, opened=(), regime_max_age_seconds=60, **shorts) -> dict:
     block = {
         "sandbox_admission_v220": {"enabled": True},
         "allow_live": False,
-        "sandbox_v220": {
+        "testnet_futures": {
             "paper_start": {
                 "opened_regimes": list(opened),
                 "regime_max_age_seconds": regime_max_age_seconds,
@@ -128,8 +128,8 @@ def test_committed_config_is_unchanged():
     assert shorts["max_margin_pct"] == 20
     assert shorts["leverage_default"] == 2
     assert "sandbox_admission_v220" not in shorts
-    assert shorts["sandbox_v220"]["paper_start"]["opened_regimes"] == []
-    assert shorts["sandbox_v220"]["paper_start"]["mode_proof_max_age_seconds"] == 60
+    assert "sandbox_v220" not in shorts
+    assert "paper_start" not in shorts["testnet_futures"]
     assert sandbox_admission_enabled(raw) is False
     assert sandbox_start_defaults() == {
         "leverage": "1",
@@ -346,6 +346,18 @@ def test_ac5_stock_deferral_is_not_a_global_ban():
     assert perp.admitted is True
     assert perp.stock_exclusion_applied is False
     assert perp.short_path_deferred is False
+
+
+def test_negative_open_notional_and_unknown_side_deny():
+    shrunk = dict(_PROFILE)
+    shrunk["open_short_notional"] = "-100"
+    shrunk["notional"] = "1100"
+    denied = _decide(shrunk, candidate=_ready_candidate())
+    assert denied.admitted is False
+    assert "open_notional_unknown" in denied.reasons
+    assert "existing_side_unknown" in _decide(
+        _PROFILE, candidate=_ready_candidate(existing_side="foo")
+    ).reasons
 
 
 def test_total_exposure_includes_open_book_and_reservations():
