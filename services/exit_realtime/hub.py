@@ -42,6 +42,8 @@ DEFAULT_FORCED_RECONNECT_MIN_GAP_SEC = 300.0  # no reconnect storm on a genuinel
 DEFAULT_STABLE_CONNECTION_SEC = 60.0  # a connection this long resets the reconnect backoff
 DEFAULT_ATR_TTL_SEC = 900.0
 DEFAULT_ATR_FETCH_MAX_PER_REFRESH = 10
+# Fixed total wall clock for every ATR REST call in one refresh (#797).
+ATR_FETCH_WALL_SEC = 3.0
 
 
 def _cfg_float(cfg: dict, key: str, default: float) -> float:
@@ -1452,10 +1454,17 @@ _atr_cache_lock = threading.Lock()
 _atr_cache: dict[tuple[str, str], tuple[float, float]] = {}  # (sym, tf) -> (atr_pct, monotonic ts)
 
 
-def _fetch_live_atr_pct(symbol: str, timeframe: str, price: float) -> float | None:
-    from services.market_service import MarketService
+def _fetch_live_atr_pct(
+    symbol: str,
+    timeframe: str,
+    price: float,
+    service: Any | None = None,
+) -> float | None:
+    if service is None:
+        from services.market_service import MarketService
 
-    svc = MarketService()
+        service = MarketService()
+    svc = service
     df = svc._fetch_ohlcv(symbol, timeframe, 100)
     # indicators_from_df() answers an empty frame with a flat 3.0 fallback;
     # that must not be labelled "live". ATR(14) needs at least 15 bars.
@@ -1519,6 +1528,112 @@ def resolve_row_atr(
     with _atr_cache_lock:
         _atr_cache[key] = (float(val), now_m)
     return float(val), "live"
+
+
+def _run_bounded(fn: Callable[..., Any], args: tuple, timeout_sec: float) -> Any:
+    """Run ``fn(*args)`` and return None when it is still running at ``timeout_sec``.
+
+    The worker is a daemon. Callers that pass a blocking ``fn`` must release it
+    so the thread can exit (a hung socket is not killable from here).
+    """
+    if timeout_sec <= 0:
+        return None
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            box["val"] = fn(*args)
+        except Exception as exc:
+            box["err"] = exc
+
+    worker = threading.Thread(target=_run, daemon=True, name="exit-rt-atr")
+    worker.start()
+    worker.join(timeout=timeout_sec)
+    if worker.is_alive() or "err" in box:
+        return None
+    return box.get("val")
+
+
+def fill_live_atr(
+    rows: list[dict[str, Any]],
+    *,
+    raw: dict | None = None,
+    budget_sec: float = ATR_FETCH_WALL_SEC,
+    fetch_fn: Callable[[str, str, float], float | None] | None = None,
+    service: Any | None = None,
+    now: float | None = None,
+) -> list[dict[str, Any]] | None:
+    """Second pass: live ATR inside one wall-clock budget. None if nothing changed.
+
+    One ``MarketService`` for the whole pass when the caller does not inject a
+    fetcher. The cache key stays ``(symbol, timeframe)`` inside ``resolve_row_atr``.
+    """
+    cfg = exit_realtime_config(raw)
+    if not bool(cfg.get("live_atr", True)):
+        return None
+    deadline = time.monotonic() + float(budget_sec)
+    if fetch_fn is None and service is None:
+        from services.market_service import MarketService
+
+        service = MarketService()
+    count_budget = [int(cfg.get("atr_fetch_max_per_refresh", DEFAULT_ATR_FETCH_MAX_PER_REFRESH))]
+
+    def bounded(symbol: str, timeframe: str, price: float) -> float | None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        if fetch_fn is not None:
+            target = fetch_fn
+        else:
+            def target(sym: str, tf: str, px: float) -> float | None:
+                return _fetch_live_atr_pct(sym, tf, px, service=service)
+
+        return _run_bounded(target, (symbol, timeframe, price), remaining)
+
+    out: list[dict[str, Any]] = []
+    changed = False
+    for row in rows:
+        if time.monotonic() >= deadline:
+            out.append(row)
+            continue
+        reference = float(row.get("atr_pct") or 3.0)
+        atr, src = resolve_row_atr(
+            str(row.get("symbol") or ""),
+            str(row.get("timeframe") or "1h"),
+            price=float(row.get("average_entry") or row.get("position", {}).get("current_price") or 1.0),
+            reference=reference,
+            cfg=cfg,
+            budget=count_budget,
+            fetch_fn=bounded,
+            now=now,
+        )
+        if atr != row.get("atr_pct") or src != row.get("atr_source"):
+            updated = dict(row)
+            updated["atr_pct"] = atr
+            updated["atr_source"] = src
+            out.append(updated)
+            changed = True
+        else:
+            out.append(row)
+    return out if changed else None
+
+
+def publish_open_book(
+    hub: ExitRealtimeHub,
+    raw: dict | None,
+    **atr_kwargs: Any,
+) -> list[dict[str, Any]]:
+    """Publish cached/reference rows first. ATR REST cannot delay that call."""
+    rows = _load_open_book(raw)
+    hub.update_book(rows)
+    try:
+        filled = fill_live_atr(rows, raw=raw, **atr_kwargs)
+    except Exception as exc:
+        log(f"exit_realtime atr refresh: {exc}", "WARNING")
+        filled = None
+    if filled:
+        hub.update_book(filled)
+    return rows
 
 
 def _book_row_for_position(
@@ -1592,11 +1707,9 @@ def _load_open_book(raw: dict | None) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     sidecar = is_exit_radar_sidecar_process()
-    try:
-        rt = exit_realtime_config(raw)
-        atr_budget = [int(rt.get("atr_fetch_max_per_refresh", DEFAULT_ATR_FETCH_MAX_PER_REFRESH))]
-    except Exception:
-        atr_budget = [DEFAULT_ATR_FETCH_MAX_PER_REFRESH]
+    # No REST here. A zero budget serves cache or reference only, so a hanging
+    # Gate call cannot sit in front of update_book. Live ATR is fill_live_atr.
+    atr_budget = [0]
     # Daemon thread: contextvars do not inherit. Walk each tenant store
     # explicitly; do not iterate the module `positions` dict (default-only).
     # Build rows *inside* tenant_cycle_context so resolve_strategy_params /
@@ -1671,8 +1784,7 @@ def _refresh_loop(raw_getter: Callable[[], dict | None]) -> None:
                 continue
             if is_exit_radar_sidecar_process():
                 _sync_positions_from_ledger()
-            rows = _load_open_book(raw)
-            hub.update_book(rows)
+            publish_open_book(hub, raw)
             try:
                 hub.sync_correlated_tier_watch(raw)
             except Exception:
@@ -1707,7 +1819,7 @@ def ensure_started(raw: dict | None = None) -> ExitRealtimeHub | None:
         if _hub is None:
             _hub = ExitRealtimeHub(raw)
             try:
-                _hub.update_book(_load_open_book(raw))
+                publish_open_book(_hub, raw)
             except Exception as exc:
                 log(f"exit_realtime initial book: {exc}", "WARNING")
             _hub.start()
