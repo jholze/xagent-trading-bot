@@ -11,6 +11,7 @@ Typed ``/short H`` and ``/cover H 50`` stay as power-user aliases.
 
 from __future__ import annotations
 
+import math
 import re
 
 from core.config import get_bot_config
@@ -112,27 +113,45 @@ def _log_swallowed(step: str, exc: BaseException) -> None:
         log(f"short wizard {step} failed: {type(exc).__name__}", "WARNING")
 
 
-def _stable_ticker(symbol: str) -> str:
-    raw = (symbol or "").strip().upper()
-    if "/" in raw:
-        raw = raw.split("/", 1)[0]
-    return raw.replace(":", "")
+def _stable_ticker(token: str) -> str:
+    return (token or "").strip().upper().replace(":", "")
 
 
 def _is_stable_ticker(token: str) -> bool:
     ticker = _stable_ticker(token)
-    if not ticker or ticker.isdigit():
+    if not ticker or ticker.isdigit() or "/" in ticker:
         return False
     return _STABLE_TICKER_RE.fullmatch(ticker) is not None
 
 
-def encode_short_coin_callback(symbol: str) -> str | None:
-    """Callback identity for one tapped coin: ``shortcoin:<TICKER>``, never an index."""
-    ticker = _stable_ticker(symbol)
-    if not _is_stable_ticker(ticker):
+def _stable_symbol(symbol: str) -> str | None:
+    """Full ``BASE/QUOTE`` identity. A bare ticker or a display index is not a symbol."""
+    raw = (symbol or "").strip().upper().replace(":", "")
+    if raw.count("/") != 1:
         return None
-    data = f"{SHORT_COIN_CALLBACK_PREFIX}{ticker}"
-    if len(data) > _TELEGRAM_CALLBACK_MAX:
+    base, quote = raw.split("/", 1)
+    if not _is_stable_ticker(base) or not _is_stable_ticker(quote):
+        return None
+    return f"{base}/{quote}"
+
+
+def _positive_finite_usdt(token) -> float | None:
+    try:
+        val = float(token)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(val) or val <= 0:
+        return None
+    return val
+
+
+def encode_short_coin_callback(symbol: str) -> str | None:
+    """Callback identity: ``shortcoin:<BASE>/<QUOTE>``, never a display index."""
+    canonical = _stable_symbol(symbol)
+    if canonical is None:
+        return None
+    data = f"{SHORT_COIN_CALLBACK_PREFIX}{canonical}"
+    if len(data.encode("utf-8")) > _TELEGRAM_CALLBACK_MAX:
         return None
     return data
 
@@ -142,10 +161,12 @@ def parse_short_coin_callback(data: str) -> str | None:
     if not blob.startswith(SHORT_COIN_CALLBACK_PREFIX):
         return None
     raw = blob[len(SHORT_COIN_CALLBACK_PREFIX):].strip()
-    ticker = _stable_ticker(raw)
-    if raw.upper() != ticker or encode_short_coin_callback(ticker) is None:
+    canonical = _stable_symbol(raw)
+    if canonical is None or raw.upper() != canonical:
         return None
-    return ticker
+    if encode_short_coin_callback(canonical) != f"{SHORT_COIN_CALLBACK_PREFIX}{canonical}":
+        return None
+    return canonical
 
 
 def _wizard_binding() -> dict:
@@ -167,8 +188,9 @@ def _callback_binding_ok(entry: dict, chat_id) -> bool:
         return False
     stored_tid = str(meta.get("tenant_id") or "").strip()
     stored_scope = str(meta.get("scope") or "").strip()
-    if not stored_tid and not stored_scope:
-        return True
+    # A size step armed before tenant binding existed cannot be trusted.
+    if not stored_tid or not stored_scope:
+        return False
     try:
         from core.tenant_context import tenant_snapshot
 
@@ -178,9 +200,32 @@ def _callback_binding_ok(entry: dict, chat_id) -> bool:
         return False
     if stored_tid and str(tid) != stored_tid:
         return False
-    if stored_scope and str(scope) != stored_scope:
+    if str(scope) != stored_scope:
         return False
     return True
+
+
+def short_size_block_reason(meta: dict | None, chat_id) -> str | None:
+    """Why a short size step must not build an order. None means it may proceed.
+
+    ``binding`` — missing or mismatched tenant, scope, or chat.
+    ``symbol`` — stored coin is not a full BASE/QUOTE symbol (a display index).
+    """
+    meta = meta or {}
+    if not _callback_binding_ok({"meta": meta}, chat_id):
+        return "binding"
+    if _stable_symbol(str(meta.get("coin") or "")) is None:
+        return "symbol"
+    return None
+
+
+def _log_skipped_symbol(symbol: str, reason: str) -> None:
+    from logger import log
+
+    shown = _redact(str(symbol or "")).replace("\n", " ").strip()
+    if len(shown) > 80:
+        shown = shown[:80]
+    log(f"short wizard skipped watchlist symbol ({reason}): {shown}", "WARNING")
 
 
 def _short_usdt_presets(max_usdt: float) -> list[int]:
@@ -212,11 +257,17 @@ def format_short_pick_button_label(coin: dict, price: float) -> str:
 
 def _short_coin_button_rows(coins: list, prices: dict) -> list:
     rows = []
+    seen: set[str] = set()
     for coin in coins:
         symbol = _coin_symbol(coin)
         callback = encode_short_coin_callback(symbol)
         if not callback:
+            _log_skipped_symbol(symbol, "unencodable")
             continue
+        if callback in seen:
+            _log_skipped_symbol(symbol, "duplicate")
+            continue
+        seen.add(callback)
         px = float(prices.get(symbol, 0) or 0)
         rows.append([{
             "text": format_short_pick_button_label(coin, px),
@@ -329,29 +380,21 @@ def _show_cover_lot_picker() -> bool:
     return True
 
 
-def _continue_short_after_coin(sym: str, arg: str, usdt_token: str | None = None) -> bool:
-    """Store the tapped ticker. ``arg`` is not a display index (#529)."""
-    ticker = _stable_ticker(sym) or _stable_ticker(arg)
-    if not _is_stable_ticker(ticker):
+def _continue_short_after_coin(symbol: str) -> bool:
+    """Store the tapped BASE/QUOTE. A display index is not a symbol (#529)."""
+    canonical = _stable_symbol(symbol)
+    if canonical is None:
         send_telegram_message(_short_menu_text("usdt_expired"))
         return True
-    if usdt_token is None:
-        prompt_short_amount(ticker)
-        activate_command(
-            "short",
-            state="short_awaiting_usdt",
-            coin=ticker,
-            label=ticker,
-            **_wizard_binding(),
-        )
-        return True
-    quote = "USDT"
-    raw_sym = str(sym or "")
-    if "/" in raw_sym:
-        base, _, maybe = raw_sym.partition("/")
-        if maybe and _stable_ticker(base) == ticker:
-            quote = maybe.upper()
-    return _request_short(f"{ticker}/{quote}", usdt_token=usdt_token, lev_token=None)
+    prompt_short_amount(canonical)
+    activate_command(
+        "short",
+        state="short_awaiting_usdt",
+        coin=canonical,
+        label=canonical,
+        **_wizard_binding(),
+    )
+    return True
 
 
 def _continue_cover_after_lot(p: dict, pct_token: str | None = None) -> bool:
@@ -378,13 +421,16 @@ def _request_short(sym: str, usdt_token: str | None = None, lev_token: str | Non
     usdt = None
     lev = None
     if usdt_token is not None:
-        try:
-            usdt = float(usdt_token)
-        except (TypeError, ValueError):
-            send_telegram_message("USDT muss eine Zahl sein.")
-            return True
-        if usdt <= 0:
-            send_telegram_message("USDT muss größer als 0 sein.")
+        usdt = _positive_finite_usdt(usdt_token)
+        if usdt is None:
+            try:
+                parsed = float(usdt_token)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed is not None and math.isfinite(parsed):
+                send_telegram_message("USDT muss größer als 0 sein.")
+            else:
+                send_telegram_message("USDT muss eine Zahl sein.")
             return True
     if lev_token is not None:
         try:
@@ -529,13 +575,13 @@ def _handle_short_coin_callback(callback_query: dict) -> bool:
     if entry is None or not _callback_binding_ok(entry, chat_id):
         send_telegram_message(_short_menu_text("usdt_expired"))
         return True
-    ticker = parse_short_coin_callback(str((callback_query or {}).get("data") or ""))
-    if ticker is None:
+    symbol = parse_short_coin_callback(str((callback_query or {}).get("data") or ""))
+    if symbol is None:
         # Numeric display indexes are stale. Do not resolve whatever coin
         # currently sits at that row.
         send_telegram_message(_short_menu_text("usdt_expired"))
         return True
-    return _continue_short_after_coin(f"{ticker}/USDT", ticker)
+    return _continue_short_after_coin(symbol)
 
 
 def _handle_short_amt_callback(callback_query: dict) -> bool:
@@ -543,25 +589,27 @@ def _handle_short_amt_callback(callback_query: dict) -> bool:
     if not chat_id:
         return True
     entry = _wizard_entry(chat_id, "short", "short_awaiting_usdt")
-    if entry is None or not _callback_binding_ok(entry, chat_id):
+    if entry is None:
         send_telegram_message(_short_menu_text("usdt_expired"))
+        return True
+    meta = entry.get("meta") or {}
+    reason = short_size_block_reason(meta, chat_id)
+    if reason:
+        send_telegram_message(_short_menu_text("usdt_expired"))
+        if reason == "symbol":
+            clear_context(chat_id)
         return True
     data = str((callback_query or {}).get("data") or "")
     raw = data.split(":", 1)[1] if ":" in data else ""
-    meta = entry.get("meta") or {}
-    coin = str(meta.get("coin") or "").strip().upper()
-    label = str(meta.get("label") or coin)
-    usdt = safe_float(raw)
-    if not _is_stable_ticker(coin):
-        send_telegram_message(_short_menu_text("usdt_expired"))
-        return True
-    if usdt is None or usdt <= 0:
+    symbol = _stable_symbol(str(meta.get("coin") or ""))
+    label = str(meta.get("label") or symbol or "")
+    if _positive_finite_usdt(raw) is None:
         prompt_short_amount(label, invalid=True)
         return True
     from notifications.telegram_commands.router import dispatch_command
 
     clear_context(chat_id)
-    return dispatch_command(f"/short {coin} {raw}")
+    return dispatch_command(f"/short {symbol} {raw}")
 
 
 def _handle_short_back_callback(callback_query: dict) -> bool:

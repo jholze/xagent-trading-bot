@@ -144,9 +144,9 @@ class TestShortWizardStableSymbol529(unittest.TestCase):
              patch(f"{SC}.resolve_coin_by_display_index") as resolve:
             self.assertTrue(handle("/short"))
             req.assert_not_called()
-            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA/USDT")))
             req.assert_not_called()
-            self.assertEqual(ctx.get_context(CHAT)["meta"]["coin"], "ARIA")
+            self.assertEqual(ctx.get_context(CHAT)["meta"]["coin"], "ARIA/USDT")
 
             watch["coins"] = [_coin("SOL/USDT"), _coin("ARIA/USDT")]
             self.assertTrue(handle_callback(_query(f"{SHORT_AMT_CALLBACK_PREFIX}25")))
@@ -157,7 +157,7 @@ class TestShortWizardStableSymbol529(unittest.TestCase):
             ctx.clear_context(CHAT)
             watch["coins"] = [_coin("ARIA/USDT"), _coin("SOL/USDT")]
             self.assertTrue(handle("/short"))
-            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}SOL")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}SOL/USDT")))
             watch["coins"] = [_coin("ARIA/USDT")]
             self.assertTrue(handle_callback(_query(f"{SHORT_AMT_CALLBACK_PREFIX}10")))
             self.assertEqual(self._confirmed_symbol(req), "SOL/USDT")
@@ -171,7 +171,7 @@ class TestShortWizardStableSymbol529(unittest.TestCase):
             self.assertTrue(handle("/short"))
             req.assert_not_called()
         coin_cbs = [c for c in _callbacks(tg) if c.startswith(SHORT_COIN_CALLBACK_PREFIX)]
-        self.assertEqual(coin_cbs, ["shortcoin:ARIA", "shortcoin:SOL"])
+        self.assertEqual(coin_cbs, ["shortcoin:ARIA/USDT", "shortcoin:SOL/USDT"])
         self.assertNotIn("shortcoin:1", coin_cbs)
         self.assertNotIn("shortcoin:2", coin_cbs)
 
@@ -259,7 +259,7 @@ class TestShortWizardStableSymbol529(unittest.TestCase):
             self.assertTrue(handle("/short"))
             req.assert_not_called()
         coin_cbs = [c for c in _callbacks(tg) if c.startswith("shortcoin:")]
-        self.assertEqual(coin_cbs, ["shortcoin:ARIA", "shortcoin:SOL"])
+        self.assertEqual(coin_cbs, ["shortcoin:ARIA/USDT", "shortcoin:SOL/USDT"])
         logged = " ".join(str(c) for c in mock_log.call_args_list)
         self.assertIn("get_prices_batch", logged)
         self.assertNotIn(secret, logged)
@@ -272,7 +272,7 @@ class TestShortWizardStableSymbol529(unittest.TestCase):
         with patch(f"{SC}.request_short_confirmation") as req:
             self.assertTrue(handle("/short"))
             self.assertTrue(handle_callback(
-                _query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA", chat_id=OTHER, cid="other")
+                _query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA/USDT", chat_id=OTHER, cid="other")
             ))
             req.assert_not_called()
         self.assertEqual(ctx.get_context(CHAT)["meta"]["state"], "short_awaiting_coin")
@@ -287,17 +287,17 @@ class TestShortWizardStableSymbol529(unittest.TestCase):
         with patch(f"{SC}.request_short_confirmation") as req:
             self.assertTrue(handle("/short"))
             with tenant_context("henry", scope="paper", owner_chat_id=OTHER):
-                self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA")))
+                self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA/USDT")))
             req.assert_not_called()
             self.assertEqual(ctx.get_context(CHAT)["meta"]["state"], "short_awaiting_coin")
-            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA/USDT")))
             req.assert_not_called()
             self.assertEqual(ctx.get_context(CHAT)["meta"]["state"], "short_awaiting_usdt")
-            self.assertEqual(ctx.get_context(CHAT)["meta"]["coin"], "ARIA")
+            self.assertEqual(ctx.get_context(CHAT)["meta"]["coin"], "ARIA/USDT")
             with tenant_context("henry", scope="paper", owner_chat_id=OTHER):
                 self.assertTrue(handle_callback(_query(f"{SHORT_AMT_CALLBACK_PREFIX}25")))
             req.assert_not_called()
-            self.assertEqual(ctx.get_context(CHAT)["meta"]["coin"], "ARIA")
+            self.assertEqual(ctx.get_context(CHAT)["meta"]["coin"], "ARIA/USDT")
 
     def test_ac6_stale_size_callback_does_not_confirm(self):
         tg: list = []
@@ -317,7 +317,7 @@ class TestShortWizardStableSymbol529(unittest.TestCase):
         with patch(f"{SC}._trading", trading), \
              patch(f"{SC}.request_short_confirmation", return_value=True) as req:
             self.assertTrue(handle("/short"))
-            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA/USDT")))
             req.assert_not_called()
             trading.execute_short.assert_not_called()
             self.assertTrue(handle_callback(_query(f"{SHORT_AMT_CALLBACK_PREFIX}25")))
@@ -341,13 +341,126 @@ class TestShortWizardStableSymbol529(unittest.TestCase):
         self._patch_short_stack(prices_fn=_prices)
         with patch(f"{SC}.request_short_confirmation") as req:
             self.assertTrue(handle("/short"))
-            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_COIN_CALLBACK_PREFIX}ARIA/USDT")))
             self.assertTrue(handle_callback(_query(f"{SHORT_AMT_CALLBACK_PREFIX}25")))
             req.assert_not_called()
         blob = "\n".join(texts(tg))
         self.assertIn("ARIA/USDT", blob)
         self.assertIn("Kein Preis", blob)
         self.assertNotIn("SOL/USDT", blob)
+
+    def _arm_size(self, coin: str, *, tenant: bool = True):
+        from core.tenant_context import tenant_snapshot
+
+        meta = {
+            "state": "short_awaiting_usdt",
+            "coin": coin,
+            "label": coin,
+        }
+        if tenant:
+            tid, scope, _owner = tenant_snapshot()
+            meta["tenant_id"] = tid
+            meta["scope"] = scope
+            meta["bound_chat_id"] = CHAT
+        ctx.set_context(CHAT, "short", **meta)
+
+    def test_ac2b_quote_currency_stays_on_the_button_and_the_confirmation(self):
+        watch = {"coins": [_coin("ETH/USDT"), _coin("ETH/BTC")]}
+        tg: list = []
+        self._install_capture(tg)
+        self._patch_short_stack(
+            list_coins=lambda: list(watch["coins"]),
+            prices={"ETH/USDT": 3000.0, "ETH/BTC": 0.05},
+        )
+        with patch(f"{SC}.request_short_confirmation") as req:
+            self.assertTrue(handle("/short"))
+            coin_cbs = [c for c in _callbacks(tg) if c.startswith("shortcoin:")]
+            self.assertEqual(coin_cbs, ["shortcoin:ETH/USDT", "shortcoin:ETH/BTC"])
+            self.assertEqual(len(set(coin_cbs)), 2)
+            self.assertTrue(handle_callback(_query("shortcoin:ETH/BTC")))
+            self.assertEqual(ctx.get_context(CHAT)["meta"]["coin"], "ETH/BTC")
+            self.assertTrue(handle_callback(_query(f"{SHORT_AMT_CALLBACK_PREFIX}25")))
+            self.assertEqual(self._confirmed_symbol(req), "ETH/BTC")
+            req.reset_mock()
+            self.assertTrue(handle("/short"))
+            self.assertTrue(handle_callback(_query("shortcoin:ETH/USDT")))
+            self.assertTrue(handle_callback(_query(f"{SHORT_AMT_CALLBACK_PREFIX}10")))
+            self.assertEqual(self._confirmed_symbol(req), "ETH/USDT")
+
+    def test_ac3b_typed_size_refuses_legacy_index(self):
+        watch = {"coins": [_coin("SOL/USDT"), _coin("ARIA/USDT")]}
+        tg: list = []
+        self._install_capture(tg)
+        self._patch_short_stack(list_coins=lambda: list(watch["coins"]))
+        self._arm_size("1")
+        with patch(f"{SC}.request_short_confirmation") as req, \
+             patch(f"{SC}.resolve_coin_by_display_index") as resolve:
+            self.assertTrue(ctx.try_resolve(CHAT, "25"))
+            req.assert_not_called()
+            resolve.assert_not_called()
+        blob = "\n".join(texts(tg)).lower()
+        self.assertIn("abgelaufen", blob)
+        self.assertNotIn("sol", blob)
+        self.assertIsNone(ctx.get_context(CHAT))
+
+    def test_ac6b_typed_size_wrong_tenant_does_not_confirm(self):
+        from core.tenant_context import tenant_context
+
+        tg: list = []
+        self._install_capture(tg)
+        self._patch_short_stack(prices={"ARIA/USDT": 0.05, "SOL/USDT": 2.0})
+        with patch(f"{SC}.request_short_confirmation") as req:
+            self.assertTrue(handle("/short"))
+            self.assertTrue(handle_callback(_query("shortcoin:ARIA/USDT")))
+            self.assertEqual(ctx.get_context(CHAT)["meta"]["coin"], "ARIA/USDT")
+            with tenant_context("henry", scope="paper", owner_chat_id=OTHER):
+                self.assertTrue(ctx.try_resolve(CHAT, "25"))
+            req.assert_not_called()
+            self.assertEqual(ctx.get_context(CHAT)["meta"]["state"], "short_awaiting_usdt")
+            self.assertEqual(ctx.get_context(CHAT)["meta"]["coin"], "ARIA/USDT")
+
+    def test_ac6b_size_step_without_tenant_does_not_confirm(self):
+        tg: list = []
+        self._install_capture(tg)
+        self._patch_short_stack(prices={"ARIA/USDT": 0.05})
+        self._arm_size("ARIA/USDT", tenant=False)
+        with patch(f"{SC}.request_short_confirmation") as req:
+            self.assertTrue(ctx.try_resolve(CHAT, "25"))
+            req.assert_not_called()
+            self._arm_size("ARIA/USDT", tenant=False)
+            self.assertTrue(handle_callback(_query(f"{SHORT_AMT_CALLBACK_PREFIX}25")))
+            req.assert_not_called()
+        self.assertIn("abgelaufen", "\n".join(texts(tg)).lower())
+
+    def test_ac9_skipped_symbol_is_logged(self):
+        tg: list = []
+        self._install_capture(tg)
+        self._patch_short_stack(coins=[_coin("ETH/USDT"), _coin("BAD-COIN/USDT")])
+        with patch("logger.log") as mock_log, \
+             patch(f"{SC}.request_short_confirmation") as req:
+            self.assertTrue(handle("/short"))
+            req.assert_not_called()
+        logged = " ".join(str(call) for call in mock_log.call_args_list)
+        self.assertIn("BAD-COIN/USDT", logged)
+        self.assertIn("WARNING", logged)
+        self.assertIn("skipped", logged)
+        coin_cbs = [c for c in _callbacks(tg) if c.startswith("shortcoin:")]
+        self.assertEqual(coin_cbs, ["shortcoin:ETH/USDT"])
+
+    def test_ac9_non_finite_size_callback_does_not_confirm(self):
+        tg: list = []
+        self._install_capture(tg)
+        self._patch_short_stack(prices={"ARIA/USDT": 0.05, "SOL/USDT": 2.0})
+        with patch(f"{SC}.request_short_confirmation") as req:
+            self.assertTrue(handle("/short"))
+            self.assertTrue(handle_callback(_query("shortcoin:ARIA/USDT")))
+            for raw in ("nan", "inf", "0", "-1"):
+                self.assertTrue(handle_callback(_query(f"{SHORT_AMT_CALLBACK_PREFIX}{raw}")))
+                req.assert_not_called()
+            self.assertEqual(ctx.get_context(CHAT)["meta"]["coin"], "ARIA/USDT")
+        blob = "\n".join(texts(tg)).lower()
+        self.assertIn("ungültig", blob)
+        self.assertNotIn("sol/usdt", blob)
 
 
 if __name__ == "__main__":

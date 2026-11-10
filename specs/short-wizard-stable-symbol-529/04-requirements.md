@@ -1,6 +1,6 @@
 # Short wizard stable symbol (#529)
 
-Status: Rev 1 frozen for this fix, 2026-11-10 Europe/Berlin.
+Status: Rev 2, 2026-11-10 Europe/Berlin. Rev 0 and Rev 1 stay readable below. Rev 2 supersedes only the sentences it names.
 Owner of the issued ticket: Jens Holze. Issue: https://github.com/jholze/xagent-trading-bot/issues/529
 Parent epic: #444. Related history, not extra scope: #512, #455, #527, #446.
 
@@ -101,6 +101,47 @@ Checked by the data-write audit recorded in `docs/evidence/529.md`.
 | AC7 | `test_ac7_size_tap_previews_and_does_not_execute`, `test_ac7_missing_price_names_the_selected_symbol_only`, existing `test_short_cover_confirm.py` |
 | AC8 | data-write check in `docs/evidence/529.md` |
 | Rev 0 Opus | not run by the coder; parent arranges `claude-opus-5-5` on the final head |
+
+## Rev 2 — 2026-11-10 Europe/Berlin
+
+Opus review of PR #803 at `92c2aeadd5e40ce6ae474751ea3d4b5973a93163` requested changes. Kay decided the extra fail-closed rules in AC9. This revision does not rewrite Rev 0 or Rev 1.
+
+### AC2b — callback carries the full symbol
+
+Supersedes the Rev 1 sentence that the payload is `shortcoin:<TICKER>` only. The payload is `shortcoin:<BASE>/<QUOTE>` (UTF-8 length at most 64). `BASE` and `QUOTE` each match the stable ticker pattern. The size step stores and dispatches that full symbol. Nothing in the wizard appends a hard-coded `/USDT`.
+
+`ETH/USDT` and `ETH/BTC` on the same watchlist are two buttons and two confirmations.
+
+Named assertion updates, because Rev 1 pinned the base-only payload:
+
+- `tests/unit/test_short_cover_wizards_512.py`: picker callbacks and the taps that follow them use `shortcoin:ARIA/USDT` and `shortcoin:SOL/USDT`.
+- `tests/unit/test_short_wizard_stable_symbol_529.py`: the same payload, and the stored size-step coin is `ARIA/USDT` or `SOL/USDT`.
+
+Acceptance test: `test_ac2b_quote_currency_stays_on_the_button_and_the_confirmation`.
+
+### AC3b — typed size uses the same identity guard
+
+`command_context._build_command` for `short_awaiting_usdt`, and `try_resolve`, refuse a stored display index. The user is told to send `/short` again (`usdt_expired`). The index is not resolved. The unsafe context row is cleared. A non-finite or non-positive typed size is an invalid amount, not an order.
+
+Named assertion update in `test_short_cover_build_command_unstated_meta_unchanged`: the size-step call with `coin="ARIA"` and no tenant returns `None`, not `/short ARIA 25`. Unstated `/short H` and the cover lines stay.
+
+Acceptance test: `test_ac3b_typed_size_refuses_legacy_index`.
+
+### AC6b — typed size and legacy rows fail closed on tenant
+
+Supersedes the Rev 1 sentence that rows without a stored tenant still pass. A size step, button or typed, with no `tenant_id` or no `scope`, or with a different tenant or scope than the current one, does not confirm. A wrong-tenant typed reply does not clear the armed row.
+
+`test_typed_amount_and_quick_button_produce_same_short_confirmation` and `test_invalid_short_amount_reasks_instead_of_defaulting` now arm `ARIA/USDT` plus the current tenant, scope, and chat. Those assertions still compare a valid size step. Rows without that binding are the new refusal tests, not those two.
+
+Acceptance tests: `test_ac6b_typed_size_wrong_tenant_does_not_confirm`, `test_ac6b_size_step_without_tenant_does_not_confirm`.
+
+### AC9 — Kay, 2026-11-10
+
+- A watchlist entry that cannot be encoded is skipped and logged at WARNING. The log names the symbol and does not include secrets.
+- `nan`, `inf`, and sizes `<= 0` on the size callback do not confirm. The same rule applies to the typed size reply and to `_request_short`.
+- `_continue_short_after_coin` only stores the selected symbol. The unused `usdt_token` branch is removed.
+
+Acceptance tests: `test_ac9_skipped_symbol_is_logged`, `test_ac9_non_finite_size_callback_does_not_confirm`.
 
 ## Evidence metric
 
