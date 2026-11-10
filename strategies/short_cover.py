@@ -17,6 +17,7 @@ from strategies.short_math import (
     should_stop_or_liquidate,
     stop_price,
 )
+from strategies.short_expiry import cover_time_decision, sandbox_expiry_enabled, unpriced_cover
 from strategies.short_policy import resolve_short_params
 
 
@@ -37,6 +38,10 @@ def evaluate_short_cover(
     now: datetime | None = None,
     symbol: str | None = None,
     config_raw: dict | None = None,
+    price_stale: bool = False,
+    halted: bool | None = None,
+    timed_out: bool = False,
+    sandbox_schedule: dict | None = None,
 ) -> dict[str, Any] | None:
     """Return {source, rationale} if this tick should COVER, else None.
 
@@ -46,6 +51,8 @@ def evaluate_short_cover(
         return None
     px = float(mark or 0)
     entry = float((pos or {}).get("average_entry") or 0)
+    if sandbox_expiry_enabled(config_raw) and (price_stale or timed_out or px <= 0 or entry <= 0):
+        return unpriced_cover()
     if px <= 0 or entry <= 0:
         return None
     params = resolve_short_params(
@@ -105,8 +112,17 @@ def evaluate_short_cover(
             "source": "rsi_cover",
             "rationale": f"RSI {rsi_f:.1f} <= {rsi_lo:g} while short in profit",
         }
-    opened = _parse_ts((pos or {}).get("entry_at") or (pos or {}).get("first_buy_at"))
     n = now or datetime.now(timezone.utc)
+    if sandbox_expiry_enabled(config_raw):
+        return cover_time_decision(
+            pos,
+            now=n,
+            config_raw=config_raw,
+            schedule=sandbox_schedule,
+            halted=halted,
+            symbol=symbol,
+        )
+    opened = _parse_ts((pos or {}).get("entry_at") or (pos or {}).get("first_buy_at"))
     cap_h = float(params.get("time_cap_hours") or 4)
     if opened and cap_h > 0:
         age_h = (n - opened).total_seconds() / 3600.0
