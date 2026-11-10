@@ -232,3 +232,134 @@ def test_large_cap_without_hint_uses_class_shortcut():
     assert dec.code == "long_mcap"
     assert "20000000" in dec.message
     assert order.strategy_tier == "stable"
+
+
+def test_closed_lot_tier_does_not_override_the_fresh_hint():
+    """A closed lot keeps its old tier. The new entry uses the order hint."""
+    rm = RiskManager(_cfg())
+    closed = {"amount": 0, "open": False, "strategy_tier": "stable"}
+    order = _hinted("volatile")
+    with _eval_env(rm, position=closed, mcap=6_000_000):
+        dec = rm.evaluate(order, "4h", source="cmc")
+    assert dec.code != "long_mcap"
+    assert order.strategy_tier == "volatile"
+
+
+def test_closed_lot_tier_is_not_stamped_onto_an_unhinted_reentry():
+    rm = RiskManager(_cfg())
+    closed = {"amount": 0, "strategy_tier": "stable"}
+    order = _buy("XYZ/USDT", source="cmc")
+    with _eval_env(rm, position=closed, mcap=6_000_000):
+        dec = rm.evaluate(order, "4h", source="cmc")
+    assert dec.code != "long_mcap"
+    assert normalize_tier(order.strategy_tier) is None
+
+
+def test_fresh_stable_hint_beats_a_closed_volatile_lot():
+    rm = RiskManager(_cfg())
+    closed = {"amount": 0, "strategy_tier": "volatile"}
+    order = _hinted("stable")
+    with _eval_env(rm, position=closed, mcap=6_000_000):
+        dec = rm.evaluate(order, "4h", source="cmc")
+    assert dec.approved is False
+    assert dec.code == "long_mcap"
+    assert "20000000" in dec.message
+
+
+def test_adapter_fill_carries_strategy_tier(clean_store, monkeypatch):
+    from tests.unit.test_gate_adapter_shadow import SYMBOL, _shadow_adapter
+
+    adapter, _captured = _shadow_adapter(monkeypatch)
+    order = TradeOrder(
+        "BUY", SYMBOL, 100.0, 0, usdt_amount=100.0, strategy_tier="stable"
+    )
+    result = adapter.execute(order, "4h")
+    assert result.executed, result.message
+    pos = get_position(SYMBOL, "4h")
+    assert pos["strategy_tier"] == "stable"
+    snap = pos.get("entry_snapshot") or {}
+    assert snap.get("strategy_tier") == "stable"
+
+
+def test_cycle_buy_order_carries_the_analysis_tier():
+    from services.signal_orchestrator import SignalOrchestrator
+
+    trading = SimpleNamespace()
+    captured: dict = {}
+
+    def _exec(order, *_a, **_k):
+        captured["order"] = order
+        return SimpleNamespace(executed=True)
+
+    trading.execute_order = _exec
+    trading.refresh = lambda: None
+    orch = SignalOrchestrator()
+    orch.trading = trading
+    analysis = SimpleNamespace(
+        action="BUY",
+        symbol="XYZ/USDT",
+        timeframe="4h",
+        sources=["technical"],
+        normalized_action="BUY",
+        x_confidence=None,
+        confidence=0.5,
+        strategy_params={"volatility_tier": "stable"},
+        dca_usdt=50.0,
+        exposure_multiplier=None,
+        allocation=None,
+        ctx_oracle_state=None,
+        regime="",
+        ctx_volume_rel=None,
+        ctx_volume_window_days=None,
+    )
+    with patch("services.signal_orchestrator.get_position", return_value={}), patch(
+        "services.signal_orchestrator.resolve_coin_config",
+        return_value={"strategy_params": {}},
+    ):
+        orch.execute_if_needed(analysis, {"symbol": "XYZ/USDT"}, 1.0)
+    assert captured["order"].strategy_tier == "stable"
+
+
+def test_relvol_buy_sets_tier_from_the_live_classifier(monkeypatch):
+    from services.gainer_signal.bot_http import process_gainer_signal
+
+    captured: dict = {}
+
+    def _exec(self, order, *_a, **_k):
+        captured["order"] = order
+        return SimpleNamespace(executed=True, message="filled")
+
+    monkeypatch.setattr(
+        "services.trading_service.TradingService.execute_order", _exec
+    )
+    monkeypatch.setattr(
+        "strategies.entry_tier.resolve_entry_tier_live", lambda *_a, **_k: "volatile"
+    )
+    body, status = process_gainer_signal(
+        {
+            "symbol": "AAA/USDT",
+            "last": 1.0,
+            "quote_vol": 2_000_000,
+            "qvol_1h": 50_000,
+            "pct_24h": 5,
+            "source": "gainer_relvol",
+            "eligible": True,
+        },
+        config={
+            "max_usdt_per_trade": 200,
+            "gainer_entry": {"enabled": True, "require_de_confirm": False},
+            "gainer_relvol_shadow": {
+                "enabled": True,
+                "mode": "trade",
+                "max_open": 4,
+                "max_buys_per_day": 8,
+                "max_pct_24h": 40,
+            },
+            "memory": {"enabled": False},
+        },
+        positions=[],
+        gainer_buys_today=0,
+    )
+    assert status == 200, body
+    assert captured["order"].strategy_tier == "volatile"
+    assert captured["order"].source == "gainer_relvol"

@@ -966,15 +966,13 @@ class RiskManager:
                     resolve_long_market_cap_min_usd,
                 )
 
-                # #711: a new entry has no lot, so pos["strategy_tier"] is always
-                # empty here and _tier_key(None) fell back to volatile (5M) for
-                # every coin. Use the tier the buy path resolved for this order.
+                # #711: this block runs only when the lot is not open. A closed
+                # lot can still carry the previous cycle's strategy_tier. That
+                # value is stale and must not set the floor or be stamped as
+                # this entry's tier. Use the tier resolved for this order.
                 from strategies.entry_tier import entry_tier_for_order, normalize_tier
 
-                lot_tier = normalize_tier(
-                    pos.get("strategy_tier") if isinstance(pos, dict) else None
-                )
-                resolved_tier = lot_tier or entry_tier_for_order(order, config=self.config)
+                resolved_tier = entry_tier_for_order(order, config=self.config)
                 if resolved_tier and not normalize_tier(getattr(order, "strategy_tier", None)):
                     try:
                         order.strategy_tier = resolved_tier
