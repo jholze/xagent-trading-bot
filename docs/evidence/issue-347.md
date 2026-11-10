@@ -32,5 +32,5 @@ inside the existing shorts block, whose displayed length is unchanged.
 No profitability claim. No venue call.
 
 Code measured at `cd8ed3520f5818f88115e98a364052286387e6be` (6 passed).
-The commit that adds this sentence is the PR head and does not change behavior.
+Later commits on this branch only record that SHA and rename this evidence file.
 Coder model: grok-4.7. DeepSeek and Opus reviews are not claimed by this run.
