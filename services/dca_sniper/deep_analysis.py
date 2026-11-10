@@ -62,6 +62,10 @@ def enrich_candidate_from_context(
     out["rag_hit_count"] = int(getattr(ctx, "rag_hit_count", 0) or 0)
     out["dca_lesson_count"] = int(getattr(ctx, "dca_lesson_count", 0) or 0)
     out["dca_lesson_summary"] = str(getattr(ctx, "dca_lesson_summary", "") or "")[:120]
+    out["dca_lesson_negative_count"] = int(getattr(ctx, "dca_lesson_negative_count", 0) or 0)
+    out["dca_lesson_positive_count"] = int(getattr(ctx, "dca_lesson_positive_count", 0) or 0)
+    out["rag_negative_count"] = int(getattr(ctx, "rag_negative_count", 0) or 0)
+    out["rag_positive_count"] = int(getattr(ctx, "rag_positive_count", 0) or 0)
     out["cash_mode"] = str(getattr(ctx, "cash_mode", "") or "")
     out["fusion_size_mult"] = float(getattr(ctx, "fusion_size_mult", 1.0) or 1.0)
     out["size_bias"] = float(getattr(ctx, "size_bias", 1.0) or 1.0)
@@ -421,6 +425,10 @@ def deep_analyze_candidate(
         "deep": True,
         "rag_hit_count": int(getattr(ctx, "rag_hit_count", 0) or 0),
         "dca_lesson_count": int(getattr(ctx, "dca_lesson_count", 0) or 0),
+        "dca_lesson_negative_count": int(getattr(ctx, "dca_lesson_negative_count", 0) or 0),
+        "dca_lesson_positive_count": int(getattr(ctx, "dca_lesson_positive_count", 0) or 0),
+        "rag_negative_count": int(getattr(ctx, "rag_negative_count", 0) or 0),
+        "rag_positive_count": int(getattr(ctx, "rag_positive_count", 0) or 0),
         "cash_mode": str(getattr(ctx, "cash_mode", "") or ""),
         "quality": q,
         "evidence": (evidence_pack.to_dict() if evidence_pack is not None else enriched.get("evidence")),

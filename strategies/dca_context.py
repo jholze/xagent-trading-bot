@@ -180,8 +180,15 @@ def build_dca_context(
                     filters={"symbol": sym} if sym else None,
                 )
                 ctx.rag_hit_count = len(hits or [])
+                from intelligence.memory.lesson_polarity import count_polarity
+
+                neg, _neu, pos = count_polarity(hits or [])
+                ctx.rag_negative_count = neg
+                ctx.rag_positive_count = pos
         except Exception:
             ctx.rag_hit_count = 0
+            ctx.rag_negative_count = 0
+            ctx.rag_positive_count = 0
 
     # P6: pull recent DCA lessons for audit (never decides alone)
     try:
@@ -209,8 +216,15 @@ def build_dca_context(
                             continue
                     dca_lessons.append(ev)
             ctx.dca_lesson_count = len(dca_lessons)
+            from intelligence.memory.lesson_polarity import count_polarity, item_polarity
+
+            neg, _neu, pos = count_polarity(dca_lessons)
+            ctx.dca_lesson_negative_count = neg
+            ctx.dca_lesson_positive_count = pos
             if dca_lessons:
-                first = dca_lessons[0]
+                # Show a warning first when there is one (operator audit line).
+                warn = [x for x in dca_lessons if item_polarity(x) < 0]
+                first = warn[0] if warn else dca_lessons[0]
                 ctx.dca_lesson_summary = str(
                     getattr(first, "text", None)
                     or getattr(first, "description", None)
