@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from strategies.short_cover import evaluate_short_cover
 from strategies.short_expiry import (
+    cover_time_decision,
     funding_acceptance,
     protection_allowed,
     report_sandbox_exposure,
@@ -230,7 +231,7 @@ def test_ac3_session_due_and_budget():
     fits = datetime(2026, 11, 10, 17, 49, tzinfo=_BERLIN)
     assert schedule_allows_entry(
         now=fits,
-        opened=opened,
+        opened=fits,
         planned_exit=fits,
         config_raw=_on(),
         schedule=tight,
@@ -463,7 +464,7 @@ def test_ac5_weekend_calendar_and_funding():
     after = end + timedelta(seconds=1)
     assert schedule_allows_entry(
         now=after,
-        opened=start,
+        opened=after,
         planned_exit=after + timedelta(minutes=30),
         config_raw=_on(),
         schedule=_sched(),
@@ -492,7 +493,7 @@ def test_ac5_weekend_calendar_and_funding():
     ).open is False
     assert schedule_allows_entry(
         now=end,
-        opened=start,
+        opened=end,
         planned_exit=end,
         config_raw=_on(),
         schedule=_sched(),
@@ -554,7 +555,7 @@ def test_freeze_cutoff_same_day_and_no_buffer_default():
     planned = datetime(2026, 11, 10, 20, 0, tzinfo=_BERLIN)
     assert schedule_allows_entry(
         now=now,
-        opened=opened,
+        opened=now,
         planned_exit=planned,
         config_raw=_on(),
         schedule=_sched(),
@@ -653,7 +654,7 @@ def test_cest_cutoff_uses_europe_berlin():
     # 18:00 UTC on 2026-06-16 is 20:00 Europe/Berlin (CEST, UTC+2).
     at_cutoff = datetime(2026, 6, 16, 18, 0, tzinfo=timezone.utc)
     before = at_cutoff - timedelta(seconds=1)
-    opened = datetime(2026, 6, 16, 16, 0, tzinfo=_BERLIN)
+    opened = before
     planned = datetime(2026, 6, 16, 20, 0, tzinfo=_BERLIN)
     assert schedule_allows_entry(
         now=before,
@@ -767,3 +768,80 @@ def test_cover_boundaries_halt_and_untagged_lots():
     )
     assert completion.open is False
     assert "outside_due" in completion.reasons
+
+
+def test_default_schedule_cutoff_is_20_00():
+    now = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    common = dict(
+        now=now,
+        opened=now,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    )
+    assert schedule_allows_entry(
+        planned_exit=datetime(2026, 11, 10, 20, 0, tzinfo=_BERLIN),
+        **common,
+    ).open is True
+    later = schedule_allows_entry(
+        planned_exit=datetime(2026, 11, 10, 20, 0, 1, tzinfo=_BERLIN),
+        **common,
+    )
+    assert later.open is False
+    assert "outside_due" in later.reasons
+    evening = datetime(2026, 11, 10, 21, 0, tzinfo=_BERLIN)
+    at_21 = schedule_allows_entry(
+        now=evening,
+        opened=evening,
+        planned_exit=evening,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(evening),
+        mode_proof=_proof(evening),
+    )
+    assert at_21.open is False
+    assert "after_cutoff" in at_21.reasons
+
+
+def test_untagged_lot_guards_do_not_force_cover():
+    opened = datetime(2026, 11, 10, 12, 0, tzinfo=_BERLIN)
+    cfg = _on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.5})
+    untagged = _pos(opened=opened)
+    del untagged["sandbox_path"]
+    report = report_sandbox_exposure(
+        untagged, now=opened + timedelta(hours=5), config_raw=cfg, mark=100.2, halted=False
+    )
+    assert report.state == "inactive"
+    assert report.reason == "untagged"
+    assert report.flat is False
+    assert cover_time_decision(untagged, now=opened + timedelta(hours=5), config_raw=cfg) is None
+    tagged_flag_off = _pos(opened=opened)
+    assert cover_time_decision(
+        tagged_flag_off,
+        now=opened + timedelta(hours=5),
+        config_raw={"shorts": {"allow_live": False, "volatile": {"time_cap_hours": 4}}},
+    ) is None
+
+
+def test_plan_start_outside_5s_window_denies():
+    now = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    planned = now + timedelta(hours=1)
+
+    def gate(opened):
+        return schedule_allows_entry(
+            now=now,
+            opened=opened,
+            planned_exit=planned,
+            config_raw=_on(),
+            schedule=_sched(),
+            calendar=_calendar(now),
+            mode_proof=_proof(now),
+        )
+
+    assert gate(now - timedelta(seconds=5)).open is True
+    assert gate(now + timedelta(seconds=5)).open is True
+    past = gate(now - timedelta(seconds=6))
+    future = gate(now + timedelta(seconds=6))
+    assert past.open is False and "clock_skew" in past.reasons
+    assert future.open is False and "clock_skew" in future.reasons

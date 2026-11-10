@@ -14,7 +14,7 @@ Paper/testnet start schedule, only when `shorts.sandbox_expiry_v220.enabled` is 
 - Maximum hold is 4 hours. Explicit 0, 8, 24 and 72 hour overlays are invalid and are not replaced with 24 or 72. A tighter overlay (under 4h) still applies. The flag-off path is unchanged. With the flag on, only lots tagged `sandbox_path = v220_paper` use this schedule. Untagged lots keep the existing cover rules.
 - Planned exit must be the same Europe/Berlin calendar day as the entry.
 - No new short on Saturday or Sunday. `weekend_admission: true` does not loosen that. Stop and cover of an open short still run.
-- `config.json` is not edited. `allow_live` stays false.
+- This PR does not edit `config.json`. Numeric ceilings live in code. `shorts.testnet_futures.paper_start`, when #807 adds it, can only tighten those ceilings. If that key is absent, regime cells stay closed. `allow_live` stays false.
 
 Rev 0 below is the pre-freeze draft. Its "<24h" ceiling is tightened to 4h for the sandbox path only.
 
@@ -36,7 +36,7 @@ Test: `tests/unit/test_v220_t220_05.py::test_ac1_flag_off_keeps_existing_cover`.
 
 Rev 0 said "under 24h". That ceiling is superseded. The sandbox cap is 4 hours.
 
-The sandbox resolver walks tier, then coin, then lot `time_cap_hours`. A missing stack uses 4h, the same base as `resolve_short_params` with no overlay. An explicit value that is missing-as-null, non-finite, not positive, or greater than or equal to 24h is invalid. Invalid does not become 24h, 72h, or the previous layer. `climax_fade.time_cap_hours` is not read. Lot `time_cap_hours` is applied here; `resolve_short_params` still ignores it.
+The sandbox resolver walks tier, then coin, then lot `time_cap_hours`. A missing stack uses 4h, the same base as `resolve_short_params` with no overlay. An explicit value that is missing-as-null, non-finite, not positive, greater than 4h, or a plan past 20:00 Europe/Berlin is invalid. Invalid does not become 24h, 72h, or the previous layer. `climax_fade.time_cap_hours` is not read. Lot `time_cap_hours` is applied here; `resolve_short_params` still ignores it.
 
 Test: `test_ac2_hold_cap_bounds_and_overlays`.
 

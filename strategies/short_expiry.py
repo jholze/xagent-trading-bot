@@ -18,16 +18,20 @@ from zoneinfo import ZoneInfo
 
 from core.time_utils import ledger_datetime_utc
 from strategies.short_math import is_short
-from strategies.short_mode_proof import clock_skew_seconds, parse_sandbox_mode_proof
+from strategies.short_mode_proof import (
+    MAX_HOLD_HOURS,
+    clock_skew_seconds,
+    parse_sandbox_mode_proof,
+    tightened_cutoff,
+    tightened_decimal,
+)
 from strategies.short_policy import _tier_key, shorts_allow_live, shorts_config
 
 SANDBOX_PATH = "v220_paper"
 
 FLAG_KEY = "sandbox_expiry_v220"
-_EXISTING_DEFAULT_HOURS = Decimal("4")
-_MAX_HOURS = Decimal("4")
+_EXISTING_DEFAULT_HOURS = MAX_HOLD_HOURS
 _CUTOFF_ZONE = "Europe/Berlin"
-_PAPER_MARKETS = frozenset({"paper", "futures_usdt_testnet"})
 
 
 @dataclass(frozen=True)
@@ -90,15 +94,16 @@ def resolve_sandbox_hold(
     lot_map = lot if isinstance(lot, dict) else {}
     tier_name = _tier_key(tier or lot_map.get("strategy_tier"))
     tier_block = cfg.get("stable") if tier_name == "stable" else cfg.get("volatile")
+    ceiling = tightened_decimal(config_raw, "max_hold_hours", _EXISTING_DEFAULT_HOURS)
     chosen: Decimal | None = None
     for block in (tier_block, _coin_block(cfg, symbol, lot_map), lot_map):
-        state, value = _read_cap(block)
+        state, value = _read_cap(block, ceiling)
         if state == "invalid":
             return HoldCap(False, None, "invalid")
         if state == "set":
             chosen = value
     if chosen is None:
-        return HoldCap(True, _EXISTING_DEFAULT_HOURS, "default")
+        return HoldCap(True, ceiling, "default")
     return HoldCap(True, chosen, "overlay")
 
 
@@ -140,11 +145,11 @@ def schedule_allows_entry(
     if now_utc is None or opened_utc is None or planned_utc is None:
         reasons.append("session_unknown")
     else:
-        reasons.extend(_clock_reasons(now_utc, opened_utc, planned_utc))
+        reasons.extend(_clock_reasons(now_utc, opened_utc, planned_utc, config_raw))
         skew = timedelta(seconds=clock_skew_seconds(config_raw))
-        if opened_utc > now_utc + skew:
+        if abs(opened_utc - now_utc) > skew:
             reasons.append("clock_skew")
-        session_end, boundary, session_reason = _frozen_session(schedule, opened_utc)
+        session_end, boundary, session_reason = _frozen_session(schedule, opened_utc, config_raw)
         if session_reason:
             reasons.append(session_reason)
         elif hold.valid and hold.hours is not None and budget is not None and session_end is not None:
@@ -255,7 +260,7 @@ def cover_time_decision(
     now_utc = ledger_datetime_utc(now)
     if opened is None or now_utc is None:
         return _overdue("entry timestamp missing")
-    if _past_frozen_hold(now_utc, opened):
+    if _past_frozen_hold(now_utc, opened, config_raw):
         return _overdue("frozen cutoff or calendar day")
     session_required, session_end, boundary, _budget, session_reason = _session(schedule)
     if session_reason:
@@ -286,7 +291,7 @@ def _exposure_from_clock(pos, *, now, config_raw, schedule) -> ExposureReport:
     now_utc = ledger_datetime_utc(now)
     if opened is None or now_utc is None:
         return ExposureReport("overdue", False, "opened_unknown")
-    if _past_frozen_hold(now_utc, opened):
+    if _past_frozen_hold(now_utc, opened, config_raw):
         return ExposureReport("overdue", False, "cutoff")
     session_required, session_end, boundary, _budget, session_reason = _session(schedule)
     if session_reason:
@@ -326,16 +331,16 @@ def _coin_block(cfg, symbol, lot):
     return found if isinstance(found, dict) else None
 
 
-def _read_cap(block) -> tuple[str, Decimal | None]:
+def _read_cap(block, ceiling: Decimal) -> tuple[str, Decimal | None]:
     if not isinstance(block, dict) or "time_cap_hours" not in block:
         return "absent", None
-    parsed = _parse_hours(block.get("time_cap_hours"))
+    parsed = _parse_hours(block.get("time_cap_hours"), ceiling)
     if parsed is None:
         return "invalid", None
     return "set", parsed
 
 
-def _parse_hours(value: Any) -> Decimal | None:
+def _parse_hours(value: Any, ceiling: Decimal) -> Decimal | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, Decimal):
@@ -353,7 +358,7 @@ def _parse_hours(value: Any) -> Decimal | None:
             return None
     else:
         return None
-    if not number.is_finite() or number <= 0 or number > _MAX_HOURS:
+    if not number.is_finite() or number <= 0 or number > ceiling:
         return None
     return number
 
@@ -365,22 +370,35 @@ def _berlin(moment: datetime):
     return parsed.astimezone(ZoneInfo(_CUTOFF_ZONE))
 
 
-def _cutoff_utc(opened_utc: datetime) -> datetime | None:
+def _cutoff_utc(opened_utc: datetime, config_raw) -> datetime | None:
     local = _berlin(opened_utc)
     if local is None:
         return None
-    cutoff = local.replace(hour=20, minute=0, second=0, microsecond=0)
-    return cutoff.astimezone(timezone.utc)
+    cutoff = tightened_cutoff(config_raw)
+    local_cutoff = local.replace(
+        hour=cutoff.hour,
+        minute=cutoff.minute,
+        second=cutoff.second,
+        microsecond=0,
+    )
+    return local_cutoff.astimezone(timezone.utc)
 
 
-def _past_frozen_hold(now_utc: datetime, opened_utc: datetime) -> bool:
+def _past_cutoff(local_now, config_raw) -> bool:
+    cutoff = tightened_cutoff(config_raw)
+    stamp = (local_now.hour, local_now.minute, local_now.second, local_now.microsecond)
+    limit = (cutoff.hour, cutoff.minute, cutoff.second, 0)
+    return stamp >= limit
+
+
+def _past_frozen_hold(now_utc: datetime, opened_utc: datetime, config_raw) -> bool:
     now_local = _berlin(now_utc)
     opened_local = _berlin(opened_utc)
     if now_local is None or opened_local is None:
         return True
     if now_local.date() != opened_local.date() or now_local.weekday() >= 5:
         return True
-    return (now_local.hour, now_local.minute, now_local.second, now_local.microsecond) >= (20, 0, 0, 0)
+    return _past_cutoff(now_local, config_raw)
 
 
 def _explicit_budgets(schedule):
@@ -398,7 +416,7 @@ def _explicit_budgets(schedule):
     return total, None
 
 
-def _clock_reasons(now_utc: datetime, opened_utc: datetime, planned_utc: datetime) -> list[str]:
+def _clock_reasons(now_utc: datetime, opened_utc: datetime, planned_utc: datetime, config_raw) -> list[str]:
     now_local = _berlin(now_utc)
     opened_local = _berlin(opened_utc)
     planned_local = _berlin(planned_utc)
@@ -407,15 +425,15 @@ def _clock_reasons(now_utc: datetime, opened_utc: datetime, planned_utc: datetim
     reasons: list[str] = []
     if now_local.weekday() >= 5:
         reasons.append("weekend_denied")
-    elif (now_local.hour, now_local.minute, now_local.second, now_local.microsecond) >= (20, 0, 0, 0):
+    elif _past_cutoff(now_local, config_raw):
         reasons.append("after_cutoff")
     if planned_local.date() != opened_local.date() or now_local.date() != opened_local.date():
         reasons.append("same_calendar_day")
     return reasons
 
 
-def _frozen_session(schedule, opened_utc: datetime):
-    cutoff = _cutoff_utc(opened_utc)
+def _frozen_session(schedule, opened_utc: datetime, config_raw):
+    cutoff = _cutoff_utc(opened_utc, config_raw)
     if cutoff is None:
         return None, None, "session_unknown"
     if not isinstance(schedule, dict) or "session_end" not in schedule:
@@ -531,36 +549,6 @@ def _inside_window(now, boundary, start, end) -> bool:
     if boundary == "inclusive":
         return start <= now <= end
     return start < now < end
-
-
-def _proof_flags(proof) -> tuple[bool, bool]:
-    if not isinstance(proof, dict):
-        return True, False
-    missing = False
-    live = False
-    tenant = proof.get("tenant_id")
-    if not isinstance(tenant, str) or not tenant.strip() or tenant.strip().lower() == "unknown":
-        missing = True
-    market = proof.get("market")
-    if not isinstance(market, str) or not market.strip():
-        missing = True
-    elif market.strip() not in _PAPER_MARKETS:
-        live = True
-    if proof.get("live") is True:
-        live = True
-    elif proof.get("live") is not False:
-        missing = True
-    if proof.get("readback_ok") is not True:
-        missing = True
-    as_of = proof.get("as_of") if "as_of" in proof else None
-    if as_of is None:
-        missing = True
-    elif isinstance(as_of, str):
-        if not as_of.strip() or as_of.strip().lower() == "unknown":
-            missing = True
-    elif ledger_datetime_utc(as_of) is None:
-        missing = True
-    return missing, live
 
 
 def _dedupe(reasons: list[str]) -> list[str]:
