@@ -140,6 +140,36 @@ def test_verify_ok_then_detects_tamper_and_drift(env, tmp_path):
     assert not rep["ok"] and any("sha256" in p for p in rep["problems"])
 
 
+def test_verify_and_reset_refuse_inplace_edit_without_count_change(env, tmp_path):
+    """#796 residual of #759: one edited entry, same document count, must refuse."""
+    db, store = env
+    out, _ = _backup(db, tmp_path)
+    doc = db.orders.find_one({"_id": "henry:demo"})
+    assert doc and doc.get("orders")
+    before_count = db.orders.count_documents({"_id": "henry:demo"})
+    edited = dict(doc)
+    orders = [dict(row) for row in edited["orders"]]
+    orders[0]["note"] = "edited-without-count-change"
+    edited["orders"] = orders
+    db.orders.replace_one({"_id": "henry:demo"}, edited)
+    assert db.orders.count_documents({"_id": "henry:demo"}) == before_count
+    rep = le.verify(out, db)
+    assert not rep["ok"]
+    assert any(
+        "content sha256" in p and "ledger/henry/demo/orders.jsonl" in p for p in rep["problems"]
+    )
+    # A higher count is the only thing allow_growth softens.
+    assert not le.verify(out, db, allow_growth=True)["ok"]
+    with pytest.raises(le.EpochError, match="verify failed"):
+        le.reset(
+            db, store, out, ["henry"], balance=100000, apply=True,
+            confirm_writers_stopped=True, now=NOW,
+        )
+    assert db.orders.find_one({"_id": "henry:demo"})["orders"][0]["note"] == (
+        "edited-without-count-change"
+    )
+
+
 def test_verify_detects_data_lost_after_backup(env, tmp_path):
     db, _ = env
     out, _ = _backup(db, tmp_path)
