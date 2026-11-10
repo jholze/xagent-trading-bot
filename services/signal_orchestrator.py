@@ -202,6 +202,12 @@ class SignalOrchestrator:
                 ctx_volume_window_days=getattr(analysis, "ctx_volume_window_days", None),
                 strategy_tier=_entry_tier_from_analysis(analysis),
             )
+            try:
+                from services.entry_lineage import stamp_decision_on_order
+
+                stamp_decision_on_order(order, analysis, timeframe=tf, source=source)
+            except Exception as exc:
+                log(f"entry lineage stamp skipped {symbol}: {exc}", "WARNING")
         else:
             # Size and execute against the open lot TF (may differ from analysis TF
             # e.g. volatile entry on 1h while watchlist analysis runs 4h).
@@ -873,6 +879,14 @@ class SignalOrchestrator:
                 signal=BUY_DCA,
                 source=buy.source,
             )
+            try:
+                from services.entry_lineage import stamp_decision_on_order
+
+                stamp_decision_on_order(
+                    buy_order, buy, timeframe=getattr(buy, "timeframe", None), source=buy.source,
+                )
+            except Exception as exc:
+                log(f"entry lineage stamp skipped {buy.symbol}: {exc}", "WARNING")
             buy_result = self.trading.execute_order(
                 buy_order,
                 buy.timeframe,

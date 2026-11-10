@@ -90,6 +90,12 @@ def tool_lots(actor, tenant=None, symbol=None, snapshot_fn=None):
     lots = out.get("lots")
     if not isinstance(lots, list):
         lots = []
+    try:
+        from services.entry_lineage import project_lot
+
+        lots = [project_lot(lot) if isinstance(lot, dict) else lot for lot in lots]
+    except Exception:
+        lots = [lot for lot in lots if isinstance(lot, dict)]
     return {"ok": True, "tenant_id": out.get("tenant_id"), "lots": lots}
 
 

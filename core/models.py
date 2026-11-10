@@ -290,6 +290,25 @@ class TradeOrder:
     client_order_id: str = ""
     exchange_order_id: str = ""
     order_exist_in_exchange: bool = False
+    # D-LIN: decision observations copied onto the order. None means the
+    # decision did not supply a value. Not a #600 schema change. Risk rebuilds
+    # a new TradeOrder; copy_decision_lineage puts these back.
+    decision_rsi: float | None = None
+    decision_atr: float | None = None
+    decision_atr_pct: float | None = None
+    decision_volume_factor: float | None = None
+    decision_volume_field: str = ""
+    decision_rationale: str = ""
+    decision_rationale_codes: list | None = None
+    decision_volatility_tier: str | None = None
+    decision_strategy_profile: str | None = None
+    decision_timeframe: str | None = None
+    decision_source: str = ""
+    decision_size_before_mult: float | None = None
+    decision_size_after_mult: float | None = None
+    decision_cap_applied: bool | None = None
+    decision_context: dict | None = None
+    prior_attempt_id: str = ""
 
     def __post_init__(self) -> None:
         if self.client_order_id and not self.idempotency_key:

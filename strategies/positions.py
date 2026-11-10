@@ -192,6 +192,7 @@ _CACHE_FIELDS = (
     "leverage",
     "recent_low",
     "entry_snapshot",
+    "entry_lineage",
     "short_recipe",
     "exit_source",
     # #651 F0: survive rebuild/restart (serialize + deserialize + cache overlay).
@@ -240,6 +241,7 @@ CYCLE_FIELDS = (
     "strategy_tier",
     "strategy_tier_source",
     "entry_snapshot",
+    "entry_lineage",
     "entry_source",
     "entry_at",
     "side",
@@ -546,6 +548,8 @@ def _deserialize_position(raw: dict) -> dict:
     if "entry_snapshot" in raw:
         snap = raw["entry_snapshot"]
         out["entry_snapshot"] = dict(snap) if isinstance(snap, dict) else snap
+    if "entry_lineage" in raw and isinstance(raw.get("entry_lineage"), dict):
+        out["entry_lineage"] = dict(raw["entry_lineage"])
     if raw.get("basis_fee_estimated"):
         out["basis_fee_estimated"] = True
     if raw.get("open_fee_usdt") not in (None, ""):
@@ -660,6 +664,8 @@ def _serialize_positions(store: dict | None = None, scope: str | None = None) ->
             data["positions"][tf]["entry_snapshot"] = (
                 dict(snap) if isinstance(snap, dict) else snap
             )
+        if isinstance(p.get("entry_lineage"), dict):
+            data["positions"][tf]["entry_lineage"] = dict(p["entry_lineage"])
         if p.get("basis_fee_estimated"):
             # Rebuilt by the replay. Not a _CACHE_FIELDS overlay.
             data["positions"][tf]["basis_fee_estimated"] = True
@@ -1838,6 +1844,7 @@ _CYCLE_RESET_DEFAULTS = {
     "strategy_tier": None,
     "strategy_tier_source": None,
     "entry_snapshot": _CYCLE_RESET_POP,
+    "entry_lineage": _CYCLE_RESET_POP,
     "entry_source": None,
     "entry_at": None,
     "side": "long",
@@ -2060,6 +2067,34 @@ def _attach_and_persist_entry_snapshot(
     flush_positions(force=True)
 
 
+def _public_entry_lineage(block):
+    if not isinstance(block, dict):
+        return None
+    try:
+        from services.entry_lineage import public_lineage
+
+        return public_lineage(block)
+    except Exception:
+        return None
+
+
+def _attach_entry_lineage(symbol, timeframe, lineage: dict) -> None:
+    """Store the versioned lineage beside the snapshot. First fill only."""
+    from services.entry_lineage import lot_lineage_record
+
+    key = get_key(symbol, timeframe)
+    store = _active_store()
+    record = lot_lineage_record(lineage)
+    if not record:
+        return
+    with _positions_lock:
+        pos = _ensure_key(store, key)
+        if isinstance(pos.get("entry_lineage"), dict) and pos["entry_lineage"].get("entry_allocation_id"):
+            return
+        pos["entry_lineage"] = record
+    flush_positions(force=True)
+
+
 def update_position(
     symbol,
     timeframe,
@@ -2090,6 +2125,7 @@ def update_position(
     coin_class: str | None = None,
     slippage_pct: float | None = None,
     snapshot_source: str | None = None,
+    lineage: dict | None = None,
 ):
     global _open_positions_count
     store_key = _activate_for_write()
@@ -2243,6 +2279,7 @@ def update_position(
                 pos["dca_rounds"] = 0
                 pos["dca_total_usdt"] = 0.0
                 pos.pop("entry_snapshot", None)
+                pos.pop("entry_lineage", None)
                 attach_snapshot = True
                 snapshot_fill_time = opened
                 recipe = str(short_recipe or "").strip()
@@ -2405,6 +2442,11 @@ def update_position(
             )
         except Exception as e:
             log(f"entry_snapshot attach failed for {symbol}: {e}", "WARNING")
+        if lineage:
+            try:
+                _attach_entry_lineage(symbol, timeframe, lineage)
+            except Exception as e:
+                log(f"entry_lineage attach failed for {symbol}: {e}", "WARNING")
 
 
 def count_open_positions():
@@ -2521,6 +2563,11 @@ def _active_lot_from_store_key(key: str, p: dict) -> dict:
         "lock": p.get("lock"),
         "current_price": p.get("current_price") or p.get("mark") or p.get("last_price"),
     }
+    if isinstance(p.get("entry_snapshot"), dict):
+        lot["entry_snapshot"] = dict(p["entry_snapshot"])
+    public_lineage = _public_entry_lineage(p.get("entry_lineage"))
+    if public_lineage is not None:
+        lot["entry_lineage"] = public_lineage
     if p.get("short_recipe"):
         lot["short_recipe"] = p.get("short_recipe")
     if p.get("exit_source"):

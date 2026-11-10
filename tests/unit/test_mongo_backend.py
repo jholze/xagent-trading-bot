@@ -229,6 +229,9 @@ def _normalize_positions(positions: dict) -> dict:
                 "last_trade_at",
                 "last_dca_at",
                 "first_buy_at",
+                # AC-LIN-2 channels stamp entry_at from first_buy_at (wall clock).
+                # Two sequential buy/sell runs cannot share one clock reading.
+                "entry_at",
                 # F0/F7 stamp these with datetime.now() on a new entry.
                 # Two sequential buy/sell runs cannot share one clock reading.
                 "peak_at",
