@@ -23,8 +23,8 @@ Jens wants exorbitant risers measured for exhaustion (funding, RSI, volume). Mar
 | Funding / volume | not logged for this draft | point-in-time history and consecutive ratios; missing stays null |
 | Grace | undefined | not applied; age seconds is raw |
 | Trial result | Climax 1x NO-GO stands (not rerun) | `insufficient_data`; profit factor null; `#769` `SCENARIO_TRIALS` not modified |
-| Targeted tests | collection error | 7 passed |
-| Full unit suite | not rerun for this package | 6803 passed, 2 skipped, 1 xfailed |
+| Targeted tests | collection error | 15 passed after the Opus fixes |
+| Full unit suite | not rerun for this package | 6811 passed, 2 skipped, 1 xfailed |
 
 ## Red to green
 
@@ -35,19 +35,23 @@ E   ModuleNotFoundError: No module named 'services.short_signal_feed'
 ERROR tests/unit/test_short_signal_feed.py
 ```
 
-Green, same file, `HOST=127.0.0.1` `PYTEST_DB_SUFFIX=dexh8685`:
+Green, same file, `HOST=127.0.0.1` `PYTEST_DB_SUFFIX=dexh8685c`:
 
 ```text
-7 passed in 0.91s
+15 passed in 0.99s
 ```
 
-A filter mutant (a pass/fail on RSI, a divergence flag, or treating `climax_fade.enabled` as the switch) fails `test_ac_exh_2_raw_features_no_threshold` or `test_ac_exh_3_default_off_and_live_denied`: both a RSI of 100 and a RSI of 0 stay `decision is None`, forbidden keys include `divergence`, and the climax flag is not read.
+Look-ahead mutant: replacing `close_at > as_of` with `opened > as_of` in `services/short_signal_feed/features.py` made `test_bar_closing_after_as_of_is_excluded` fail (`assert 16 == 15` on `rsi.n_closes`). The comparison was restored. The zero-volume case is `test_zero_and_missing_volume_do_not_divide`.
+
+A filter mutant (a pass/fail on RSI, a divergence flag, or treating `climax_fade.enabled` as the switch) fails `test_ac_exh_2_raw_features_no_threshold` or `test_ac_exh_3_default_off_and_live_denied`.
+
+Rev 2 of the spec is frozen 2026-11-10 by Kay (owner-delegated) for raw-feature logging only. Thresholds, lookback, divergence, and grace stay open. Holdout rows are logged with `holdout: true` and are not fitted.
 
 ## Suite
 
-`HOST=127.0.0.1 UNIT_TEST_PROGRESS=0 PYTEST_DB_SUFFIX=dexh8685suite ./scripts/run_unit_tests.sh --parallel -q`
+`HOST=127.0.0.1 UNIT_TEST_PROGRESS=0 PYTEST_DB_SUFFIX=dexh8685fix ./scripts/run_unit_tests.sh --parallel -q`
 
-6803 passed, 2 skipped, 1 xfailed, 113 subtests passed, 103.61s. Skips: `tests/unit/test_morning_briefing.py` (no `decisions.jsonl`), `tests/e2e_telegram/test_telethon_optional.py` (`TELEGRAM_E2E` unset). Xfail: `test_t7_cap_stop_explicit_volatile_shadow_is_sell_stop_full` (pre-existing, #696). `find data -newer` the pre-suite marker printed nothing.
+6811 passed, 2 skipped, 1 xfailed, 113 subtests passed, 101.89s. Skips: `tests/unit/test_morning_briefing.py` (no `decisions.jsonl`), `tests/e2e_telegram/test_telethon_optional.py` (`TELEGRAM_E2E` unset). Xfail: `test_t7_cap_stop_explicit_volatile_shadow_is_sell_stop_full` (pre-existing, #696).
 
 `ruff check --select E9,F821,F823` on `services/short_signal_feed` and `tests/unit/test_short_signal_feed.py`: passed.
 

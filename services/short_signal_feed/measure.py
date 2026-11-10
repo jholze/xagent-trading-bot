@@ -17,8 +17,13 @@ from services.short_signal_feed.schema import (
 )
 from services.short_signal_feed.trace import log_line, tape_row
 
-_LIVE_MODES = frozenset({"live", "mainnet", "real"})
-_SANDBOX_MODES = frozenset({"paper", "futures_testnet"})
+_LEGACY_LIVE_MODES = frozenset({"live", "mainnet", "real"})
+_SANDBOX_TRADING_MODES = frozenset({"paper", "demo", "gate_testnet"})
+_SANDBOX_LIVE_EXECUTION = frozenset({"shadow", "testnet"})
+SPEC_STATUS = (
+    "frozen 2026-11-10 by Kay (owner-delegated), scope raw-feature logging only; "
+    "thresholds/lookback/divergence/grace remain open until measured"
+)
 
 
 def _shorts(config: dict | None) -> dict:
@@ -34,28 +39,52 @@ def exhaustion_enabled(config: dict | None) -> bool:
     return isinstance(block, dict) and block.get("enabled") is True
 
 
-def _mode(config: dict | None) -> str | None:
+def _text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip().lower()
+    return stripped or None
+
+
+def _trading_mode(config: dict | None) -> str | None:
+    if not isinstance(config, dict):
+        return None
+    return _text(config.get("trading_mode"))
+
+
+def _live_execution(config: dict | None) -> str | None:
+    if not isinstance(config, dict):
+        return None
+    live = config.get("live")
+    if not isinstance(live, dict) or "execution" not in live:
+        return None
+    return _text(live.get("execution"))
+
+
+def _legacy_execution_mode(config: dict | None) -> str | None:
+    """``execution.mode`` is not the repo key. A live value still fails closed."""
     if not isinstance(config, dict):
         return None
     execution = config.get("execution")
     if not isinstance(execution, dict):
         return None
-    mode = execution.get("mode")
-    if not isinstance(mode, str):
-        return None
-    stripped = mode.strip().lower()
-    return stripped or None
+    return _text(execution.get("mode"))
 
 
 def path_reason(config: dict | None) -> str:
+    """Sandbox only. Any live indicator denies, including a paper execution.mode."""
     if not exhaustion_enabled(config):
         return "feature_off"
     if _shorts(config).get("allow_live") is True:
         return "live_denied"
-    mode = _mode(config)
-    if mode in _LIVE_MODES:
+    trading_mode = _trading_mode(config)
+    live_execution = _live_execution(config)
+    legacy = _legacy_execution_mode(config)
+    if trading_mode == "live" or live_execution == "real" or legacy in _LEGACY_LIVE_MODES:
         return "live_denied"
-    if mode not in _SANDBOX_MODES:
+    if live_execution is not None and live_execution not in _SANDBOX_LIVE_EXECUTION:
+        return "live_denied"
+    if trading_mode not in _SANDBOX_TRADING_MODES:
         return "mode_not_sandbox"
     return "measured"
 
@@ -68,18 +97,21 @@ def _shell(
     status_reason: str,
     detail: str | None,
     inputs: dict | None = None,
+    status: str = "not_measurable",
+    holdout: bool = False,
 ) -> dict:
     return {
         "signal_key": signal_key,
         "symbol": symbol,
         "as_of": as_of,
-        "status": "not_measurable",
+        "status": status,
         "status_reason": status_reason,
         "detail": detail,
         "decision": None,
         "order_intent": None,
         "thresholds_applied": False,
         "grace_applied": False,
+        "holdout": holdout,
         "features": None,
         "inputs": inputs
         or {
@@ -111,14 +143,7 @@ def _observe(record: object, bars: list, funding: list, now_dt) -> dict:
             detail=detail,
         )
     as_of = identity["as_of"]
-    if as_of >= HOLDOUT_START:
-        return _shell(
-            signal_key=identity["signal_key"],
-            symbol=identity["symbol"],
-            as_of=identity["as_of_text"],
-            status_reason="holdout_excluded",
-            detail=None,
-        )
+    holdout = as_of >= HOLDOUT_START
     if now_dt is not None and as_of > now_dt:
         return _shell(
             signal_key=identity["signal_key"],
@@ -126,6 +151,7 @@ def _observe(record: object, bars: list, funding: list, now_dt) -> dict:
             as_of=identity["as_of_text"],
             status_reason="future_as_of",
             detail=None,
+            holdout=holdout,
         )
     measured = raw_features(identity, bars, funding, now_dt)
     return {
@@ -139,6 +165,7 @@ def _observe(record: object, bars: list, funding: list, now_dt) -> dict:
         "order_intent": None,
         "thresholds_applied": False,
         "grace_applied": False,
+        "holdout": holdout,
         "features": measured["features"],
         "inputs": measured["inputs"],
         "missing_reasons": measured["missing_reasons"],
@@ -177,12 +204,14 @@ def _report(
     return {
         "trial_id": TRIAL_ID,
         "status": "insufficient_data",
-        "reason": "definitions_pending_owner_freeze",
-        "pending_owner_freeze": True,
+        "reason": "definitions_open",
+        "pending_owner_freeze": False,
+        "spec_status": SPEC_STATUS,
         "open_definitions": dict(OPEN_DEFINITIONS),
         "dataset_sha256": digest,
         "pre_feature_hash": True,
-        "holdout": "not_accessed",
+        "holdout": "logged_not_for_fitting",
+        "holdout_rows": sum(1 for row in observations if row.get("holdout") is True),
         "cost_protocol": {
             "taker_fee_pct_per_side": TAKER_FEE_PCT_PER_SIDE,
             "slippage_pct_per_side": dict(SLIPPAGE_PCT_PER_SIDE),
@@ -221,7 +250,7 @@ def _report(
             "scenario_trials_py": "not_modified",
             "n_effect": "none",
             "status": "planned_not_run",
-            "reason": "definitions_pending_owner_freeze",
+            "reason": "definitions_open",
         },
     }
 
@@ -254,12 +283,35 @@ def measure_exhaustion(
             "report": _report(digest=digest, observations=[], ran=False),
         }
 
-    now_dt = parse_timestamp(now) if now is not None else None
+    now_invalid = now is not None and parse_timestamp(now) is None
+    now_dt = None if now is None or now_invalid else parse_timestamp(now)
     seen: set[str] = set()
     observations: list[dict] = []
     dropped = 0
     for record in signal_rows:
-        observation = _observe(record, bar_rows, funding_rows, now_dt)
+        if now_invalid:
+            identity, _reason, _detail = validate_identity(record)
+            if identity is None:
+                observation = _shell(
+                    signal_key=malformed_key(record),
+                    symbol=None,
+                    as_of=None,
+                    status="invalid",
+                    status_reason="malformed_now",
+                    detail="now",
+                )
+            else:
+                observation = _shell(
+                    signal_key=identity["signal_key"],
+                    symbol=identity["symbol"],
+                    as_of=identity["as_of_text"],
+                    status="invalid",
+                    status_reason="malformed_now",
+                    detail="now",
+                    holdout=identity["as_of"] >= HOLDOUT_START,
+                )
+        else:
+            observation = _observe(record, bar_rows, funding_rows, now_dt)
         key = observation["signal_key"]
         if key in seen:
             dropped += 1
@@ -267,7 +319,7 @@ def measure_exhaustion(
         seen.add(key)
         observations.append(observation)
     return {
-        "reason": "measured",
+        "reason": "malformed_now" if now_invalid else "measured",
         "trading_effect": "none",
         "order_intents": [],
         "venue_calls": 0,

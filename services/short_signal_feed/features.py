@@ -13,17 +13,16 @@ import talib
 from services.short_signal_feed.reader import parse_timestamp
 from services.short_signal_feed.schema import (
     BAR_HOURS,
-    HOLDOUT_START,
     RSI_PERIOD,
     RSI_PERIOD_SOURCE,
 )
 from strategies.climax_fade import normalize_climax_symbol
 
-_NUMBER = re.compile(r"^[+-]?(?:0|[1-9]\d*)(?:\.\d+)?$")
+_NUMBER = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
 
 
 def decimal_input(value: object) -> Decimal | None:
-    """Accept an int or a decimal string. Floats and booleans are not exact."""
+    """Accept an int or a decimal/scientific string. Floats stay out of prices."""
     if isinstance(value, bool) or isinstance(value, float):
         return None
     if isinstance(value, int):
@@ -40,6 +39,21 @@ def decimal_input(value: object) -> Decimal | None:
             return None
         return number
     return None
+
+
+def funding_number(value: object) -> Decimal | None:
+    """Funding rates may be JSON numbers or strings such as ``1e-4``."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        try:
+            number = Decimal(str(value))
+        except InvalidOperation:
+            return None
+        return number if number.is_finite() else None
+    return decimal_input(value)
 
 
 def _format_decimal(number: Decimal) -> str:
@@ -73,8 +87,14 @@ def _eligibility_inputs(record: dict) -> dict:
     }
 
 
-def _closed_bars(symbol: str, as_of, bars: list) -> tuple[list[dict], int]:
-    chosen: dict = {}
+def _partition_bars(symbol: str, as_of, bars: list) -> tuple[list[tuple], int]:
+    """Closed bars at ``as_of``, plus how many close after ``as_of``.
+
+    A bar whose open is at or before ``as_of`` but whose close is after
+    ``as_of`` is still open. It is counted and excluded. Using the open
+    time for that comparison would admit it.
+    """
+    closed: list[tuple] = []
     excluded = 0
     for bar in bars:
         if not isinstance(bar, dict):
@@ -86,25 +106,57 @@ def _closed_bars(symbol: str, as_of, bars: list) -> tuple[list[dict], int]:
         opened = parse_timestamp(bar.get("open_time"))
         if opened is None:
             continue
-        closed = opened + timedelta(hours=BAR_HOURS)
-        if closed > as_of or closed >= HOLDOUT_START:
-            if closed > as_of:
-                excluded += 1
+        close_at = opened + timedelta(hours=BAR_HOURS)
+        if close_at > as_of:
+            excluded += 1
             continue
-        if opened in chosen:
-            continue
-        chosen[opened] = bar
-    return [chosen[item] for item in sorted(chosen)], excluded
+        closed.append((opened, bar))
+    return closed, excluded
 
 
-def _volume_and_rsi(rows: list[dict]) -> tuple[dict, dict, list[str]]:
+def _rsi_block(reason: str | None, value: str | None, available: int, used: int) -> dict:
+    return {
+        "period": RSI_PERIOD,
+        "period_source": RSI_PERIOD_SOURCE,
+        "value": value,
+        "reason": reason,
+        "threshold": None,
+        "n_closes": used,
+        "n_closes_available": available,
+    }
+
+
+def _volume_and_rsi(
+    closed: list[tuple],
+    *,
+    excluded_after_as_of: int,
+) -> tuple[dict, dict, list[str]]:
     missing: list[str] = []
+    grouped: dict = {}
+    for opened, bar in closed:
+        grouped.setdefault(opened, []).append(bar)
+    duplicate_times = [opened for opened, items in grouped.items() if len(items) > 1]
+    if duplicate_times:
+        names = [item.strftime("%Y-%m-%dT%H:%M:%SZ") for item in sorted(duplicate_times)]
+        rsi = _rsi_block("duplicate_open_time", None, 0, 0)
+        missing.append("duplicate_open_time")
+        volume = {
+            "bars": [],
+            "consecutive_ratios": [],
+            "excluded_after_as_of": excluded_after_as_of,
+            "duplicate_open_time": True,
+            "duplicate_open_times": names,
+        }
+        return rsi, volume, missing
+
+    ordered = sorted(grouped)
     listed = []
     closes: list[Decimal] = []
     bad_close = False
-    for bar in rows:
+    for opened in ordered:
+        bar = grouped[opened][0]
         close = decimal_input(bar.get("close"))
-        volume = decimal_input(bar.get("volume"))
+        volume_value = decimal_input(bar.get("volume"))
         if close is None:
             bad_close = True
         else:
@@ -113,11 +165,25 @@ def _volume_and_rsi(rows: list[dict]) -> tuple[dict, dict, list[str]]:
             {
                 "open_time": bar.get("open_time"),
                 "close": None if close is None else _format_decimal(close),
-                "volume": None if volume is None else _format_decimal(volume),
+                "volume": None if volume_value is None else _format_decimal(volume_value),
+                "_opened": opened,
             }
         )
     ratios = []
+    gapped = False
     for prev, current in zip(listed, listed[1:]):
+        step = current["_opened"] - prev["_opened"]
+        if step != timedelta(hours=BAR_HOURS):
+            gapped = True
+            ratios.append(
+                {
+                    "open_time": current["open_time"],
+                    "prev_open_time": prev["open_time"],
+                    "ratio": None,
+                    "reason": "non_consecutive",
+                }
+            )
+            continue
         left = decimal_input(prev["volume"]) if prev["volume"] is not None else None
         right = decimal_input(current["volume"]) if current["volume"] is not None else None
         if left is None or right is None or left <= 0:
@@ -138,51 +204,42 @@ def _volume_and_rsi(rows: list[dict]) -> tuple[dict, dict, list[str]]:
                 "reason": None,
             }
         )
+    public_bars = [
+        {"open_time": item["open_time"], "close": item["close"], "volume": item["volume"]}
+        for item in listed
+    ]
+    available = len(closes)
     if bad_close:
-        rsi = {
-            "period": RSI_PERIOD,
-            "period_source": RSI_PERIOD_SOURCE,
-            "value": None,
-            "reason": "non_decimal_close",
-            "threshold": None,
-        }
+        rsi = _rsi_block("non_decimal_close", None, available, 0)
         missing.append("non_decimal_close")
-    elif len(closes) < RSI_PERIOD + 1:
-        rsi = {
-            "period": RSI_PERIOD,
-            "period_source": RSI_PERIOD_SOURCE,
-            "value": None,
-            "reason": "insufficient_closes",
-            "threshold": None,
-        }
+    elif gapped:
+        rsi = _rsi_block("gap_in_closes", None, available, 0)
+        missing.append("gap_in_closes")
+    elif available < RSI_PERIOD + 1:
+        rsi = _rsi_block("insufficient_closes", None, available, 0)
         missing.append("insufficient_closes")
     else:
         series = np.array([float(item) for item in closes], dtype=float)
         value = float(talib.RSI(series, timeperiod=RSI_PERIOD)[-1])
         if math.isnan(value):
-            rsi = {
-                "period": RSI_PERIOD,
-                "period_source": RSI_PERIOD_SOURCE,
-                "value": None,
-                "reason": "insufficient_closes",
-                "threshold": None,
-            }
+            rsi = _rsi_block("insufficient_closes", None, available, 0)
             missing.append("insufficient_closes")
         else:
-            rsi = {
-                "period": RSI_PERIOD,
-                "period_source": RSI_PERIOD_SOURCE,
-                "value": format(value, ".10f"),
-                "reason": None,
-                "threshold": None,
-            }
-    volume = {"bars": listed, "consecutive_ratios": ratios}
+            rsi = _rsi_block(None, format(value, ".10f"), available, available)
+    volume = {
+        "bars": public_bars,
+        "consecutive_ratios": ratios,
+        "excluded_after_as_of": excluded_after_as_of,
+        "duplicate_open_time": False,
+        "duplicate_open_times": [],
+    }
     return rsi, volume, missing
 
 
 def _funding(symbol: str, as_of, funding: list) -> tuple[dict, list[str]]:
     history = []
     excluded = 0
+    unparseable = 0
     for index, row in enumerate(funding):
         if not isinstance(row, dict):
             continue
@@ -191,24 +248,23 @@ def _funding(symbol: str, as_of, funding: list) -> tuple[dict, list[str]]:
         settled = parse_timestamp(row.get("settled_at"))
         if settled is None:
             continue
-        if settled > as_of or settled >= HOLDOUT_START:
-            if settled > as_of:
-                excluded += 1
+        if settled > as_of:
+            excluded += 1
             continue
-        rate = decimal_input(row.get("rate"))
+        rate = funding_number(row.get("rate"))
         if rate is None:
+            unparseable += 1
             continue
-        interval = decimal_input(row.get("interval_hours")) if "interval_hours" in row else None
-        if "interval_hours" in row and row.get("interval_hours") is not None and interval is None:
-            interval_known = False
-            interval_text = None
-        elif interval is None:
+        interval = (
+            funding_number(row.get("interval_hours")) if "interval_hours" in row else None
+        )
+        if interval is None:
             interval_known = False
             interval_text = None
         else:
             interval_known = True
             interval_text = _format_decimal(interval)
-        net = decimal_input(row.get("net_cost_usdt")) if "net_cost_usdt" in row else None
+        net = funding_number(row.get("net_cost_usdt")) if "net_cost_usdt" in row else None
         history.append(
             (
                 settled,
@@ -226,13 +282,19 @@ def _funding(symbol: str, as_of, funding: list) -> tuple[dict, list[str]]:
         )
     history.sort(key=lambda item: (item[0], item[1]))
     rows = [item[2] for item in history]
-    reason = None if rows else "no_settlement_at_or_before_as_of"
-    missing = [] if rows else [reason]
+    if unparseable:
+        reason = "unparseable_funding"
+    elif not rows:
+        reason = "no_settlement_at_or_before_as_of"
+    else:
+        reason = None
+    missing = [] if reason is None else [reason]
     return (
         {
             "last": rows[-1] if rows else None,
             "history": rows,
             "excluded_after_as_of": excluded,
+            "unparseable_count": unparseable,
             "reason": reason,
         },
         missing,
@@ -242,8 +304,10 @@ def _funding(symbol: str, as_of, funding: list) -> tuple[dict, list[str]]:
 def raw_features(identity: dict, bars: list, funding: list, now_dt) -> dict:
     symbol = identity["symbol"]
     as_of = identity["as_of"]
-    closed, _excluded = _closed_bars(symbol, as_of, bars)
-    rsi, volume, rsi_missing = _volume_and_rsi(closed)
+    closed, excluded_bars = _partition_bars(symbol, as_of, bars)
+    rsi, volume, rsi_missing = _volume_and_rsi(
+        closed, excluded_after_as_of=excluded_bars
+    )
     funding_block, funding_missing = _funding(symbol, as_of, funding)
     if now_dt is None:
         age = {"seconds": None, "reason": "now_not_supplied"}

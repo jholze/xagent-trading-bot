@@ -1,6 +1,6 @@
 # D-EXH – Requirements
 
-Version: 1.1 · Date: 2026-11-10 · Status: draft · **pending owner freeze** · Owner: pending owner freeze
+Version: 1.2 · Date: 2026-11-10 · Status: **frozen 2026-11-10 by Kay (owner-delegated), scope raw-feature logging only; thresholds/lookback/divergence/grace remain open until measured**
 
 Local draft id: D-EXH. Not a GitHub issue. Related existing issues, not closed and not re-scoped by this draft: #614 (old climax-fade), #694 (parked, not touched), #600, #628, #582, #769.
 
@@ -14,9 +14,9 @@ The sprint draft asked for a frozen exhaustion recipe: extreme rise, positive ex
 
 That recipe was not implemented. Marcus marked the thresholds, the lookback, and the divergence definition UNCLEAR, and marked grace undefined. Rev 0 stays here so the wording is not rewritten in place. Rev 1 replaces it.
 
-## Rev 1 (2026-11-10, Marcus correction — binding)
+## Rev 1 (2026-11-10, Marcus correction — archived as the first measurement text)
 
-Pending owner freeze. Do not treat the numbers in old climax-fade, or any fixture number, as the exhaustion recipe.
+Do not treat the numbers in old climax-fade, or any fixture number, as the exhaustion recipe. Rev 2 freezes the scope and replaces the holdout exclusion and the `execution.mode` names below. The open-definition table stays open.
 
 ### Open definitions
 
@@ -116,9 +116,42 @@ After: a sandbox fixture with the flag on returns one feature log per distinct r
 - A backtest, a holdout read, or a profitability claim.
 - A second fill ledger or a shadow order book.
 
+## Rev 2 (2026-11-10, Kay freeze — binding)
+
+Status: frozen 2026-11-10 by Kay (owner-delegated), scope raw-feature logging only; thresholds/lookback/divergence/grace remain open until measured.
+
+Kay has owner-delegated freeze authority for this paper/testnet scope (2026-11-10 18:40 Europe/Berlin). This revision does not choose a threshold, a lookback, a divergence definition, or a grace. It does not add an order.
+
+Changes from Rev 1:
+
+- A bar is in the series only when `close = open + 4h` and `close <= as_of`. A bar that is still open at `as_of` is excluded and counted in `volume.excluded_after_as_of`. Comparing the open time instead would admit it.
+- A supplied `now` that does not parse makes every row `status: invalid` with reason `malformed_now`. Features stay null. That row is never `observed`. A missing `now` is different: age is unknown and the future-`as_of` check is not applied.
+- `as_of` at or after 2026-11-06 00:00 Europe/Berlin is logged with `holdout: true`. Those rows are not blocked. They must not be used for threshold fitting. Profit factor and the other result fields stay null.
+- `as_of` after a parsed `now` is still `not_measurable` / `future_as_of`, including when that timestamp is also inside the holdout.
+- The sandbox gate reads `trading_mode` (`paper`, `demo`, `gate_testnet`) and `live.execution` (`shadow`, `testnet`). `trading_mode: live`, `live.execution: real`, `shorts.allow_live: true`, an unknown `live.execution`, or a legacy `execution.mode` of `live` / `mainnet` / `real` returns no rows. `trading_mode: live` with `execution.mode: paper` is denied.
+- A gap between closed opens that is not exactly 4h marks that volume ratio `non_consecutive` and sets RSI null with reason `gap_in_closes`. `rsi.n_closes` is how many closes were passed to `talib.RSI` (0 when RSI is not computed). `n_closes_available` is how many decimal closes were present.
+- A repeated `open_time` in the closed set fails closed for that bar set: `duplicate_open_time: true`, no bars, RSI null. Neither copy is chosen.
+- Funding rates may be JSON numbers or decimal/scientific strings (`1e-4`). Anything else on a point-in-time settlement is reason `unparseable_funding`, not “no settlement” and not 0.
+- A previous volume of 0 or a missing volume yields ratio null and reason `zero_or_missing_volume`. It is not divided.
+- The `#600` snapshot key names are copied in this package. The ledger module is not imported.
+
+### Acceptance tests added in Rev 2
+
+| Check | Test |
+| --- | --- |
+| Bar still open at `as_of` is excluded and RSI is unchanged | `test_bar_closing_after_as_of_is_excluded` |
+| Unparseable `now` | `test_malformed_now_fails_closed` |
+| Holdout rows logged, not fitted | `test_holdout_rows_are_logged_and_not_fitted` |
+| `trading_mode: live` plus `execution.mode: paper` | `test_ac_exh_3_default_off_and_live_denied` |
+| Zero and missing volume | `test_zero_and_missing_volume_do_not_divide` |
+| Gap | `test_gap_nulls_rsi_and_marks_ratio_non_consecutive` |
+| Duplicate open | `test_duplicate_open_time_fails_closed_for_the_bar_set` |
+| Numeric and `1e-4` funding; bad text | `test_funding_accepts_json_numbers_and_scientific_strings` |
+
 ## Changelog
 
 | Version | Date | Change | Reason |
 | --- | --- | --- | --- |
 | Rev 0 | 2026-11-10 | Sprint draft of a four-filter exhaustion signal. Archived. Not implemented. | Local sprint text. Marcus had not frozen the recipe. |
 | Rev 1 | 2026-11-10 | Measure and log raw features only. Mark Q-threshold, Q-lookback, Q-divergence, and Q-grace pending owner freeze. | Marcus: those definitions are UNCLEAR or undefined, so there is no filter and no signal. |
+| Rev 2 | 2026-11-10 | Freeze the raw-log scope. Log holdout rows with `holdout: true`. Fail closed on a bad clock, a still-open bar, live mode keys, gaps, and duplicate opens. | Kay, owner-delegated, 2026-11-10 18:40 Europe/Berlin. Opus review on `1419843b`. No thresholds invented. |

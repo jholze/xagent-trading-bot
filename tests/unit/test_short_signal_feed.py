@@ -13,7 +13,10 @@ from pathlib import Path
 
 import pytest
 
+from decimal import Decimal
+
 from services.short_signal_feed import dataset_sha256, load_jsonl, measure_exhaustion
+from services.short_signal_feed.measure import SPEC_STATUS
 from services.short_signal_feed.schema import (
     HISTORICAL_CLIMAX_NO_GO,
     HOLDOUT_START,
@@ -22,12 +25,13 @@ from services.short_signal_feed.schema import (
     SCHEMA_REVISION,
     TRIAL_ID,
 )
-from services.short_signal_feed.trace import tape_row
+from services.short_signal_feed.trace import ENTRY_SNAPSHOT_KEYS, tape_row
 from strategies.buy_decision_tape import ROW_KEYS
 from tools.hypothesis_protocol import SLIPPAGE_PCT_PER_SIDE, TAKER_FEE_PCT_PER_SIDE
 
 COMMIT = "a" * 40
-PACKAGE = Path("services/short_signal_feed")
+ROOT = Path(__file__).resolve().parents[2]
+PACKAGE = ROOT / "services" / "short_signal_feed"
 
 FORBIDDEN_KEYS = {
     "accepted",
@@ -43,13 +47,23 @@ FORBIDDEN_KEYS = {
 }
 
 
-def _paper(enabled=True, *, mode="paper", allow_live=False, climax=None):
+def _paper(
+    enabled=True,
+    *,
+    mode="paper",
+    allow_live=False,
+    climax=None,
+    trading_mode="paper",
+):
     shorts = {"allow_live": allow_live}
     if enabled is not None:
         shorts["exhaustion_v220"] = {"enabled": enabled}
     if climax is not None:
         shorts["climax_fade"] = {"enabled": climax}
-    return {"execution": {"mode": mode}, "shorts": shorts}
+    config = {"trading_mode": trading_mode, "shorts": shorts}
+    if mode is not None:
+        config["execution"] = {"mode": mode}
+    return config
 
 
 def _signal(symbol, as_of, **extra):
@@ -157,8 +171,10 @@ def test_ac_exh_1_source_freshness_dedup(tmp_path):
     assert rows["CCC/USDT"]["status_reason"] == "future_as_of"
     assert rows["CCC/USDT"]["features"] is None
 
+    assert rows["AAA/USDT"]["holdout"] is False
     assert rows["DDD/USDT"]["status"] == "not_measurable"
-    assert rows["DDD/USDT"]["status_reason"] == "holdout_excluded"
+    assert rows["DDD/USDT"]["status_reason"] == "future_as_of"
+    assert rows["DDD/USDT"]["holdout"] is True
     assert rows["DDD/USDT"]["features"] is None
 
     assert rows["EEE/USDT"]["status"] == "not_measurable"
@@ -294,7 +310,9 @@ def test_ac_exh_2_raw_features_no_threshold():
     _walk_keys(result["observations"], found)
     assert FORBIDDEN_KEYS.isdisjoint(found)
 
-    text = "\n".join(path.read_text(encoding="utf-8") for path in PACKAGE.glob("*.py"))
+    files = list(PACKAGE.glob("*.py"))
+    assert files, PACKAGE
+    text = "\n".join(path.read_text(encoding="utf-8") for path in files)
     for token in ("vol_mult_4_20", "climax_entry_signal", "is_excluded_symbol", "grace_hours"):
         assert token not in text
 
@@ -336,6 +354,21 @@ def test_ac_exh_3_default_off_and_live_denied():
         _paper(mode="mainnet"),
         _paper(mode="real"),
         _paper(allow_live=True),
+        {
+            "trading_mode": "live",
+            "execution": {"mode": "paper"},
+            "shorts": {"exhaustion_v220": {"enabled": True}, "allow_live": False},
+        },
+        {
+            "trading_mode": "paper",
+            "live": {"execution": "real"},
+            "shorts": {"exhaustion_v220": {"enabled": True}, "allow_live": False},
+        },
+        {
+            "trading_mode": "live",
+            "live": {"execution": "shadow"},
+            "shorts": {"exhaustion_v220": {"enabled": True}, "allow_live": False},
+        },
     ]
     for config in live_cases:
         result = measure_exhaustion(config=config, **kwargs)
@@ -364,13 +397,20 @@ def test_ac_exh_3_default_off_and_live_denied():
     assert enabled["venue_calls"] == 0
     assert enabled["observations"][0]["decision"] is None
 
-    testnet = measure_exhaustion(config=_paper(mode="futures_testnet"), **kwargs)
+    testnet = measure_exhaustion(
+        config=_paper(mode=None, trading_mode="gate_testnet"), **kwargs
+    )
     assert testnet["reason"] == "measured"
     assert testnet["order_intents"] == []
     assert testnet["venue_calls"] == 0
+    demo = measure_exhaustion(config=_paper(mode=None, trading_mode="demo"), **kwargs)
+    assert demo["reason"] == "measured"
+    assert demo["order_intents"] == []
 
+    files = list(PACKAGE.glob("*.py"))
+    assert files, PACKAGE
     modules = []
-    for path in PACKAGE.glob("*.py"):
+    for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -384,7 +424,10 @@ def test_ac_exh_3_default_off_and_live_denied():
                 "execution",
                 "risk",
                 "services.trading_service",
+                "services.observability_store",
                 "strategies.decision_engine",
+                "strategies.positions",
+                "data_manager",
             )
         )
         assert "get_bot_config" not in name
@@ -455,7 +498,8 @@ def test_ac_exh_4_replay_costs_no_lookahead():
     report = first["report"]
     assert report["trial_id"] == TRIAL_ID
     assert report["status"] == "insufficient_data"
-    assert report["pending_owner_freeze"] is True
+    assert report["pending_owner_freeze"] is False
+    assert report["spec_status"] == SPEC_STATUS
     assert report["open_definitions"] == {
         "thresholds": "UNCLEAR",
         "lookback": "UNCLEAR",
@@ -471,7 +515,7 @@ def test_ac_exh_4_replay_costs_no_lookahead():
     assert report["mae"] is None
     assert report["n_orders"] == 0
     assert report["uncertainty"] == "not_estimated"
-    assert report["holdout"] == "not_accessed"
+    assert report["holdout"] == "logged_not_for_fitting"
     assert report["historical_climax_nogo"] == HISTORICAL_CLIMAX_NO_GO
     assert report["historical_climax_nogo"]["profit_factor"] == "0.9160"
     assert report["historical_climax_nogo"]["net_usdt"] == "-3500.42"
@@ -488,7 +532,7 @@ def test_ac_exh_4_replay_costs_no_lookahead():
         assert report["baselines"][name]["status"] == "not_run"
     assert report["trial_register"]["scenario_trials_py"] == "not_modified"
     assert report["trial_register"]["status"] == "planned_not_run"
-    assert "D-EXH" not in Path("backtest/harness/trials.py").read_text(encoding="utf-8")
+    assert "D-EXH" not in (ROOT / "backtest/harness/trials.py").read_text(encoding="utf-8")
 
     holdout = measure_exhaustion(
         config=_paper(),
@@ -498,18 +542,20 @@ def test_ac_exh_4_replay_costs_no_lookahead():
         now="2026-12-01T00:00:00Z",
         tenant="tenant-a",
     )
-    assert holdout["observations"][0]["status_reason"] == "holdout_excluded"
-    assert holdout["observations"][0]["features"] is None
+    logged = holdout["observations"][0]
+    assert logged["status"] == "observed"
+    assert logged["holdout"] is True
+    assert logged["decision"] is None
+    assert logged["thresholds_applied"] is False
+    assert logged["features"] is not None
     assert holdout["report"]["status"] == "insufficient_data"
     assert holdout["report"]["profit_factor"] is None
+    assert holdout["report"]["holdout"] == "logged_not_for_fitting"
+    assert holdout["report"]["holdout_rows"] == 1
 
 
-def test_ac_exh_5_trace_reuses_existing_storage(monkeypatch):
+def test_ac_exh_5_trace_reuses_existing_storage():
     """Tape shape is reused. Nothing is written. Unknown equity fields are not a ban."""
-    def _boom(*_args, **_kwargs):
-        raise AssertionError("feature log must not append a second store")
-
-    monkeypatch.setattr("services.observability_store.append_jsonl", _boom)
     as_of = "2026-10-01T04:00:00Z"
     signals = [
         _signal("AAA/USDT", as_of),
@@ -567,7 +613,9 @@ def test_ac_exh_5_trace_reuses_existing_storage(monkeypatch):
     assert "SECRET_BODY" not in serialized
     assert "entry_snapshot" not in projected["eligibility"]
 
-    package_text = "\n".join(path.read_text(encoding="utf-8") for path in PACKAGE.glob("*.py"))
+    package_files = list(PACKAGE.glob("*.py"))
+    assert package_files, PACKAGE
+    package_text = "\n".join(path.read_text(encoding="utf-8") for path in package_files)
     assert "fbr" not in package_text.lower()
     assert "#694" not in package_text
     assert result["order_intents"] == []
@@ -591,3 +639,183 @@ def test_dataset_hash_does_not_require_a_measurement_pass(enabled):
         signals, [], [], "2026-10-01T05:00:00Z"
     )
     assert result["report"]["profit_factor"] is None
+
+
+def test_bar_closing_after_as_of_is_excluded():
+    """A bar still open at as_of is not a feature, and does not change RSI."""
+    last_open = datetime(2026, 10, 1, 0, tzinfo=timezone.utc)
+    as_of = "2026-10-01T04:00:00Z"
+    closed = _bars("AAA/USDT", last_open, [str(100 + i) for i in range(15)], ["10"] * 15)
+    still_open = {
+        "symbol": "AAA/USDT",
+        "timeframe": "4h",
+        "open_time": "2026-10-01T04:00:00Z",
+        "close": "999",
+        "volume": "999",
+    }
+    later = {
+        "symbol": "AAA/USDT",
+        "timeframe": "4h",
+        "open_time": "2026-10-02T00:00:00Z",
+        "close": "1000",
+        "volume": "1000",
+    }
+    kwargs = {
+        "config": _paper(),
+        "signals": [_signal("AAA/USDT", as_of)],
+        "funding": [],
+        "now": "2026-10-01T05:00:00Z",
+        "tenant": "tenant-a",
+    }
+    base = measure_exhaustion(bars=closed, **kwargs)
+    extra = measure_exhaustion(bars=closed + [still_open, later], **kwargs)
+    base_rsi = base["observations"][0]["features"]["rsi"]["value"]
+    got = extra["observations"][0]["features"]
+    assert got["rsi"]["value"] == base_rsi
+    assert got["rsi"]["n_closes"] == 15
+    opens = [bar["open_time"] for bar in got["volume"]["bars"]]
+    assert "2026-10-01T04:00:00Z" not in opens
+    assert "2026-10-02T00:00:00Z" not in opens
+    assert got["volume"]["excluded_after_as_of"] == 2
+    assert "999" not in json.dumps(got["volume"]["bars"])
+
+
+def test_malformed_now_fails_closed():
+    """A supplied clock that does not parse must not leave a row observed."""
+    result = measure_exhaustion(
+        config=_paper(),
+        signals=[
+            _signal("AAA/USDT", "2026-10-01T04:00:00Z"),
+            _signal("BBB/USDT", "2026-10-03T05:00:00Z"),
+        ],
+        bars=[],
+        funding=[],
+        now="2026-10-01 05:00",
+        tenant="tenant-a",
+    )
+    assert result["reason"] == "malformed_now"
+    assert result["order_intents"] == []
+    assert result["observations"]
+    for row in result["observations"]:
+        assert row["status"] == "invalid"
+        assert row["status"] != "observed"
+        assert row["status_reason"] == "malformed_now"
+        assert row["features"] is None
+        assert row["decision"] is None
+
+
+def test_holdout_rows_are_logged_and_not_fitted():
+    """as_of on or after the holdout is logged with holdout true, not fitted."""
+    as_of = "2026-11-05T23:00:00Z"
+    result = measure_exhaustion(
+        config=_paper(),
+        signals=[_signal("AAA/USDT", as_of), _signal("BBB/USDT", "2026-10-01T04:00:00Z")],
+        bars=[],
+        funding=[],
+        now="2026-11-10T12:00:00Z",
+        tenant="tenant-a",
+    )
+    rows = _by_symbol(result)
+    assert rows["AAA/USDT"]["status"] == "observed"
+    assert rows["AAA/USDT"]["holdout"] is True
+    assert rows["AAA/USDT"]["decision"] is None
+    assert rows["AAA/USDT"]["thresholds_applied"] is False
+    assert rows["BBB/USDT"]["holdout"] is False
+    assert result["report"]["profit_factor"] is None
+    assert result["report"]["holdout"] == "logged_not_for_fitting"
+    assert "holdout=true" in result["log_lines"][0] or any(
+        "holdout=true" in line for line in result["log_lines"]
+    )
+
+
+def test_zero_and_missing_volume_do_not_divide():
+    last_open = datetime(2026, 10, 1, 0, tzinfo=timezone.utc)
+    closes = [str(100 + i) for i in range(15)]
+    zero_bars = _bars("ZERO/USDT", last_open, closes, ["0"] + ["10"] * 14)
+    missing_bars = _bars("MISS/USDT", last_open, closes, ["10"] * 15)
+    missing_bars[1]["volume"] = None
+    result = measure_exhaustion(
+        config=_paper(),
+        signals=[_signal("ZERO/USDT", "2026-10-01T04:00:00Z"), _signal("MISS/USDT", "2026-10-01T04:00:00Z")],
+        bars=zero_bars + missing_bars,
+        funding=[],
+        now="2026-10-01T05:00:00Z",
+    )
+    rows = _by_symbol(result)
+    zero_ratio = rows["ZERO/USDT"]["features"]["volume"]["consecutive_ratios"][0]
+    assert zero_ratio["ratio"] is None
+    assert zero_ratio["reason"] == "zero_or_missing_volume"
+    miss_ratio = rows["MISS/USDT"]["features"]["volume"]["consecutive_ratios"][0]
+    assert miss_ratio["ratio"] is None
+    assert miss_ratio["reason"] == "zero_or_missing_volume"
+    assert rows["ZERO/USDT"]["status"] == "observed"
+
+
+def test_gap_nulls_rsi_and_marks_ratio_non_consecutive():
+    last_open = datetime(2026, 10, 1, 0, tzinfo=timezone.utc)
+    bars = _bars("AAA/USDT", last_open, [str(100 + i) for i in range(15)], ["8"] * 15)
+    del bars[5]
+    result = measure_exhaustion(
+        config=_paper(),
+        signals=[_signal("AAA/USDT", "2026-10-01T04:00:00Z")],
+        bars=bars,
+        funding=[],
+        now="2026-10-01T05:00:00Z",
+    )
+    features = result["observations"][0]["features"]
+    assert features["rsi"]["value"] is None
+    assert features["rsi"]["reason"] == "gap_in_closes"
+    assert features["rsi"]["n_closes"] == 0
+    assert features["rsi"]["n_closes_available"] == 14
+    reasons = [item["reason"] for item in features["volume"]["consecutive_ratios"]]
+    assert "non_consecutive" in reasons
+
+
+def test_duplicate_open_time_fails_closed_for_the_bar_set():
+    last_open = datetime(2026, 10, 1, 0, tzinfo=timezone.utc)
+    bars = _bars("AAA/USDT", last_open, [str(100 + i) for i in range(15)], ["8"] * 15)
+    duplicate = dict(bars[-1])
+    duplicate["close"] = "50"
+    result = measure_exhaustion(
+        config=_paper(),
+        signals=[_signal("AAA/USDT", "2026-10-01T04:00:00Z")],
+        bars=bars + [duplicate],
+        funding=[],
+        now="2026-10-01T05:00:00Z",
+    )
+    features = result["observations"][0]["features"]
+    assert features["volume"]["duplicate_open_time"] is True
+    assert features["volume"]["bars"] == []
+    assert features["rsi"]["value"] is None
+    assert features["rsi"]["reason"] == "duplicate_open_time"
+    assert result["observations"][0]["decision"] is None
+
+
+def test_funding_accepts_json_numbers_and_scientific_strings():
+    as_of = "2026-10-01T04:00:00Z"
+    result = measure_exhaustion(
+        config=_paper(),
+        signals=[_signal("NUM/USDT", as_of), _signal("SCI/USDT", as_of), _signal("BAD/USDT", as_of)],
+        bars=[],
+        funding=[
+            {"symbol": "NUM/USDT", "settled_at": "2026-10-01T00:00:00Z", "rate": 0.0001},
+            {"symbol": "SCI/USDT", "settled_at": "2026-10-01T00:00:00Z", "rate": "1e-4"},
+            {"symbol": "BAD/USDT", "settled_at": "2026-10-01T00:00:00Z", "rate": "not-a-rate"},
+        ],
+        now="2026-10-01T05:00:00Z",
+    )
+    rows = _by_symbol(result)
+    assert Decimal(rows["NUM/USDT"]["features"]["funding"]["last"]["rate"]) == Decimal("0.0001")
+    assert Decimal(rows["SCI/USDT"]["features"]["funding"]["last"]["rate"]) == Decimal("0.0001")
+    bad = rows["BAD/USDT"]["features"]["funding"]
+    assert bad["reason"] == "unparseable_funding"
+    assert bad["reason"] != "no_settlement_at_or_before_as_of"
+    assert bad["history"] == []
+    assert bad["last"] is None
+    assert bad["unparseable_count"] == 1
+
+
+def test_entry_snapshot_key_copy_matches_600():
+    from strategies.positions import _ENTRY_SNAPSHOT_KEYS
+
+    assert ENTRY_SNAPSHOT_KEYS == _ENTRY_SNAPSHOT_KEYS

@@ -5,6 +5,26 @@ from __future__ import annotations
 from services.short_signal_feed.schema import TRIAL_ID
 from strategies.buy_decision_tape import ROW_KEYS
 
+# Same names as strategies.positions._ENTRY_SNAPSHOT_KEYS (#600). Copied so this
+# package does not import the ledger module. A unit test checks they still match.
+ENTRY_SNAPSHOT_KEYS = (
+    "captured_at",
+    "fill_price",
+    "fee",
+    "source",
+    "timeframe",
+    "strategy_profile",
+    "strategy_tier",
+    "rationale_codes",
+    "rsi",
+    "volume_factor",
+    "atr",
+    "volatility_tier",
+    "size_before_mult",
+    "size_after_mult",
+    "cap_applied",
+)
+
 
 def tape_row(
     observation: dict,
@@ -16,14 +36,13 @@ def tape_row(
     """One row shaped like ``ROW_KEYS``. The snapshot body is not copied."""
     rejected: list[str] = []
     if isinstance(entry_snapshot, dict):
-        from strategies.positions import _ENTRY_SNAPSHOT_KEYS
-
-        allowed = set(_ENTRY_SNAPSHOT_KEYS)
+        allowed = set(ENTRY_SNAPSHOT_KEYS)
         rejected = [key for key in entry_snapshot if key not in allowed]
     eligibility = {
         "features": observation.get("features"),
         "missing_reasons": list(observation.get("missing_reasons") or []),
         "status_reason": observation.get("status_reason"),
+        "holdout": observation.get("holdout") is True,
         "entry_snapshot_ref": entry_snapshot_ref,
         "entry_snapshot_rejected_keys": rejected,
     }
@@ -64,5 +83,6 @@ def log_line(observation: dict) -> str:
         f"funding_last={rate if rate is not None else 'unknown'} "
         f"volume_ratios={len(ratios)} "
         f"age_seconds={age if age is not None else 'unknown'} "
+        f"holdout={'true' if observation.get('holdout') else 'false'} "
         f"gate=none order_intent=none"
     )
