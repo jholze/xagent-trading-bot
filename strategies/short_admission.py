@@ -1,11 +1,12 @@
-"""Default-off sandbox admission plumbing for draft T220-03.
+"""Default-off sandbox admission for draft T220-03.
 
 The flag is missing or not boolean true → no admission. A missing risk
-profile denies entry and is not replaced with zeros or paper defaults.
-Supplied profile slots are echoed and are not compared with a limit table.
-Numeric AC-03a/b/c rules and the regime table stay unimplemented until the
-owner freeze. This module does not exclude stock tokens and does not import
-the risk manager.
+profile denies entry and is not replaced with zeros. When the flag is on,
+paper/testnet start defaults from the 2026-11-10 owner freeze apply:
+1x leverage, 10% virtual-equity exposure, 0.25% stop loss per position,
+0.75% across short stops, and the existing 20% margin cap is not raised.
+Every regime cell starts closed. Tokenized stocks and unclear assets get
+no new short; that deferral is not a global product ban.
 """
 
 from __future__ import annotations
@@ -15,18 +16,25 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Mapping
 
+from core.time_utils import ledger_datetime_utc
 from strategies.short_policy import shorts_allow_live, shorts_config
 
 FLAG_KEY = "sandbox_admission_v220"
 _PROFILE_SLOTS = (
     "profile_id",
-    "leverage",
     "notional",
-    "margin",
     "stop_risk",
+    "existing_short_stop_risk",
     "nav",
+    "quote_quantum",
     "metadata",
     "reservations",
+)
+_OPTIONAL_DEFAULTS = (
+    "max_exposure_pct",
+    "max_stop_loss_pct",
+    "max_stop_loss_pct_all",
+    "legacy_margin_cap_pct",
 )
 _RESERVATION_KEYS = ("pending", "uncertain", "reserved")
 _PAPER_MARKETS = frozenset({"paper", "futures_usdt_testnet"})
@@ -41,6 +49,25 @@ class AdmissionDecision:
     mode_parameters: tuple[tuple[str, str], ...] = ()
     regime_applied: bool = False
     stock_exclusion_applied: bool = False
+    short_path_deferred: bool = False
+
+
+def sandbox_start_defaults() -> dict[str, str]:
+    """Paper/testnet start configuration. Unused while the flag is off.
+
+    Percents match the existing ``max_margin_pct`` unit (20 means 20%).
+    The legacy 20% cap is a ceiling this profile does not raise.
+    """
+    return {
+        "leverage": "1",
+        "max_exposure_pct": "10",
+        "max_stop_loss_pct": "0.25",
+        "max_stop_loss_pct_all": "0.75",
+        "legacy_margin_cap_pct": "20",
+        "opened_regimes": "",
+        "stock_phase": "defer_new_shorts",
+        "min_qty_policy": "exchange_min",
+    }
 
 
 def sandbox_admission_enabled(config_raw: Mapping[str, Any] | None) -> bool:
@@ -68,12 +95,7 @@ def evaluate_short_admission(
     mode_proof: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> AdmissionDecision:
-    """Deny unless a later frozen revision adds numeric and regime rules.
-
-    ``now`` is accepted so callers can pass a clock. This revision does not
-    invent a staleness limit from it.
-    """
-    del now
+    """Apply the frozen start profile only when the sandbox flag is on."""
     if not sandbox_admission_enabled(config_raw):
         return AdmissionDecision(
             admitted=False,
@@ -83,30 +105,287 @@ def evaluate_short_admission(
             mode_parameters=(),
             regime_applied=False,
             stock_exclusion_applied=False,
+            short_path_deferred=False,
         )
     profile_params, profile_missing = _plumb_profile(profile)
-    parameters = _plumb_candidate(candidate, profile_params)
+    parameters = _with_defaults(profile_params, profile)
+    parameters = _plumb_candidate(candidate, parameters)
     proof_params, proof_missing, proof_live = _parse_mode_proof(mode_proof)
     reasons: list[str] = []
     if shorts_allow_live(config_raw) or proof_live:
         reasons.append("live_denied")
     if profile_missing:
         reasons.append("risk_profile_missing")
+    else:
+        reasons.extend(_frozen_limits(profile, candidate, config_raw=config_raw, now=now))
     if proof_missing:
         reasons.append("mode_proof_missing")
     if _open_long(candidate):
         reasons.append("long_not_flipped")
-    if not reasons:
-        reasons.append("owner_freeze_pending")
+    ordered = tuple(_dedupe(reasons))
+    admitted = not ordered
     return AdmissionDecision(
-        admitted=False,
-        action="none",
-        reasons=tuple(reasons),
+        admitted=admitted,
+        action="sandbox_short_candidate" if admitted else "none",
+        reasons=ordered,
         parameters=parameters,
         mode_parameters=proof_params,
-        regime_applied=False,
+        regime_applied=not profile_missing,
         stock_exclusion_applied=False,
+        short_path_deferred="short_path_deferred" in ordered,
     )
+
+
+def _with_defaults(
+    params: tuple[tuple[str, str], ...],
+    profile: Mapping[str, Any] | None,
+) -> tuple[tuple[str, str], ...]:
+    if not isinstance(profile, dict):
+        return params
+    echoed = dict(params)
+    defaults = sandbox_start_defaults()
+    if "leverage" not in echoed and "leverage" not in profile:
+        echoed["leverage"] = defaults["leverage"]
+    for key in _OPTIONAL_DEFAULTS:
+        if key not in echoed and key not in profile:
+            echoed[key] = defaults[key]
+    if "opened_regimes" not in echoed and "opened_regimes" not in profile:
+        echoed["opened_regimes"] = defaults["opened_regimes"]
+    return tuple(echoed.items())
+
+
+def _dedupe(reasons: list[str]) -> list[str]:
+    seen: list[str] = []
+    for reason in reasons:
+        if reason not in seen:
+            seen.append(reason)
+    return seen
+
+
+def _number(value: Any) -> Decimal | None:
+    token = _exact_token(value)
+    if token is None:
+        return None
+    try:
+        number = Decimal(token)
+    except Exception:
+        return None
+    if not number.is_finite():
+        return None
+    return number
+
+
+def _ceiling(profile: Mapping[str, Any], key: str, default: Decimal) -> tuple[Decimal | None, str | None]:
+    if key not in profile:
+        return default, None
+    value = _number(profile.get(key))
+    if value is None:
+        return None, "risk_profile_missing"
+    if value > default:
+        return None, "cap_loosened"
+    return value, None
+
+
+def _frozen_limits(
+    profile: Mapping[str, Any] | None,
+    candidate: Mapping[str, Any] | None,
+    *,
+    config_raw: Mapping[str, Any] | None,
+    now: datetime | None,
+) -> list[str]:
+    """Paper/testnet start limits. A looser figure is rejected, not applied."""
+    if not isinstance(profile, dict):
+        return ["risk_profile_missing"]
+    reasons: list[str] = []
+    defaults = sandbox_start_defaults()
+    if "leverage" in profile:
+        leverage = _number(profile.get("leverage"))
+        if leverage is None:
+            reasons.append("risk_profile_missing")
+            leverage = None
+        elif leverage != Decimal(defaults["leverage"]):
+            reasons.append("leverage_above_start")
+    else:
+        leverage = Decimal(defaults["leverage"])
+    nav = _number(profile.get("nav")) if "nav" in profile else None
+    if nav is None or nav <= 0:
+        reasons.append("nav_unknown")
+    quantum = _number(profile.get("quote_quantum")) if "quote_quantum" in profile else None
+    if quantum is None or quantum <= 0:
+        reasons.append("quantum_unknown")
+    notional = _number(profile.get("notional")) if "notional" in profile else None
+    if notional is None or notional < 0:
+        reasons.append("notional_unknown")
+    stop_risk = _number(profile.get("stop_risk")) if "stop_risk" in profile else None
+    if stop_risk is None or stop_risk < 0:
+        reasons.append("stop_risk_unknown")
+    booked = _number(profile.get("existing_short_stop_risk")) if "existing_short_stop_risk" in profile else None
+    if booked is None or booked < 0:
+        reasons.append("stop_book_unknown")
+    reserve = _reservation_sum(profile.get("reservations") if "reservations" in profile else None)
+    if reserve is None:
+        reasons.append("reservation_unknown")
+    exposure_cap, cap_reason = _ceiling(profile, "max_exposure_pct", Decimal(defaults["max_exposure_pct"]))
+    if cap_reason:
+        reasons.append(cap_reason)
+    stop_cap, stop_reason = _ceiling(profile, "max_stop_loss_pct", Decimal(defaults["max_stop_loss_pct"]))
+    if stop_reason:
+        reasons.append(stop_reason)
+    book_cap, book_reason = _ceiling(
+        profile, "max_stop_loss_pct_all", Decimal(defaults["max_stop_loss_pct_all"])
+    )
+    if book_reason:
+        reasons.append(book_reason)
+    legacy_cap, legacy_reason = _ceiling(
+        profile, "legacy_margin_cap_pct", Decimal(defaults["legacy_margin_cap_pct"])
+    )
+    if legacy_reason:
+        reasons.append(legacy_reason)
+    configured = shorts_config(config_raw).get("max_margin_pct", defaults["legacy_margin_cap_pct"])
+    configured_cap = _number(configured)
+    if configured_cap is None:
+        reasons.append("legacy_cap_unknown")
+    elif configured_cap > Decimal(defaults["legacy_margin_cap_pct"]):
+        reasons.append("legacy_cap_raised")
+    elif legacy_cap is not None:
+        legacy_cap = min(legacy_cap, configured_cap)
+    if (
+        nav is not None
+        and nav > 0
+        and notional is not None
+        and reserve is not None
+        and exposure_cap is not None
+        and quantum is not None
+    ):
+        exposure = notional + reserve
+        limit = nav * exposure_cap / Decimal("100")
+        if exposure > limit:
+            reasons.append("exposure_cap")
+    if nav is not None and nav > 0 and stop_risk is not None and stop_cap is not None:
+        if stop_risk > nav * stop_cap / Decimal("100"):
+            reasons.append("stop_loss_cap")
+    if (
+        nav is not None
+        and nav > 0
+        and stop_risk is not None
+        and booked is not None
+        and book_cap is not None
+    ):
+        if stop_risk + booked > nav * book_cap / Decimal("100"):
+            reasons.append("stop_loss_book_cap")
+    if (
+        nav is not None
+        and nav > 0
+        and notional is not None
+        and leverage is not None
+        and leverage > 0
+        and legacy_cap is not None
+    ):
+        margin = notional / leverage
+        if "margin" in profile:
+            supplied = _number(profile.get("margin"))
+            if supplied is None or (quantum is not None and abs(supplied - margin) > 0):
+                if supplied is None or supplied != margin:
+                    reasons.append("margin_notional_mismatch")
+        if margin / nav * Decimal("100") > legacy_cap:
+            reasons.append("legacy_margin_cap")
+    reasons.extend(_regime_reasons(profile, candidate, now=now))
+    reasons.extend(_product_reasons(candidate))
+    reasons.extend(_qty_reasons(candidate))
+    return reasons
+
+
+def _reservation_sum(value: Any) -> Decimal | None:
+    if _reservations_token(value) is None or not isinstance(value, dict):
+        return None
+    total = Decimal("0")
+    for key in _RESERVATION_KEYS:
+        number = _number(value.get(key))
+        if number is None or number < 0:
+            return None
+        total += number
+    return total
+
+
+def _opened_regimes(profile: Mapping[str, Any]) -> set[str] | None:
+    if "opened_regimes" not in profile:
+        return set()
+    raw = profile.get("opened_regimes")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        if raw.strip().lower() == "unknown":
+            return None
+        return {part.strip() for part in raw.split(",") if part.strip()}
+    if isinstance(raw, (list, tuple)):
+        opened: set[str] = set()
+        for item in raw:
+            token = _exact_token(item)
+            if token is None:
+                return None
+            opened.add(token)
+        return opened
+    return None
+
+
+def _regime_reasons(
+    profile: Mapping[str, Any],
+    candidate: Mapping[str, Any] | None,
+    *,
+    now: datetime | None,
+) -> list[str]:
+    reasons: list[str] = []
+    opened = _opened_regimes(profile)
+    if opened is None:
+        reasons.append("regime_unknown")
+        opened = set()
+    regime = None
+    if isinstance(candidate, dict) and "regime" in candidate:
+        regime = _exact_token(candidate.get("regime"))
+    if regime is None:
+        reasons.append("regime_unknown")
+    elif regime not in opened:
+        reasons.append("regime_closed")
+    if not isinstance(candidate, dict) or "regime_as_of" not in candidate or "regime_max_age_seconds" not in candidate:
+        reasons.append("regime_stale")
+        return reasons
+    as_of = ledger_datetime_utc(candidate.get("regime_as_of"))
+    max_age = candidate.get("regime_max_age_seconds")
+    now_utc = ledger_datetime_utc(now) if now is not None else None
+    if (
+        as_of is None
+        or now_utc is None
+        or isinstance(max_age, bool)
+        or not isinstance(max_age, int)
+        or max_age < 0
+        or as_of > now_utc
+        or (now_utc - as_of).total_seconds() > max_age
+    ):
+        reasons.append("regime_stale")
+    return reasons
+
+
+def _product_reasons(candidate: Mapping[str, Any] | None) -> list[str]:
+    kind = None
+    if isinstance(candidate, dict) and "product_kind" in candidate:
+        kind = _exact_token(candidate.get("product_kind"))
+    if kind != "perp":
+        return ["short_path_deferred"]
+    return []
+
+
+def _qty_reasons(candidate: Mapping[str, Any] | None) -> list[str]:
+    if not isinstance(candidate, dict):
+        return ["min_qty_unknown"]
+    if "qty" not in candidate or "exchange_min_qty" not in candidate:
+        return ["min_qty_unknown"]
+    qty = _number(candidate.get("qty"))
+    minimum = _number(candidate.get("exchange_min_qty"))
+    if qty is None or minimum is None or minimum <= 0 or qty <= 0:
+        return ["min_qty_unknown"]
+    if qty < minimum:
+        return ["below_min_qty"]
+    return []
 
 
 def _exact_token(value: Any) -> str | None:

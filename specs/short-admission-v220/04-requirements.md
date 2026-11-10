@@ -1,9 +1,30 @@
 # Short sandbox admission – Requirements
 
-Version: 0.1 · Date: 2026-11-10 · Status: draft · Owner: Jens Holze
+Version: 0.2 · Date: 2026-11-10 · Status: draft · Owner: Jens Holze
 
-Local draft id: T220-03 (not a GitHub issue). Revision: Draft Rev 0, 2026-11-10 Europe/Berlin.
-Pending Marcus check on this draft text. Pending owner freeze for AC-03a/b/c numbers and the regime table.
+Local draft id: T220-03 (not a GitHub issue).
+
+## Rev 1 — 2026-11-10 18:40 Europe/Berlin
+
+Owner freeze, delegated to Kay. Supersedes the pending note for items 5, 7 and 9 only. Item 6 (time buffer) stays parameterized on the expiry contract and is not given a minute value here. Items 1, 2, 4, 8, 10, 11 and 12 are not implemented.
+
+Paper/testnet start defaults, used only when `shorts.sandbox_admission_v220.enabled` is boolean true:
+
+- Leverage 1x. Any other explicit leverage is denied.
+- Minimum size is the exchange minimum quantity. Unknown or smaller quantity is denied.
+- New short exposure, including pending, uncertain and reserved notionals, is at most 10% of virtual equity. Exact 10% passes. One supplied quote quantum over fails.
+- Stop loss at most 0.25% of equity per position, and 0.25% plus other short stops at most 0.75%.
+- `shorts.max_margin_pct` stays 20 in committed config. A sandbox figure above 20% or above the frozen 10% / 0.25% / 0.75% ceilings is `cap_loosened`, not applied. `leverage_default` stays 2 for the existing path.
+- Regime missing, unknown, or stale denies. Stale means the caller did not supply `regime_as_of` and `regime_max_age_seconds`, or the age is greater than that supplied maximum. No age limit is invented. Every regime cell starts closed (`opened_regimes` empty). A cell admits only when that profile lists it.
+- `product_kind` `stock_token`, missing, or `unknown` denies a new short (`short_path_deferred`). `stock_exclusion_applied` stays false. A `perp` candidate is not denied for a sibling stock. Reduce-only cover stays allowed.
+
+A missing profile (no mapping, or a required account slot absent or `unknown`) still denies and is not filled with zero equity. The flag still defaults off. `config.json` is not edited.
+
+Rev 0 below is unchanged history. Its `owner_freeze_pending` outcome is replaced by the rules above.
+
+## Rev 0 — 2026-11-10 Europe/Berlin
+
+Pending Marcus check on the original draft text. The numbers below were pending until Rev 1.
 
 Hindsight: RECALL_FAILED. Recall is only reachable via the Mac loopback, not from this cloud VM.
 
@@ -90,4 +111,5 @@ Metric: count of admission decisions that admit when the profile is missing, and
 
 | Version | Date | AC | Change | Reason | Approved by |
 | --- | --- | --- | --- | --- | --- |
-| Draft Rev 0 | 2026-11-10 | AC1–AC5 | Missing-profile deny and parameter plumbing only. AC-03a/b/c numbers and regime table not copied. AC-03d recorded, not implemented. | Marcus correction 2026-11-10; sprint package C | Pending Marcus check. Owner freeze of AC-03a/b/c/d still open. |
+| Draft Rev 0 | 2026-11-10 | AC1–AC5 | Missing-profile deny and parameter plumbing only. AC-03a/b/c numbers and regime table not copied. AC-03d recorded, not implemented. | Marcus correction 2026-11-10; sprint package C | Superseded for items 5, 7 and 9 by Rev 1. |
+| Draft Rev 1 | 2026-11-10 18:40 | items 5, 7, 9 | Start defaults: 1x, exchange min qty, 10% / 0.25% / 0.75%, 20% cap not raised, all regime cells closed, short-path stock deferral. | Owner freeze delegated to Kay | Owner freeze. Item 6 still has no minute value. |
