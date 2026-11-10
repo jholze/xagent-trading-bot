@@ -37,7 +37,7 @@ same family (Grok codes → DeepSeek and Claude review).
 
 High-risk paths (final Claude Opus review required): `aria_bot.py`, `execution/`, `risk/`, `*.live.json`, and every
 entry of `ci/money_paths.json` (`strategies/`, `services/gainer_signal/`, `services/dca_sniper/`, risk/cost/sizing keys
-in `config.json`).
+in `config.json`, plus the patterns `aria_bot.py` and `*.live.json`).
 
 ## Flow
 

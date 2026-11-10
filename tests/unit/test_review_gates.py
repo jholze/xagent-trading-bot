@@ -61,6 +61,28 @@ def test_only_listed_config_keys_are_money_path():
     assert money_path_touched(["config.json"], {"costs.taker"}, rules) is True
 
 
+def test_aria_bot_and_live_json_trigger_the_money_path_gate():
+    """#766: aria_bot.py and *.live.json are money paths, same gate as risk/."""
+    rules = _rules()
+    assert "aria_bot.py" in rules["patterns"]
+    assert "*.live.json" in rules["patterns"]
+    assert (ROOT / "aria_bot.py").is_file()
+
+    for name in ("aria_bot.py", "orders.live.json", "data/positions.live.json"):
+        touched = _decide(files=[name])
+        assert touched.money_path is True, name
+        assert touched.ok is False
+        assert any(OWNER_LABEL in item for item in touched.failures)
+
+    assert money_path_touched(["aria_bot.py"], None, rules) is True
+    assert money_path_touched(["positions.live.json"], None, rules) is True
+    assert money_path_touched(["nested/orders.live.json"], None, rules) is True
+    assert money_path_touched(["aria_bot_helper.py"], None, rules) is False
+    assert money_path_touched(["orders.demo.json"], None, rules) is False
+    assert money_path_touched(["orders.live.json.bak"], None, rules) is False
+    assert money_path_touched(["docs/domain/spec-writing.md"], None, rules) is False
+
+
 def test_table_and_evidence_heading():
     assert has_before_after_table(TABLE)
     assert not has_before_after_table("| before | after |\nno separator\n")
