@@ -12,17 +12,19 @@ no new short; that deferral is not a global product ban.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Mapping
 
 from core.time_utils import ledger_datetime_utc
+from strategies.short_mode_proof import opened_regimes, parse_sandbox_mode_proof, regime_max_age_seconds
 from strategies.short_policy import shorts_allow_live, shorts_config
 
 FLAG_KEY = "sandbox_admission_v220"
 _PROFILE_SLOTS = (
     "profile_id",
     "notional",
+    "open_short_notional",
     "stop_risk",
     "existing_short_stop_risk",
     "nav",
@@ -37,7 +39,6 @@ _OPTIONAL_DEFAULTS = (
     "legacy_margin_cap_pct",
 )
 _RESERVATION_KEYS = ("pending", "uncertain", "reserved")
-_PAPER_MARKETS = frozenset({"paper", "futures_usdt_testnet"})
 
 
 @dataclass(frozen=True)
@@ -110,18 +111,17 @@ def evaluate_short_admission(
     profile_params, profile_missing = _plumb_profile(profile)
     parameters = _with_defaults(profile_params, profile)
     parameters = _plumb_candidate(candidate, parameters)
-    proof_params, proof_missing, proof_live = _parse_mode_proof(mode_proof)
+    proof = parse_sandbox_mode_proof(mode_proof, now=now, config_raw=config_raw)
     reasons: list[str] = []
-    if shorts_allow_live(config_raw) or proof_live:
+    if shorts_allow_live(config_raw) or proof.live or proof.reason == "live_denied":
         reasons.append("live_denied")
+    elif not proof.allowed:
+        reasons.append(proof.reason)
     if profile_missing:
         reasons.append("risk_profile_missing")
     else:
         reasons.extend(_frozen_limits(profile, candidate, config_raw=config_raw, now=now))
-    if proof_missing:
-        reasons.append("mode_proof_missing")
-    if _open_long(candidate):
-        reasons.append("long_not_flipped")
+    reasons.extend(_position_reasons(candidate))
     ordered = tuple(_dedupe(reasons))
     admitted = not ordered
     return AdmissionDecision(
@@ -129,7 +129,7 @@ def evaluate_short_admission(
         action="sandbox_short_candidate" if admitted else "none",
         reasons=ordered,
         parameters=parameters,
-        mode_parameters=proof_params,
+        mode_parameters=_proof_echo(proof),
         regime_applied=not profile_missing,
         stock_exclusion_applied=False,
         short_path_deferred="short_path_deferred" in ordered,
@@ -149,8 +149,6 @@ def _with_defaults(
     for key in _OPTIONAL_DEFAULTS:
         if key not in echoed and key not in profile:
             echoed[key] = defaults[key]
-    if "opened_regimes" not in echoed and "opened_regimes" not in profile:
-        echoed["opened_regimes"] = defaults["opened_regimes"]
     return tuple(echoed.items())
 
 
@@ -249,15 +247,19 @@ def _frozen_limits(
         reasons.append("legacy_cap_raised")
     elif legacy_cap is not None:
         legacy_cap = min(legacy_cap, configured_cap)
+    open_notional = _number(profile.get("open_short_notional")) if "open_short_notional" in profile else None
+    if open_notional is None or open_notional < 0:
+        reasons.append("open_notional_unknown")
     if (
         nav is not None
         and nav > 0
         and notional is not None
         and reserve is not None
+        and open_notional is not None
         and exposure_cap is not None
         and quantum is not None
     ):
-        exposure = notional + reserve
+        exposure = open_notional + reserve + notional
         limit = nav * exposure_cap / Decimal("100")
         if exposure > limit:
             reasons.append("exposure_cap")
@@ -289,7 +291,7 @@ def _frozen_limits(
                     reasons.append("margin_notional_mismatch")
         if margin / nav * Decimal("100") > legacy_cap:
             reasons.append("legacy_margin_cap")
-    reasons.extend(_regime_reasons(profile, candidate, now=now))
+    reasons.extend(_regime_reasons(profile, candidate, config_raw=config_raw, now=now))
     reasons.extend(_product_reasons(candidate))
     reasons.extend(_qty_reasons(candidate))
     return reasons
@@ -307,38 +309,32 @@ def _reservation_sum(value: Any) -> Decimal | None:
     return total
 
 
-def _opened_regimes(profile: Mapping[str, Any]) -> set[str] | None:
+def _caller_tries_to_open(profile: Mapping[str, Any]) -> bool:
     if "opened_regimes" not in profile:
-        return set()
+        return False
     raw = profile.get("opened_regimes")
-    if raw is None:
-        return None
+    if raw is None or raw == "":
+        return False
     if isinstance(raw, str):
-        if raw.strip().lower() == "unknown":
-            return None
-        return {part.strip() for part in raw.split(",") if part.strip()}
+        return any(part.strip() and part.strip().lower() != "unknown" for part in raw.split(","))
     if isinstance(raw, (list, tuple)):
-        opened: set[str] = set()
-        for item in raw:
-            token = _exact_token(item)
-            if token is None:
-                return None
-            opened.add(token)
-        return opened
-    return None
+        return any(isinstance(item, str) and item.strip() for item in raw)
+    return True
 
 
 def _regime_reasons(
     profile: Mapping[str, Any],
     candidate: Mapping[str, Any] | None,
     *,
+    config_raw: Mapping[str, Any] | None,
     now: datetime | None,
 ) -> list[str]:
     reasons: list[str] = []
-    opened = _opened_regimes(profile)
-    if opened is None:
-        reasons.append("regime_unknown")
-        opened = set()
+    if now is None:
+        reasons.append("now_missing")
+    if _caller_tries_to_open(profile):
+        reasons.append("regime_opened_without_freeze")
+    opened = opened_regimes(config_raw)
     regime = None
     if isinstance(candidate, dict) and "regime" in candidate:
         regime = _exact_token(candidate.get("regime"))
@@ -346,21 +342,15 @@ def _regime_reasons(
         reasons.append("regime_unknown")
     elif regime not in opened:
         reasons.append("regime_closed")
-    if not isinstance(candidate, dict) or "regime_as_of" not in candidate or "regime_max_age_seconds" not in candidate:
+    if not isinstance(candidate, dict) or "regime_as_of" not in candidate:
         reasons.append("regime_stale")
         return reasons
+    if now is None:
+        return reasons
     as_of = ledger_datetime_utc(candidate.get("regime_as_of"))
-    max_age = candidate.get("regime_max_age_seconds")
-    now_utc = ledger_datetime_utc(now) if now is not None else None
-    if (
-        as_of is None
-        or now_utc is None
-        or isinstance(max_age, bool)
-        or not isinstance(max_age, int)
-        or max_age < 0
-        or as_of > now_utc
-        or (now_utc - as_of).total_seconds() > max_age
-    ):
+    now_utc = ledger_datetime_utc(now)
+    limit = regime_max_age_seconds(config_raw)
+    if as_of is None or now_utc is None or as_of > now_utc or (now_utc - as_of).total_seconds() > limit:
         reasons.append("regime_stale")
     return reasons
 
@@ -385,7 +375,39 @@ def _qty_reasons(candidate: Mapping[str, Any] | None) -> list[str]:
         return ["min_qty_unknown"]
     if qty < minimum:
         return ["below_min_qty"]
+    if qty != minimum:
+        return ["above_min_qty"]
     return []
+
+
+def _position_reasons(candidate: Mapping[str, Any] | None) -> list[str]:
+    if not isinstance(candidate, dict) or "existing_side" not in candidate:
+        return ["existing_side_unknown"]
+    side_raw = candidate.get("existing_side")
+    if not isinstance(side_raw, str) or _exact_token(side_raw) is None:
+        return ["existing_side_unknown"]
+    side = side_raw.strip().lower()
+    if side not in {"flat", "short", "long"}:
+        return ["existing_side_unknown"]
+    if "existing_qty" not in candidate:
+        if side == "long":
+            return ["long_not_flipped"]
+        return ["existing_qty_invalid"]
+    qty = _number(candidate.get("existing_qty"))
+    if qty is None:
+        return ["existing_qty_invalid"]
+    if side == "long" and qty != 0:
+        return ["long_not_flipped"]
+    return []
+
+
+def _proof_echo(proof) -> tuple[tuple[str, str], ...]:
+    return (
+        ("allowed", "true" if proof.allowed else "false"),
+        ("reason", proof.reason),
+        ("margin_mode", proof.margin_mode),
+        ("position_mode", proof.position_mode),
+    )
 
 
 def _exact_token(value: Any) -> str | None:
@@ -485,75 +507,3 @@ def _plumb_candidate(
         extra.append((key, token))
     return profile_params + tuple(extra)
 
-
-def _open_long(candidate: Mapping[str, Any] | None) -> bool:
-    if not isinstance(candidate, dict):
-        return False
-    side = candidate.get("existing_side")
-    if not isinstance(side, str) or side.strip().lower() != "long":
-        return False
-    if "existing_qty" not in candidate:
-        return True
-    token = _exact_token(candidate.get("existing_qty"))
-    if token is None:
-        return True
-    return Decimal(token) != 0
-
-
-def _parse_mode_proof(
-    proof: Mapping[str, Any] | None,
-) -> tuple[tuple[tuple[str, str], ...], bool, bool]:
-    if not isinstance(proof, dict):
-        return (), True, False
-    missing = False
-    live = False
-    params: list[tuple[str, str]] = []
-
-    tenant = _exact_token(proof.get("tenant_id")) if "tenant_id" in proof else None
-    if tenant is None:
-        missing = True
-    else:
-        params.append(("tenant_id", tenant))
-
-    if "market" not in proof:
-        missing = True
-    else:
-        market = _exact_token(proof.get("market"))
-        if market is None:
-            missing = True
-        else:
-            params.append(("market", market))
-            if market not in _PAPER_MARKETS:
-                live = True
-
-    if "live" not in proof or not isinstance(proof.get("live"), bool):
-        missing = True
-    elif proof.get("live") is True:
-        live = True
-        params.append(("live", "true"))
-    else:
-        params.append(("live", "false"))
-
-    if proof.get("readback_ok") is True:
-        params.append(("readback_ok", "true"))
-    else:
-        missing = True
-        if proof.get("readback_ok") is False:
-            params.append(("readback_ok", "false"))
-
-    if "as_of" not in proof:
-        missing = True
-    else:
-        as_of = proof.get("as_of")
-        if isinstance(as_of, datetime):
-            if as_of.tzinfo is None:
-                missing = True
-            else:
-                params.append(("as_of", as_of.astimezone(timezone.utc).isoformat()))
-        else:
-            token = _exact_token(as_of)
-            if token is None:
-                missing = True
-            else:
-                params.append(("as_of", token))
-    return tuple(params), missing, live

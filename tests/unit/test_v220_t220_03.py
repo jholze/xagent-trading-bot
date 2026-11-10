@@ -30,19 +30,22 @@ _PAPER_PROOF = {
     "market": "paper",
     "live": False,
     "readback_ok": True,
-    "as_of": "2026-11-10T15:00:00+00:00",
+    "margin_mode": "isolated",
+    "position_mode": "one_way",
+    "leverage": "1",
+    "as_of": int(_NOW.timestamp()),
 }
 
 _PROFILE = {
     "profile_id": "fixture-profile",
     "notional": "1000",
+    "open_short_notional": "0",
     "stop_risk": "25",
     "existing_short_stop_risk": "50",
     "nav": "10000",
     "quote_quantum": "0.01",
     "metadata": {"schema": "fixture"},
     "reservations": {"pending": "0", "uncertain": "0", "reserved": "0"},
-    "opened_regimes": "RANGE",
 }
 
 
@@ -52,21 +55,34 @@ def _ready_candidate(**overrides):
         "product_kind": "perp",
         "qty": "1",
         "exchange_min_qty": "1",
+        "existing_side": "flat",
+        "existing_qty": "0",
         "regime": "RANGE",
         "regime_as_of": _NOW.isoformat(),
-        "regime_max_age_seconds": 60,
     }
     body.update(overrides)
     return body
 
 
-def _on() -> dict:
-    return {"shorts": {"sandbox_admission_v220": {"enabled": True}, "allow_live": False}}
+def _on(*, opened=(), regime_max_age_seconds=60, **shorts) -> dict:
+    block = {
+        "sandbox_admission_v220": {"enabled": True},
+        "allow_live": False,
+        "sandbox_v220": {
+            "paper_start": {
+                "opened_regimes": list(opened),
+                "regime_max_age_seconds": regime_max_age_seconds,
+                "mode_proof_max_age_seconds": 60,
+            }
+        },
+    }
+    block.update(shorts)
+    return {"shorts": block}
 
 
 def _decide(profile=_PROFILE, *, candidate=None, **kwargs) -> AdmissionDecision:
     payload = {
-        "config_raw": _on(),
+        "config_raw": _on(opened=("RANGE",)),
         "profile": profile,
         "mode_proof": _PAPER_PROOF,
         "now": _NOW,
@@ -112,6 +128,8 @@ def test_committed_config_is_unchanged():
     assert shorts["max_margin_pct"] == 20
     assert shorts["leverage_default"] == 2
     assert "sandbox_admission_v220" not in shorts
+    assert shorts["sandbox_v220"]["paper_start"]["opened_regimes"] == []
+    assert shorts["sandbox_v220"]["paper_start"]["mode_proof_max_age_seconds"] == 60
     assert sandbox_admission_enabled(raw) is False
     assert sandbox_start_defaults() == {
         "leverage": "1",
@@ -225,6 +243,9 @@ def test_freeze_min_qty_and_unknown_book():
     assert "below_min_qty" in _decide(
         _PROFILE, candidate=_ready_candidate(qty="0.5", exchange_min_qty="1")
     ).reasons
+    assert "above_min_qty" in _decide(
+        _PROFILE, candidate=_ready_candidate(qty="2", exchange_min_qty="1")
+    ).reasons
     missing_min = _ready_candidate()
     del missing_min["exchange_min_qty"]
     assert "min_qty_unknown" in _decide(_PROFILE, candidate=missing_min).reasons
@@ -234,20 +255,27 @@ def test_freeze_min_qty_and_unknown_book():
 
 
 def test_freeze_regime_cells_start_closed():
-    closed = dict(_PROFILE)
-    closed["opened_regimes"] = ""
-    decision = _decide(closed, candidate=_ready_candidate())
+    decision = _decide(_PROFILE, candidate=_ready_candidate(), config_raw=_on())
     assert decision.admitted is False
     assert "regime_closed" in decision.reasons
-    assert decision.regime_applied is True
+    attempt = dict(_PROFILE)
+    attempt["opened_regimes"] = "RANGE"
+    forced = _decide(attempt, candidate=_ready_candidate(), config_raw=_on())
+    assert forced.admitted is False
+    assert "regime_opened_without_freeze" in forced.reasons
     unknown = _ready_candidate(regime="unknown")
     assert "regime_unknown" in _decide(_PROFILE, candidate=unknown).reasons
     stale = _ready_candidate(regime_as_of="2026-11-10T14:00:00+00:00")
     assert "regime_stale" in _decide(_PROFILE, candidate=stale).reasons
-    exact = _ready_candidate(regime_max_age_seconds=0)
+    exact = _ready_candidate()
     assert _decide(_PROFILE, candidate=exact).admitted is True
-    aged = _ready_candidate(regime_as_of="2026-11-10T14:58:59+00:00", regime_max_age_seconds=60)
+    aged = _ready_candidate(
+        regime_as_of="2026-11-10T14:58:59+00:00",
+        regime_max_age_seconds=99999,
+    )
     assert "regime_stale" in _decide(_PROFILE, candidate=aged).reasons
+    future = _ready_candidate(regime_as_of="2026-11-10T16:00:00+00:00")
+    assert "regime_stale" in _decide(_PROFILE, candidate=future).reasons
 
 
 def test_ac4_live_and_missing_proof_deny():
@@ -318,6 +346,50 @@ def test_ac5_stock_deferral_is_not_a_global_ban():
     assert perp.admitted is True
     assert perp.stock_exclusion_applied is False
     assert perp.short_path_deferred is False
+
+
+def test_total_exposure_includes_open_book_and_reservations():
+    booked = dict(_PROFILE)
+    booked["open_short_notional"] = "500"
+    booked["notional"] = "100"
+    booked["reservations"] = {"pending": "400", "uncertain": "0", "reserved": "0"}
+    assert _decide(booked, candidate=_ready_candidate()).admitted is True
+    over = dict(booked)
+    over["reservations"] = {"pending": "400.01", "uncertain": "0", "reserved": "0"}
+    assert "exposure_cap" in _decide(over, candidate=_ready_candidate()).reasons
+
+
+def test_nav_now_side_and_margin_cap_mutants():
+    zero = dict(_PROFILE)
+    zero["nav"] = "0"
+    assert "nav_unknown" in _decide(zero, candidate=_ready_candidate()).reasons
+    negative = dict(_PROFILE)
+    negative["nav"] = "-1"
+    assert "nav_unknown" in _decide(negative, candidate=_ready_candidate()).reasons
+    missing_clock = _decide(_PROFILE, candidate=_ready_candidate(), now=None)
+    assert missing_clock.admitted is False
+    assert "now_missing" in missing_clock.reasons
+    raised = _on(opened=("RANGE",), max_margin_pct=25)
+    assert "legacy_cap_raised" in _decide(
+        _PROFILE, candidate=_ready_candidate(), config_raw=raised
+    ).reasons
+    bare_long = _ready_candidate(existing_side="long")
+    del bare_long["existing_qty"]
+    assert "long_not_flipped" in _decide(_PROFILE, candidate=bare_long).reasons
+    assert "existing_qty_invalid" in _decide(
+        _PROFILE, candidate=_ready_candidate(existing_qty="nope")
+    ).reasons
+    missing_side = _ready_candidate()
+    del missing_side["existing_side"]
+    assert "existing_side_unknown" in _decide(_PROFILE, candidate=missing_side).reasons
+    stale_proof = dict(_PAPER_PROOF)
+    stale_proof["as_of"] = int(_NOW.timestamp()) - 61
+    assert "mode_proof_stale" in _decide(
+        _PROFILE, candidate=_ready_candidate(), mode_proof=stale_proof
+    ).reasons
+    fresh_proof = dict(_PAPER_PROOF)
+    fresh_proof["as_of"] = int(_NOW.timestamp()) - 60
+    assert _decide(_PROFILE, candidate=_ready_candidate(), mode_proof=fresh_proof).admitted is True
 
 
 def test_module_has_no_risk_manager_edit():
