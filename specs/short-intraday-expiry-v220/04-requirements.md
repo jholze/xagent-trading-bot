@@ -1,11 +1,26 @@
 # Short intraday expiry – Requirements
 
-Version: 0.1 · Date: 2026-11-10 · Status: draft · Owner: Jens Holze
+Version: 0.2 · Date: 2026-11-10 · Status: draft · Owner: Jens Holze
 
-Local draft id: T220-05 (not a GitHub issue). Revision: Draft Rev 0, 2026-11-10 Europe/Berlin.
-Pending Marcus check. Hindsight: RECALL_FAILED.
+Local draft id: T220-05 (not a GitHub issue). Hindsight: RECALL_FAILED.
 
-This revision does not copy Owner-Freeze-Werte.md. Session clocks in tests are synthetic examples, including a 4h hold and a 20:00 Europe/Berlin stamp. They are not production cutoffs. The 4h figure is the existing `resolve_short_params` base, preserved when no overlay sets a cap. The bound "strictly under 24h" is the sprint safety rule, not a new 24h or 72h fallback.
+## Rev 1 — 2026-11-10 18:40 Europe/Berlin
+
+Owner freeze item 3, delegated to Kay. Item 6 stays parameterized: missing execution or reconcile budgets deny with `buffer_unknown`. No minute value is invented.
+
+Paper/testnet start schedule, only when `shorts.sandbox_expiry_v220.enabled` is boolean true:
+
+- Cutoff 20:00:00 Europe/Berlin, Monday–Friday. A new short at or after 20:00:00 is denied. An explicit session end later than that cutoff is `cutoff_loosened`.
+- Maximum hold is 4 hours. Explicit 0, 8, 24 and 72 hour overlays are invalid and are not replaced with 24 or 72. A tighter overlay (under 4h) still applies. The flag-off cover path is unchanged, including an overlay above 4h.
+- Planned exit must be the same Europe/Berlin calendar day as the entry.
+- No new short on Saturday or Sunday. `weekend_admission: true` does not loosen that. Stop and cover of an open short still run.
+- `config.json` is not edited. `allow_live` stays false.
+
+Rev 0 below is the pre-freeze draft. Its "<24h" ceiling is tightened to 4h for the sandbox path only.
+
+## Rev 0 — 2026-11-10 Europe/Berlin
+
+Pending Marcus check. Session clocks in the original draft were examples. The 4h figure is the existing `resolve_short_params` base.
 
 #585 (closed) stays in force: naive ledger stamps are process-local, not labeled UTC. This path calls `ledger_datetime_utc`.
 
@@ -59,4 +74,5 @@ AC-03a/b/c numeric risk limits and the regime table are not part of this revisio
 
 | Version | Date | AC | Change | Reason | Approved by |
 | --- | --- | --- | --- | --- | --- |
-| Draft Rev 0 | 2026-11-10 | AC1–AC5 | Default-off hold, session, calendar, and funding-window contract. No freeze-file numbers. | Sprint package C, T220-05 | Pending Marcus check. |
+| Draft Rev 0 | 2026-11-10 | AC1–AC5 | Default-off hold, session, calendar, and funding-window contract. | Sprint package C, T220-05 | Superseded for the cutoff and 4h cap by Rev 1. |
+| Draft Rev 1 | 2026-11-10 18:40 | item 3, item 6 | 20:00 Europe/Berlin Mon–Fri, 4h max, same calendar day, no weekend entry. Buffer minutes stay unset and fail closed. | Owner freeze delegated to Kay | Owner freeze. |

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
@@ -21,7 +21,8 @@ from strategies.short_policy import _tier_key, shorts_allow_live, shorts_config
 
 FLAG_KEY = "sandbox_expiry_v220"
 _EXISTING_DEFAULT_HOURS = Decimal("4")
-_MAX_HOURS = Decimal("24")
+_MAX_HOURS = Decimal("4")
+_CUTOFF_ZONE = "Europe/Berlin"
 _PAPER_MARKETS = frozenset({"paper", "futures_usdt_testnet"})
 
 
@@ -119,40 +120,42 @@ def schedule_allows_entry(
     if isinstance(position_side, str) and position_side.strip().lower() == "long":
         reasons.append("long_not_flipped")
     reasons.extend(_calendar_reasons(now, calendar))
-    session_required, session_end, boundary, budget, session_reason = _session(schedule)
-    if session_reason:
-        reasons.append(session_reason)
-    elif hold.valid and hold.hours is not None:
-        now_utc = ledger_datetime_utc(now)
-        opened_utc = ledger_datetime_utc(opened)
-        planned_utc = ledger_datetime_utc(planned_exit)
-        if now_utc is None or opened_utc is None or planned_utc is None:
-            reasons.append("session_unknown")
-        else:
+    budget, buffer_reason = _explicit_budgets(schedule)
+    if buffer_reason:
+        reasons.append(buffer_reason)
+    now_utc = ledger_datetime_utc(now)
+    opened_utc = ledger_datetime_utc(opened)
+    planned_utc = ledger_datetime_utc(planned_exit)
+    if now_utc is None or opened_utc is None or planned_utc is None:
+        reasons.append("session_unknown")
+    else:
+        reasons.extend(_clock_reasons(now_utc, opened_utc, planned_utc))
+        session_end, boundary, session_reason = _frozen_session(schedule, opened_utc)
+        if session_reason:
+            reasons.append(session_reason)
+        elif hold.valid and hold.hours is not None and budget is not None and session_end is not None:
             cap_end = opened_utc + _hours_td(hold.hours)
             ready = now_utc + timedelta(seconds=budget)
-            overdue = _holding_overdue(
+            outside = _holding_overdue(
                 now_utc,
                 cap_end=cap_end,
                 session_end=session_end,
                 boundary=boundary,
-                session_required=session_required,
-            )
-            ready_ok = _exit_inside(
+                session_required=True,
+            ) or not _exit_inside(
                 ready,
                 cap_end=cap_end,
                 session_end=session_end,
                 boundary=boundary,
-                session_required=session_required,
-            )
-            planned_ok = _exit_inside(
+                session_required=True,
+            ) or not _exit_inside(
                 planned_utc,
                 cap_end=cap_end,
                 session_end=session_end,
                 boundary=boundary,
-                session_required=session_required,
+                session_required=True,
             )
-            if overdue or not ready_ok or not planned_ok:
+            if outside:
                 reasons.append("outside_due")
     return ScheduleDecision(not reasons, tuple(_dedupe(reasons)))
 
@@ -238,6 +241,8 @@ def cover_time_decision(
     now_utc = ledger_datetime_utc(now)
     if opened is None or now_utc is None:
         return _overdue("entry timestamp missing")
+    if _past_frozen_hold(now_utc, opened):
+        return _overdue("frozen cutoff or calendar day")
     session_required, session_end, boundary, _budget, session_reason = _session(schedule)
     if session_reason:
         return _overdue(session_reason)
@@ -267,6 +272,8 @@ def _exposure_from_clock(pos, *, now, config_raw, schedule) -> ExposureReport:
     now_utc = ledger_datetime_utc(now)
     if opened is None or now_utc is None:
         return ExposureReport("overdue", False, "opened_unknown")
+    if _past_frozen_hold(now_utc, opened):
+        return ExposureReport("overdue", False, "cutoff")
     session_required, session_end, boundary, _budget, session_reason = _session(schedule)
     if session_reason:
         return ExposureReport("overdue", False, session_reason)
@@ -332,9 +339,82 @@ def _parse_hours(value: Any) -> Decimal | None:
             return None
     else:
         return None
-    if not number.is_finite() or number <= 0 or number >= _MAX_HOURS:
+    if not number.is_finite() or number <= 0 or number > _MAX_HOURS:
         return None
     return number
+
+
+def _berlin(moment: datetime):
+    parsed = ledger_datetime_utc(moment)
+    if parsed is None:
+        return None
+    return parsed.astimezone(ZoneInfo(_CUTOFF_ZONE))
+
+
+def _cutoff_utc(opened_utc: datetime) -> datetime | None:
+    local = _berlin(opened_utc)
+    if local is None:
+        return None
+    cutoff = local.replace(hour=20, minute=0, second=0, microsecond=0)
+    return cutoff.astimezone(timezone.utc)
+
+
+def _past_frozen_hold(now_utc: datetime, opened_utc: datetime) -> bool:
+    now_local = _berlin(now_utc)
+    opened_local = _berlin(opened_utc)
+    if now_local is None or opened_local is None:
+        return True
+    if now_local.date() != opened_local.date() or now_local.weekday() >= 5:
+        return True
+    return (now_local.hour, now_local.minute, now_local.second, now_local.microsecond) >= (20, 0, 0, 0)
+
+
+def _explicit_budgets(schedule):
+    """Item 6: no invented minute buffer. Missing budgets deny; explicit zero is data."""
+    if not isinstance(schedule, dict):
+        return None, "buffer_unknown"
+    total = 0
+    for key in ("execution_budget_seconds", "reconcile_budget_seconds"):
+        if key not in schedule:
+            return None, "buffer_unknown"
+        value = schedule.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None, "buffer_unknown"
+        total += value
+    return total, None
+
+
+def _clock_reasons(now_utc: datetime, opened_utc: datetime, planned_utc: datetime) -> list[str]:
+    now_local = _berlin(now_utc)
+    opened_local = _berlin(opened_utc)
+    planned_local = _berlin(planned_utc)
+    if now_local is None or opened_local is None or planned_local is None:
+        return ["session_unknown"]
+    reasons: list[str] = []
+    if now_local.weekday() >= 5:
+        reasons.append("weekend_denied")
+    elif (now_local.hour, now_local.minute, now_local.second, now_local.microsecond) >= (20, 0, 0, 0):
+        reasons.append("after_cutoff")
+    if planned_local.date() != opened_local.date() or now_local.date() != opened_local.date():
+        reasons.append("same_calendar_day")
+    return reasons
+
+
+def _frozen_session(schedule, opened_utc: datetime):
+    cutoff = _cutoff_utc(opened_utc)
+    if cutoff is None:
+        return None, None, "session_unknown"
+    if not isinstance(schedule, dict) or "session_end" not in schedule:
+        return cutoff, "inclusive", None
+    end = ledger_datetime_utc(schedule.get("session_end"))
+    if end is None:
+        return None, None, "session_unknown"
+    if end > cutoff:
+        return None, None, "cutoff_loosened"
+    boundary = schedule.get("session_boundary", "inclusive")
+    if boundary not in {"inclusive", "exclusive"}:
+        return None, None, "session_unknown"
+    return end, boundary, None
 
 
 def _session(schedule):

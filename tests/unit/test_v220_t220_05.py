@@ -56,6 +56,15 @@ def _pos(*, opened, amount=1.0, entry=100.0, mark_tier="volatile"):
     }
 
 
+def _sched(**extra):
+    body = {
+        "execution_budget_seconds": 0,
+        "reconcile_budget_seconds": 0,
+    }
+    body.update(extra)
+    return body
+
+
 def _calendar(now, **overrides):
     body = {
         "as_of": now.isoformat(),
@@ -121,7 +130,7 @@ def test_ac2_hold_cap_bounds_and_overlays():
     assert resolve_sandbox_hold(config_raw=climax).hours == Decimal("4")
 
     layered = _on(
-        stable={"time_cap_hours": 8},
+        stable={"time_cap_hours": 4},
         coins={"AAA/USDT": {"time_cap_hours": 3}},
     )
     coin = resolve_sandbox_hold(symbol="AAA/USDT", tier="stable", config_raw=layered)
@@ -134,9 +143,13 @@ def test_ac2_hold_cap_bounds_and_overlays():
     )
     assert lot.hours == Decimal("2")
     assert resolve_sandbox_hold(
-        lot={"time_cap_hours": Decimal("23.999")},
+        lot={"time_cap_hours": Decimal("4")},
         config_raw=_on(),
     ).valid is True
+    assert resolve_sandbox_hold(
+        lot={"time_cap_hours": Decimal("8")},
+        config_raw=_on(),
+    ).valid is False
 
     for bad in (24, 72, 0, "24", Decimal("24"), float("inf"), None):
         hold = resolve_sandbox_hold(
@@ -242,7 +255,7 @@ def test_ac3_session_due_and_budget():
         mode_proof=_PAPER,
     )
     assert unknown.open is False
-    assert "session_unknown" in unknown.reasons
+    assert "buffer_unknown" in unknown.reasons
 
     later_session = {
         "session_required": True,
@@ -251,7 +264,7 @@ def test_ac3_session_due_and_budget():
         "execution_budget_seconds": 0,
         "reconcile_budget_seconds": 0,
     }
-    cap_binds = schedule_allows_entry(
+    loosened = schedule_allows_entry(
         now=opened,
         opened=opened,
         planned_exit=datetime(2026, 11, 10, 20, 0, tzinfo=_BERLIN),
@@ -260,7 +273,8 @@ def test_ac3_session_due_and_budget():
         calendar=_calendar(opened),
         mode_proof=_PAPER,
     )
-    assert cap_binds.open is True
+    assert loosened.open is False
+    assert "cutoff_loosened" in loosened.reasons
     past_cap = schedule_allows_entry(
         now=opened,
         opened=opened,
@@ -274,9 +288,11 @@ def test_ac3_session_due_and_budget():
 
 
 def test_ac4_timestamps_restart_and_unpriced():
-    now_cest = datetime(2026, 9, 27, 16, 1, 13, tzinfo=timezone.utc)
+    # 2026-09-24 is a Thursday in CEST. 2026-09-27 is a Sunday, so the
+    # sandbox weekend rule would close that lot for a different reason.
+    now_cest = datetime(2026, 9, 24, 16, 1, 13, tzinfo=timezone.utc)
     cfg = _on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.5})
-    naive_5h = datetime(2026, 9, 27, 13, 1, 13)
+    naive_5h = datetime(2026, 9, 24, 13, 1, 13)
     with _host_tz("Europe/Berlin"):
         hit = evaluate_short_cover(
             _pos(opened=naive_5h),
@@ -287,7 +303,7 @@ def test_ac4_timestamps_restart_and_unpriced():
     assert hit["source"] == "time_cap"
     assert hit["flat"] is False
     assert hit["state"] == "overdue"
-    naive_3h = datetime(2026, 9, 27, 15, 1, 13)
+    naive_3h = datetime(2026, 9, 24, 15, 1, 13)
     with _host_tz("Europe/Berlin"):
         quiet = evaluate_short_cover(
             _pos(opened=naive_3h),
@@ -347,7 +363,7 @@ def test_ac5_weekend_calendar_and_funding():
         opened=opened,
         planned_exit=opened + timedelta(hours=2),
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=_calendar(saturday),
         mode_proof=_PAPER,
     )
@@ -358,11 +374,12 @@ def test_ac5_weekend_calendar_and_funding():
         opened=opened,
         planned_exit=opened + timedelta(hours=2),
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=_calendar(saturday, weekend_admission=True),
         mode_proof=_PAPER,
     )
-    assert opened_ok.open is True
+    assert opened_ok.open is False
+    assert "weekend_denied" in opened_ok.reasons
     assert protection_allowed(position_side="short", reduce_only=True) is True
     stop_cfg = _on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.10})
     stopped = evaluate_short_cover(
@@ -376,7 +393,7 @@ def test_ac5_weekend_calendar_and_funding():
         opened=tuesday,
         planned_exit=tuesday + timedelta(hours=2),
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=_calendar(tuesday),
         mode_proof=_PAPER,
     ).open is True
@@ -388,7 +405,7 @@ def test_ac5_weekend_calendar_and_funding():
         opened=tuesday,
         planned_exit=tuesday + timedelta(hours=2),
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=stale,
         mode_proof=_PAPER,
     )
@@ -399,7 +416,7 @@ def test_ac5_weekend_calendar_and_funding():
         opened=tuesday,
         planned_exit=tuesday + timedelta(hours=2),
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=exact,
         mode_proof=_PAPER,
     ).open is True
@@ -410,7 +427,7 @@ def test_ac5_weekend_calendar_and_funding():
         opened=tuesday,
         planned_exit=tuesday + timedelta(hours=2),
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=missing_windows,
         mode_proof=_PAPER,
     ).reasons
@@ -423,7 +440,7 @@ def test_ac5_weekend_calendar_and_funding():
         opened=start,
         planned_exit=start + timedelta(hours=1),
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=_calendar(start, maintenance=[window]),
         mode_proof=_PAPER,
     ).open is False
@@ -432,7 +449,7 @@ def test_ac5_weekend_calendar_and_funding():
         opened=start,
         planned_exit=end,
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=_calendar(end, maintenance=[window]),
         mode_proof=_PAPER,
     ).open is False
@@ -442,7 +459,7 @@ def test_ac5_weekend_calendar_and_funding():
         opened=start,
         planned_exit=after + timedelta(minutes=30),
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=_calendar(after, maintenance=[window]),
         mode_proof=_PAPER,
     ).open is True
@@ -452,7 +469,7 @@ def test_ac5_weekend_calendar_and_funding():
         opened=start,
         planned_exit=start + timedelta(hours=1),
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=_calendar(start, maintenance=[exclusive_window]),
         mode_proof=_PAPER,
     ).open is True
@@ -462,7 +479,7 @@ def test_ac5_weekend_calendar_and_funding():
         opened=start,
         planned_exit=inside + timedelta(minutes=30),
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=_calendar(inside, maintenance=[exclusive_window]),
         mode_proof=_PAPER,
     ).open is False
@@ -471,7 +488,7 @@ def test_ac5_weekend_calendar_and_funding():
         opened=start,
         planned_exit=end,
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=_calendar(end, maintenance=[exclusive_window]),
         mode_proof=_PAPER,
     ).open is True
@@ -524,6 +541,65 @@ def test_ac5_weekend_calendar_and_funding():
     assert "funding_cost_usdt" not in source
 
 
+def test_freeze_cutoff_same_day_and_no_buffer_default():
+    opened = datetime(2026, 11, 10, 18, 0, tzinfo=_BERLIN)
+    now = datetime(2026, 11, 10, 19, 0, tzinfo=_BERLIN)
+    planned = datetime(2026, 11, 10, 20, 0, tzinfo=_BERLIN)
+    assert schedule_allows_entry(
+        now=now,
+        opened=opened,
+        planned_exit=planned,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_PAPER,
+    ).open is True
+    at_cutoff = datetime(2026, 11, 10, 20, 0, tzinfo=_BERLIN)
+    denied = schedule_allows_entry(
+        now=at_cutoff,
+        opened=opened,
+        planned_exit=planned,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(at_cutoff),
+        mode_proof=_PAPER,
+    )
+    assert denied.open is False
+    assert "after_cutoff" in denied.reasons
+    next_day = schedule_allows_entry(
+        now=now,
+        opened=opened,
+        planned_exit=datetime(2026, 11, 11, 16, 0, tzinfo=_BERLIN),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_PAPER,
+    )
+    assert next_day.open is False
+    assert "same_calendar_day" in next_day.reasons
+    bare = schedule_allows_entry(
+        now=now,
+        opened=opened,
+        planned_exit=planned,
+        config_raw=_on(),
+        schedule=None,
+        calendar=_calendar(now),
+        mode_proof=_PAPER,
+    )
+    assert bare.open is False
+    assert "buffer_unknown" in bare.reasons
+    pos = _pos(opened=opened)
+    report = report_sandbox_exposure(
+        pos,
+        now=at_cutoff,
+        config_raw=_on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.5}),
+        mark=100.2,
+        halted=False,
+    )
+    assert report.state == "overdue"
+    assert report.flat is False
+
+
 def test_missing_mode_proof_denies_entry():
     now = datetime(2026, 11, 10, 12, tzinfo=_BERLIN)
     decision = schedule_allows_entry(
@@ -531,7 +607,7 @@ def test_missing_mode_proof_denies_entry():
         opened=now,
         planned_exit=now + timedelta(hours=2),
         config_raw=_on(),
-        schedule={"session_required": False},
+        schedule=_sched(),
         calendar=_calendar(now),
         mode_proof=None,
     )
