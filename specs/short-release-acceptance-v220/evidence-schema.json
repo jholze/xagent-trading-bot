@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "d-e2e-evidence-1",
+  "title": "D-E2E offline short release evidence index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "draft_id",
+    "issued",
+    "ac_revision",
+    "ac_revision_hash",
+    "candidate_sha",
+    "integration_wired",
+    "issue_412",
+    "rows"
+  ],
+  "properties": {
+    "schema_version": {"const": "d-e2e-evidence-1"},
+    "draft_id": {"const": "D-E2E"},
+    "issued": {"const": false},
+    "ac_revision": {"type": "string"},
+    "ac_revision_hash": {"type": "string", "minLength": 64, "maxLength": 64},
+    "candidate_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "integration_wired": {"const": false},
+    "issue_412": {"const": "closed_not_planned"},
+    "authenticated_passes_established": {"const": 0},
+    "release_verdict": {
+      "enum": ["NOT_VERIFIED", "NO-GO", "ACCEPTED"]
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ac_id",
+          "kind",
+          "candidate_sha",
+          "ac_revision_hash",
+          "test_status",
+          "reviewers",
+          "tester_status",
+          "funding_proof",
+          "acceptance_executed_by_this_package"
+        ],
+        "properties": {
+          "row_id": {"type": "string"},
+          "ac_id": {"enum": ["AC-E2E-1", "AC-E2E-2", "AC-E2E-3", "AC-E2E-4"]},
+          "kind": {"enum": ["fixture", "manual", "actual"]},
+          "candidate_sha": {"type": "string"},
+          "ac_revision": {"type": "string"},
+          "ac_revision_hash": {"type": "string"},
+          "test_status": {"enum": ["passed", "failed", "skipped", "not_run"]},
+          "reviewers": {"type": "array"},
+          "tester_status": {"enum": ["passed", "failed", "skipped", "not_run"]},
+          "tester_head": {"type": ["string", "null"]},
+          "tester_model": {"type": ["string", "null"]},
+          "funding_proof": {"type": ["object", "null"]},
+          "producer": {"type": "string"},
+          "acceptance_executed_by_this_package": {"const": false},
+          "issue_412_action": {
+            "enum": ["leave_closed_not_planned", "reopen", "close"]
+          },
+          "authenticated_testnet_pass": {"type": "boolean"},
+          "notes": {"type": "string"}
+        }
+      }
+    }
+  }
+}
