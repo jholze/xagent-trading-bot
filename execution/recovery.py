@@ -10,6 +10,7 @@ Called once per tenant before its first trading cycle (hook:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -19,6 +20,8 @@ from core.operator_notify import notify_operator
 from core.stablecoins import STABLECOIN_BASES
 from core.tenant_context import tenant_context
 from execution.gate_adapter import (
+    _GATE_CLIENT_ID_DIGEST_CHARS,
+    _GATE_CLIENT_ID_HEAD_CHARS,
     _GATE_TEXT_ALLOWED,
     _canceled_or_rejected_status,
     _ccxt_status_token,
@@ -541,6 +544,121 @@ def _legacy_client_lookup(token: str) -> str:
     return _legacy_gate_client_order_id(raw)
 
 
+def _is_head_digest_client_id(token: str) -> bool:
+    """True for the post-#753 ``<11-char head>.<14-hex sha256>`` payload."""
+    text = str(token or "").strip()
+    head, dot, digest = text.partition(".")
+    if not dot or "." in digest:
+        return False
+    if len(head) != _GATE_CLIENT_ID_HEAD_CHARS or len(digest) != _GATE_CLIENT_ID_DIGEST_CHARS:
+        return False
+    return set(digest) <= set("0123456789abcdef")
+
+
+def _row_may_use_legacy_client_id(order: dict) -> bool:
+    """Legacy cut is only for rows that are not already stored as head.digest.
+
+    A post-#753 row persists the current clamp in ``client_order_id``. Looking
+    that row up by the shared 26-character cut can finalize a different older
+    order (#753).
+    """
+    stored = str(order.get("client_order_id") or "").strip()
+    return not _is_head_digest_client_id(stored)
+
+
+def _legacy_only_ids(order: dict) -> set[str]:
+    """Legacy cuts that differ from the current clamp. Empty for post-#753 rows."""
+    if not _row_may_use_legacy_client_id(order):
+        return set()
+    out: set[str] = set()
+    for raw in (order.get("client_order_id"), order.get("idempotency_key")):
+        legacy = _legacy_client_lookup(raw)
+        current = _clamped_client_lookup(raw)
+        if legacy and legacy != current:
+            out.add(legacy)
+    return out
+
+
+_LEGACY_QTY_ABS_TOL = 1e-8
+_LEGACY_QTY_REL_TOL = 1e-6
+
+
+def _norm_recovery_side(value: object) -> str:
+    side = str(value or "").strip().lower()
+    if side in ("buy", "cover"):
+        return "buy"
+    if side in ("sell", "short"):
+        return "sell"
+    return ""
+
+
+def _as_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _epoch_ms(value: object) -> float | None:
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        num = float(value)
+        if num > 1e12:
+            return num
+        if num > 1e9:
+            return num * 1000.0
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return _epoch_ms(float(text))
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.timestamp() * 1000.0
+
+
+def _record_created_ms(order: dict) -> float | None:
+    stamps = order.get("timestamps") if isinstance(order.get("timestamps"), dict) else {}
+    for value in (stamps.get("created"), order.get("created_at"), order.get("timestamp")):
+        ms = _epoch_ms(value)
+        if ms is not None:
+            return ms
+    return None
+
+
+def _legacy_match_belongs(order: dict, raw: dict) -> bool:
+    """A legacy-cut hit must be this row, not an older order that shares the cut."""
+    if _norm_recovery_side(raw.get("side")) != _norm_recovery_side(order.get("side")):
+        return False
+    req = order.get("request") if isinstance(order.get("request"), dict) else {}
+    rec_qty = _as_float(order.get("qty"))
+    if rec_qty is None:
+        rec_qty = _as_float(req.get("amount"))
+    raw_qty = _as_float(raw.get("amount"))
+    if raw_qty is None:
+        raw_qty = _as_float(raw.get("filled"))
+    if rec_qty is None or raw_qty is None:
+        return False
+    tol = max(_LEGACY_QTY_ABS_TOL, abs(rec_qty) * _LEGACY_QTY_REL_TOL)
+    if abs(raw_qty - rec_qty) > tol:
+        return False
+    rec_ms = _record_created_ms(order)
+    if rec_ms is None:
+        return True
+    raw_ms = _epoch_ms(raw.get("timestamp"))
+    if raw_ms is None:
+        raw_ms = _epoch_ms(raw.get("datetime"))
+    if raw_ms is None:
+        return False
+    return raw_ms + 1.0 >= rec_ms
+
+
 def _order_ids(order: dict) -> list[str]:
     execution = order.get("execution") if isinstance(order.get("execution"), dict) else {}
     ids = [
@@ -556,10 +674,14 @@ def _order_ids(order: dict) -> list[str]:
         if token and token not in seen:
             seen.add(token)
             out.append(token)
-    # Historical rows stored the unclamped key. Try the current clamp and the
-    # pre-#753 26-character cut. Gate may still hold the old cut.
+    # Historical rows stored the unclamped key. Try the current clamp, and the
+    # pre-#753 26-character cut only when this row is not already head.digest.
+    allow_legacy = _row_may_use_legacy_client_id(order)
     for raw in (order.get("client_order_id"), order.get("idempotency_key")):
-        for candidate in (_clamped_client_lookup(raw), _legacy_client_lookup(raw)):
+        candidates = [_clamped_client_lookup(raw)]
+        if allow_legacy:
+            candidates.append(_legacy_client_lookup(raw))
+        for candidate in candidates:
             if candidate and candidate not in seen:
                 seen.add(candidate)
                 out.append(candidate)
@@ -569,6 +691,7 @@ def _order_ids(order: dict) -> list[str]:
 def _fetch_order_raw(exchange, order: dict):
     symbol = str(order.get("symbol") or "")
     last_err: Exception | None = None
+    legacy_only = _legacy_only_ids(order)
     for ident in _order_ids(order):
         fn = getattr(exchange, "fetch_order", None)
         if not callable(fn):
@@ -596,6 +719,13 @@ def _fetch_order_raw(exchange, order: dict):
                 last_err = e
                 continue
             if isinstance(raw, dict) and raw:
+                if ident in legacy_only and not _legacy_match_belongs(order, raw):
+                    log(
+                        f"legacy clientOrderId {ident!r} for {symbol} "
+                        "does not match this row; not adopted",
+                        "WARNING",
+                    )
+                    continue
                 return raw
     if last_err is not None and _is_unreachable(last_err):
         raise last_err

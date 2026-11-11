@@ -127,7 +127,7 @@ def test_recovery_adopts_one_id_and_does_not_resend(monkeypatch):
     legacy_raw = _closed(
         filled=0.25,
         oid="ex-legacy",
-        extra={"clientOrderId": f"{_GATE_TEXT_PREFIX}{legacy}"},
+        extra={"side": "sell", "clientOrderId": f"{_GATE_TEXT_PREFIX}{legacy}"},
     )
     record = {
         "id": "local-1",
@@ -198,6 +198,78 @@ def test_recovery_adopts_one_id_and_does_not_resend(monkeypatch):
     )
     assert adapter.finalized == 1
     assert len(resolved) == 1
+    assert ex.create_order.call_count == 0
+
+
+def test_legacy_short_hyphenated_key_keeps_the_hyphen():
+    """Pre-#753 removed hyphens only after the 26-byte cut was required."""
+    assert _legacy_gate_client_order_id("abc-key") == "abc-key"
+    assert _clamp_gate_client_order_id("abc-key") == "abc-key"
+
+
+def test_post_753_row_does_not_adopt_a_legacy_cut_from_another_key(monkeypatch):
+    """#753 collision: the shared 26-character cut must not finalize a different order.
+
+    A post-#753 row stores the current clamp. The current id misses. The legacy
+    cut would return an older order from a different key. That order is not
+    finalized and the row stays ACTIVE.
+    """
+    other = _autoshort_key("SOMECOIN/USDT", "1h", "oracle_cliff", 0.5)
+    legacy = _legacy_gate_client_order_id(OLD)
+    current = _clamp_gate_client_order_id(OLD)
+    assert legacy == _legacy_gate_client_order_id(other)
+    assert current != _clamp_gate_client_order_id(other)
+    record = {
+        "id": "local-post-753",
+        "symbol": "SOMECOIN/USDT",
+        "status": "active",
+        "side": "sell",
+        "qty": 0.25,
+        "timeframe": "1h",
+        "client_order_id": current,
+        "idempotency_key": OLD,
+        "timestamps": {"created": "2026-11-01T00:00:00+00:00"},
+        "request": {"price": 0.012345, "amount": 0.25},
+    }
+    assert legacy not in _order_ids(record)
+    foreign = _closed(
+        filled=9.0,
+        oid="ex-other-key",
+        extra={
+            "side": "sell",
+            "clientOrderId": f"{_GATE_TEXT_PREFIX}{legacy}",
+            "timestamp": 1_600_000_000_000,
+        },
+    )
+
+    def fetch_order(ident, *_args, **_kwargs):
+        if ident == legacy:
+            return foreign
+        raise RuntimeError(f"miss {ident}")
+
+    ex = MagicMock()
+    ex.fetch_order.side_effect = fetch_order
+    ex.create_order.side_effect = AssertionError("recovery resent an order")
+    assert _fetch_order_raw(ex, record) is None
+
+    class GateExecutionAdapter:
+        def __init__(self) -> None:
+            self.finalized = 0
+
+        def _finalize_exchange_order(self, *_a, **_k):
+            self.finalized += 1
+            raise AssertionError("legacy collision was finalized")
+
+    monkeypatch.setattr("execution.recovery._link_result", lambda *_a, **_k: None)
+    resolved = _resolve_in_flight_orders(
+        [record],
+        exchange=ex,
+        adapter=GateExecutionAdapter(),
+        config=None,
+        scope="demo",
+    )
+    assert resolved == []
+    assert record["status"] == "active"
     assert ex.create_order.call_count == 0
 
 
