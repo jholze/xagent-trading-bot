@@ -132,10 +132,21 @@ def execution_only_view(order: dict) -> dict:
     return order
 
 
-def _replay_time(order: dict) -> str:
+def order_event_time(order: object) -> str:
+    """Fill time, else the status update, else created. Empty when none exist.
+
+    ``timestamps.filled`` is stored only for status ``filled``. A remainder
+    canceled or partial row still has ``updated`` or ``created``.
+    """
+    if not isinstance(order, dict):
+        return ""
     raw = order.get("timestamps")
     ts = raw if isinstance(raw, dict) else {}
-    return _text(ts.get("filled") or ts.get("created"))
+    return _text(ts.get("filled") or ts.get("updated") or ts.get("created"))
+
+
+def _replay_time(order: dict) -> str:
+    return order_event_time(order)
 
 
 def _replay_identity(order: dict) -> str | None:

@@ -429,3 +429,116 @@ def test_partial_rows_log_once_per_taken_order(monkeypatch):
     assert len(counted) == 2
     assert any("symbol=LG/USDT" in text and "filled_qty=4.0" in text and "tenant=tenant-a" in text for text in counted)
     assert any("status=canceled" in text and "filled_qty=1.0" in text for text in counted)
+
+
+def test_unpriced_partial_sell_with_execution_usdt_still_books():
+    """A quote on the execution is enough. Skipping every unpriced sell would drop this cash."""
+    symbol = "USDTSELL/USDT"
+    buy = _order(
+        "uq-buy", "buy", symbol, 2.0, 100.0, usdt=200.0, ts="2026-10-07T12:00:00",
+    )
+    sell = _order(
+        "uq-sell", "sell", symbol, 0.0, 20.0, status="canceled", usdt=70.0,
+        ts="2026-10-07T13:00:00", pnl=20.0,
+        request={"price": 3.0, "amount": 50.0, "usdt": 150.0},
+    )
+    sell["execution"].pop("price", None)
+    replay = replay_simulated_ledger([buy, sell], INITIAL)
+    assert _lot(replay, symbol)["amount"] == pytest.approx(80.0)
+    assert replay["cash"] == pytest.approx(INITIAL - 200.0 + 70.0)
+    assert replay["realized_pnl"] == pytest.approx(20.0)
+
+
+def test_canceled_buy_after_cutoff_is_excluded_from_daily_open():
+    from unittest.mock import patch
+
+    from notifications.daily_portfolio import (
+        _cash_at_cutoff,
+        _filled_orders_before,
+        _snapshot_from_orders_before,
+    )
+
+    cutoff = "2026-10-08T00:00:00"
+    early = {
+        "id": "early",
+        "status": "canceled",
+        "side": "buy",
+        "symbol": "EARLY/USDT",
+        "timeframe": TF,
+        "execution": {"price": 1.0, "amount": 10.0, "usdt": 10.0},
+        "request": {"amount": 80.0, "usdt": 80.0},
+        "timestamps": {"created": "2026-10-07T12:00:00", "updated": "2026-10-07T12:00:00"},
+    }
+    late = {
+        "id": "late",
+        "status": "canceled",
+        "side": "buy",
+        "symbol": "LATE/USDT",
+        "timeframe": TF,
+        "execution": {"price": 1.0, "amount": 40.0, "usdt": 40.08},
+        "request": {"amount": 100.0, "usdt": 100.0},
+        "timestamps": {"created": "2026-10-08T12:00:00", "updated": "2026-10-08T12:05:00"},
+    }
+    undated = {
+        "id": "undated",
+        "status": "partially_filled",
+        "side": "buy",
+        "symbol": "NONE/USDT",
+        "timeframe": TF,
+        "execution": {"price": 1.0, "amount": 5.0, "usdt": 5.0},
+        "timestamps": {},
+    }
+    with patch(
+        "notifications.daily_portfolio.load_orders",
+        return_value={"orders": [late, undated, early]},
+    ):
+        chosen = _filled_orders_before(cutoff, "paper")
+        cash = _cash_at_cutoff(cutoff, "paper", INITIAL, [])
+        snap = _snapshot_from_orders_before(cutoff, "paper")
+    assert [row["id"] for row in chosen] == ["early"]
+    assert cash == pytest.approx(INITIAL - 10.0)
+    assert snap[get_key("EARLY/USDT", TF)]["amount"] == pytest.approx(10.0)
+    assert get_key("LATE/USDT", TF) not in snap
+    assert get_key("NONE/USDT", TF) not in snap
+
+
+def test_daily_snapshot_skips_unpriced_partial_sell():
+    from unittest.mock import patch
+
+    from notifications.daily_portfolio import _snapshot_from_orders_before
+
+    cutoff = "2026-10-09T00:00:00"
+    buy = {
+        "id": "snap-buy",
+        "status": "filled",
+        "side": "buy",
+        "symbol": "SNAP/USDT",
+        "timeframe": TF,
+        "execution": {"price": 2.0, "amount": 100.0, "usdt": 200.0},
+        "timestamps": {"filled": "2026-10-07T12:00:00"},
+    }
+    sell = {
+        "id": "snap-sell",
+        "status": "canceled",
+        "side": "sell",
+        "symbol": "SNAP/USDT",
+        "timeframe": TF,
+        "execution": {"amount": 20.0},
+        "request": {"price": 3.0, "amount": 50.0, "usdt": 150.0},
+        "timestamps": {"updated": "2026-10-07T13:00:00"},
+    }
+    quoted = {
+        "id": "snap-quoted",
+        "status": "canceled",
+        "side": "sell",
+        "symbol": "SNAP/USDT",
+        "timeframe": TF,
+        "execution": {"amount": 10.0, "usdt": 40.0},
+        "timestamps": {"updated": "2026-10-07T14:00:00"},
+    }
+    with patch(
+        "notifications.daily_portfolio.load_orders",
+        return_value={"orders": [buy, sell, quoted]},
+    ):
+        snap = _snapshot_from_orders_before(cutoff, "paper")
+    assert snap[get_key("SNAP/USDT", TF)]["amount"] == pytest.approx(90.0)
