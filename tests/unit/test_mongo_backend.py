@@ -219,6 +219,13 @@ def _normalize_positions(positions: dict) -> dict:
             return float(v)
         if k == "entry_snapshot" and isinstance(v, dict):
             return {sk: sv for sk, sv in v.items() if sk != "captured_at"}
+        if k == "entry_lineage" and isinstance(v, dict):
+            # Ledger ids are new on every run, like captured_at.
+            return {
+                sk: sv
+                for sk, sv in v.items()
+                if sk not in ("entry_order_id", "entry_allocation_id")
+            }
         return v
 
     return {
