@@ -25,6 +25,7 @@ from intelligence.xai_auth import (
     fallback_endpoint_after,
     is_subscription_fallback_error,
     resolve_xai_endpoint,
+    xai_error_string,
     sidecar_base_url,
     subscription_endpoint,
 )
@@ -46,9 +47,10 @@ _FLAG_VARS = (
 )
 
 
-def _status_error(code: int) -> APIStatusError:
-    req = httpx.Request("POST", f"{SIDECAR}/v1/chat/completions")
-    return APIStatusError(f"sidecar {code}", response=httpx.Response(code, request=req), body={"error": "no_credential"})
+def _status_error(code: int, error: str = "no_credential") -> APIStatusError:
+    req = httpx.Request("POST", f"{SIDECAR}/v1/responses")
+    body = {"code": "not-found", "error": error}
+    return APIStatusError(f"Error code: {code}", response=httpx.Response(code, request=req), body=body)
 
 
 def _conn_error() -> APIConnectionError:
@@ -141,7 +143,8 @@ class TestEndpointResolution(_EnvCase):
     def test_fallback_error_classes(self):
         for code in (401, 403, 503):
             self.assertTrue(is_subscription_fallback_error(_status_error(code)), code)
-        for code in (400, 404, 429, 500, 502):
+        self.assertTrue(is_subscription_fallback_error(_status_error(404)))
+        for code in (400, 429, 500, 502):
             self.assertFalse(is_subscription_fallback_error(_status_error(code)), code)
         self.assertTrue(is_subscription_fallback_error(_conn_error()))
         self.assertFalse(is_subscription_fallback_error(_timeout_error()), "timeouts are not retried on the metered key")
@@ -159,6 +162,27 @@ class TestEndpointResolution(_EnvCase):
         msg = mock_log.call_args.args[0]
         self.assertIn(FALLBACK_LOG_MARKER, msg)
         self.assertIn("HTTP 503", msg)
+        self.assertIn("no_credential", msg)
+        self.assertNotIn(METERED, msg)
+        self.assertNotIn(TRIGGER, msg)
+
+    def test_error_string_is_redacted_and_404_is_fallback(self):
+        os.environ["XAI_API_KEY"] = METERED
+        os.environ["XAI_AUTH_TRIGGER_TOKEN"] = TRIGGER
+        leaked = _status_error(404, error=f"denied {METERED}")
+        text = xai_error_string(leaked)
+        self.assertNotIn(METERED, text)
+        self.assertIn("[redacted]", text)
+        sidecar = XaiEndpoint(base_url=f"{SIDECAR}/v1", api_key=TRIGGER, via_subscription=True)
+        detail = "The model grok-4.3 does not exist or your team does not have access to it."
+        with patch.object(xai_auth, "log") as mock_log:
+            direct = fallback_endpoint_after(_status_error(404, detail), sidecar, context="llm_client")
+        self.assertEqual(direct, direct_endpoint())
+        msg = mock_log.call_args.args[0]
+        self.assertIn("HTTP 404", msg)
+        self.assertIn(detail, msg)
+        self.assertNotIn(METERED, msg)
+        self.assertNotIn(TRIGGER, msg)
 
 
 class TestLlmClientRouting(_EnvCase):
@@ -211,6 +235,34 @@ class TestLlmClientRouting(_EnvCase):
         sidecar_client.chat.completions.create.assert_not_called()
         metered_client.chat.completions.create.assert_not_called()
         self.assertIn(FALLBACK_LOG_MARKER, mock_log.call_args.args[0])
+
+    def test_sidecar_404_falls_back_once_to_metered_and_logs_error_string(self):
+        self._flag_on()
+        detail = "The model grok-4.3 does not exist or your team does not have access to it."
+        sidecar_client = MagicMock()
+        sidecar_client.responses.create.side_effect = _status_error(404, detail)
+        metered_client = _chat_client('{"a": 2}')
+        constructed: list[dict] = []
+
+        def fake_openai(**kw):
+            constructed.append(kw)
+            return sidecar_client if kw["base_url"].startswith(SIDECAR) else metered_client
+
+        with patch.object(llm_client, "OpenAI", side_effect=fake_openai), patch.object(xai_auth, "log") as mock_log:
+            data = ask_llm_json("json please", retries=0, required_keys=["a"])
+        self.assertEqual(data, {"a": 2})
+        self.assertEqual(
+            [(c["base_url"], c["api_key"]) for c in constructed],
+            [(f"{SIDECAR}/v1", TRIGGER), (XAI_DIRECT_BASE_URL, METERED)],
+        )
+        self.assertEqual(sidecar_client.responses.create.call_count, 1, "sidecar 404 is not retried")
+        self.assertEqual(metered_client.responses.create.call_count, 1)
+        msg = mock_log.call_args.args[0]
+        self.assertIn(FALLBACK_LOG_MARKER, msg)
+        self.assertIn("HTTP 404", msg)
+        self.assertIn(detail, msg)
+        self.assertNotIn(METERED, msg)
+        self.assertNotIn(TRIGGER, msg)
 
     def test_sidecar_connection_error_falls_back_but_timeout_does_not(self):
         self._flag_on()
