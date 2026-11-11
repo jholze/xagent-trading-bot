@@ -96,13 +96,14 @@ def check_futures_url(url: str) -> RouteDecision:
         return RouteDecision(False, "url_missing")
     try:
         parts = urlsplit(url.strip())
+        host = parts.hostname
+        port = parts.port
     except ValueError:
-        return RouteDecision(False, "url_invalid")
+        return RouteDecision(False, "port_rejected")
     if parts.scheme != "https":
         return RouteDecision(False, "scheme_rejected")
     if parts.username or parts.password:
         return RouteDecision(False, "userinfo_rejected")
-    host = parts.hostname
     if not isinstance(host, str) or host != PINNED_HOST:
         if isinstance(host, str) and (
             host == LEGACY_TESTNET_HOST or host.endswith("." + LEGACY_TESTNET_HOST)
@@ -111,7 +112,7 @@ def check_futures_url(url: str) -> RouteDecision:
         if isinstance(host, str) and (host in LIVE_HOSTS or host.endswith(".gateio.ws")):
             return RouteDecision(False, "mainnet_rejected")
         return RouteDecision(False, "host_rejected")
-    if parts.port not in (None, 443):
+    if port not in (None, 443):
         return RouteDecision(False, "port_rejected")
     if parts.fragment:
         return RouteDecision(False, "fragment_rejected")
@@ -264,7 +265,7 @@ def collect_mode_proof(
     max_age_seconds: int,
 ) -> ModeProof:
     """Read a mode proof. Set is invoked only on an explicit synthetic client."""
-    synthetic = bool(getattr(client, "synthetic", False))
+    synthetic = getattr(client, "synthetic", False) is True
     invoked = False
     if allow_set and synthetic:
         setter = getattr(client, "set_isolated_one_way", None)
@@ -327,9 +328,15 @@ def authorize_route(
             credential_env=creds.credential_env,
             transport_calls=0,
         )
+    if getattr(transport, "follows_redirects", None) is not False:
+        return RouteDecision(False, "redirects_not_disabled", transport_calls=0)
     response = transport.request(method, checked.signing_url)
     calls = 1
-    status = response.get("status") if isinstance(response, dict) else None
+    if not isinstance(response, dict):
+        return RouteDecision(False, "response_unreadable", transport_calls=calls)
+    status = response.get("status")
+    if isinstance(status, bool) or not isinstance(status, int):
+        return RouteDecision(False, "response_unreadable", transport_calls=calls)
     if status in _REDIRECT_STATUSES:
         return RouteDecision(
             False,
@@ -339,6 +346,8 @@ def authorize_route(
             transport_calls=calls,
             followed_redirect=False,
         )
+    if status < 200 or status > 299:
+        return RouteDecision(False, "response_rejected", transport_calls=calls)
     return RouteDecision(
         True,
         "ok",
@@ -400,7 +409,7 @@ def _classify_mode(record: dict) -> _ModeView:
     leverage_zero = False
     if leverage is not None and str(leverage).strip() != "":
         parsed = _decimal(leverage)
-        if parsed is None:
+        if parsed is None or parsed < 0:
             return _ModeView("unknown_leverage")
         leverage_zero = parsed == 0
     margin = _text(record.get("margin_mode", record.get("marginMode")))

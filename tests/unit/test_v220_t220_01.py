@@ -47,6 +47,8 @@ def _ok_proof() -> route.ModeProof:
 
 
 class _Transport:
+    follows_redirects = False
+
     def __init__(self, status: int = 200, location: str = ""):
         self.calls: list[tuple[str, str]] = []
         self.status = status
@@ -313,25 +315,26 @@ def test_ac_t01_decimal_string_does_not_use_binary_float_spill():
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    ("overrides", "reason"),
     [
-        {"margin_mode": "cross"},
-        {"leverage": "0"},
-        {"leverage": "0", "margin_mode": "isolated"},
-        {"position_mode": "dual"},
-        {"position_mode": "hedge"},
-        {"position_mode": "dual_plus"},
-        {"dual_mode": True},
-        {"position_mode": ""},
-        {"margin_mode": ""},
-        {"leverage": None},
+        ({"margin_mode": "cross"}, "margin_cross"),
+        ({"leverage": "0"}, "margin_cross"),
+        ({"leverage": "0", "margin_mode": "isolated"}, "margin_cross"),
+        ({"position_mode": "dual"}, "position_mode_denied"),
+        ({"position_mode": "hedge"}, "position_mode_denied"),
+        ({"position_mode": "dual_plus"}, "position_mode_denied"),
+        ({"dual_mode": True}, "position_mode_denied"),
+        ({"position_mode": ""}, "unknown_position"),
+        ({"margin_mode": ""}, "unknown_margin"),
+        ({"leverage": None}, "unknown_leverage"),
+        ({"leverage": "-5"}, "unknown_leverage"),
     ],
 )
-def test_ac_t01_bad_mode_proof_denies(overrides):
+def test_ac_t01_bad_mode_proof_denies(overrides, reason):
     readback = _proof(**overrides)
     proof = route.prove_mode(_proof(), readback, observed_at=NOW, max_age_seconds=AGE)
     assert proof.allowed is False
-    assert proof.reason != "ok"
+    assert proof.reason == reason
 
 
 def test_ac_t01_set_response_without_readback_denies():
@@ -407,3 +410,138 @@ def test_ac_t01_synthetic_set_and_readback_allow():
     assert proof.allowed is True
     assert proof.set_invoked is True
     assert client.set_calls == ["set"]
+
+
+def test_ac_t01_truthy_synthetic_flag_does_not_switch_the_account():
+    from unittest.mock import MagicMock
+
+    mocked = MagicMock()
+    proof = route.collect_mode_proof(
+        mocked,
+        allow_set=True,
+        observed_at=NOW,
+        max_age_seconds=AGE,
+    )
+    assert proof.set_invoked is False
+    mocked.set_isolated_one_way.assert_not_called()
+    labeled = _ModeClient(synthetic="true", readback=_proof())
+    labeled_proof = route.collect_mode_proof(
+        labeled,
+        allow_set=True,
+        observed_at=NOW,
+        max_age_seconds=AGE,
+    )
+    assert labeled.set_calls == []
+    assert labeled_proof.set_invoked is False
+
+
+def test_ac_t01_unreadable_response_and_undeclared_redirects_deny():
+    class _Silent:
+        follows_redirects = True
+
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, url):
+            self.calls.append((method, url))
+            return object()
+
+    silent = _Silent()
+    decision = route.authorize_route(
+        _cfg(),
+        tenant_id="tenant-a",
+        mode="testnet",
+        url=PINNED,
+        mode_proof=_ok_proof(),
+        live_env="GATE_API_KEY",
+        testnet_env="GATE_TESTNET_KEY",
+        transport=silent,
+    )
+    assert decision.allowed is False
+    assert decision.reason == "redirects_not_disabled"
+    assert silent.calls == []
+
+    class _Opaque:
+        follows_redirects = False
+
+        def request(self, method, url):
+            return object()
+
+    opaque = route.authorize_route(
+        _cfg(),
+        tenant_id="tenant-a",
+        mode="testnet",
+        url=PINNED,
+        mode_proof=_ok_proof(),
+        live_env="GATE_API_KEY",
+        testnet_env="GATE_TESTNET_KEY",
+        transport=_Opaque(),
+    )
+    assert opaque.allowed is False
+    assert opaque.reason == "response_unreadable"
+    assert opaque.transport_calls == 1
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_ac_t01_every_redirect_status_is_rejected(status):
+    transport = _Transport(status=status, location="https://api.gateio.ws/api/v4/futures/usdt/orders")
+    decision = route.authorize_route(
+        _cfg(),
+        tenant_id="tenant-a",
+        mode="testnet",
+        url=PINNED,
+        mode_proof=_ok_proof(),
+        live_env="GATE_API_KEY",
+        testnet_env="GATE_TESTNET_KEY",
+        transport=transport,
+    )
+    assert decision.allowed is False
+    assert decision.reason == "redirect_rejected"
+    assert decision.followed_redirect is False
+    assert len(transport.calls) == 1
+
+
+def test_ac_t01_fragment_and_query_url_are_rejected():
+    fragment = route.check_futures_url(PINNED + "#next")
+    assert fragment.reason == "fragment_rejected"
+    query = route.check_futures_url(PINNED + "?next=https://api.gateio.ws/api/v4")
+    assert query.reason == "query_rejected"
+    bad_port = route.check_futures_url(
+        "https://api-testnet.gateapi.io:abc/api/v4/futures/usdt/orders"
+    )
+    assert bad_port.reason == "port_rejected"
+
+
+@pytest.mark.parametrize(
+    ("base", "size", "minimum", "step", "maximum", "reason"),
+    [
+        ("-1", "1", "1", "1", "10", "non_positive"),
+        ("1", "1", "0", "1", "10", "unknown_minimum"),
+        ("1", "1", "-1", "1", "10", "unknown_minimum"),
+        ("1", "1", "1", "0", "10", "unknown_step"),
+        ("1", "1", "1", "-1", "10", "unknown_step"),
+        ("1", "1", "1", "1", "0", "unknown_maximum"),
+        ("1", "1", "1", "1", "-1", "unknown_maximum"),
+    ],
+)
+def test_ac_t01_non_positive_bounds_do_not_accept_a_zero_order(
+    base, size, minimum, step, maximum, reason
+):
+    result = route.convert_base_qty(base, size, minimum=minimum, step=step, maximum=maximum)
+    assert result.accepted is False
+    assert result.reason == reason
+    assert result.contracts is None
+
+
+def test_ac_t01_stale_set_future_stamp_and_negative_age_deny():
+    stale_set = _proof(as_of=NOW - AGE - 1)
+    assert route.prove_mode(stale_set, _proof(), observed_at=NOW, max_age_seconds=AGE).reason == (
+        "stale_or_unknown"
+    )
+    future = _proof(as_of=NOW + 1)
+    assert route.prove_mode(_proof(), future, observed_at=NOW, max_age_seconds=AGE).reason == (
+        "stale_or_unknown"
+    )
+    assert route.prove_mode(_proof(), _proof(), observed_at=NOW, max_age_seconds=-1).reason == (
+        "stale_or_unknown"
+    )
