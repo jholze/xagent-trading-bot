@@ -9,6 +9,8 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from execution import paper_testnet_freeze as freeze
 from execution.paper_testnet_freeze import (
     FROZEN_HOST,
@@ -172,6 +174,37 @@ def test_guard_branches_reject_with_their_reason():
     assert off_grid.allowed is True
     assert off_grid.value == Decimal("109.2")
     assert (Decimal("110") - off_grid.value) >= Decimal("0.7")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("liq_clearance_fraction", "0.01"),
+        ("liq_clearance_fraction", None),
+        ("liq_clearance_min_ticks", 0),
+        ("liq_clearance_min_ticks", True),
+        ("host_allowlist", [FROZEN_HOST, "https://fx-api-testnet.gateio.ws:443"]),
+        ("host_allowlist", FROZEN_HOST),
+        ("legacy_host_fallback", True),
+        ("reconciliation_tolerance_usdt", "0.05"),
+        ("reconciliation_tolerance_usdt", "0"),
+        ("reconciliation_tolerance_usdt", None),
+        ("reconciliation_tolerance_may_widen", True),
+        ("adl_block_new_short", ["elevated", "unknown"]),
+        ("adl_block_new_short", "warning"),
+        ("adl_keep_protection", False),
+        ("emergency_permit_default", True),
+        ("emergency_auto_close", True),
+    ],
+)
+def test_each_paper_start_field_rejects_when_that_field_alone_is_loosened(field, value):
+    raw = _committed()
+    block = raw["shorts"]["testnet_futures"]["paper_start"]
+    if value is None:
+        del block[field]
+    else:
+        block[field] = value
+    assert frozen_paper_start(raw) is None
 
 
 def test_loosened_paper_start_is_rejected_and_a_tighter_block_is_kept():
