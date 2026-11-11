@@ -9,9 +9,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from intelligence.llm_client import ask_llm, ask_llm_json  # noqa: E402
+from intelligence.llm_client import DEFAULT_XAI_MODEL, ask_llm, ask_llm_json  # noqa: E402
 
-MODEL = os.getenv("LLM_MODEL") or os.getenv("GROK_PARSE_MODEL") or "grok-4"
+MODEL = os.getenv("LLM_MODEL") or os.getenv("GROK_PARSE_MODEL") or DEFAULT_XAI_MODEL
 PARSE_MODEL = os.getenv("GROK_PARSE_MODEL", MODEL)
 
 

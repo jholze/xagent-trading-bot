@@ -1,7 +1,7 @@
 """Pluggable OpenAI-compatible LLM client (epic #72 C7).
 
 Backends:
-  LLM_BACKEND=xai (default) → https://api.x.ai/v1 + XAI_API_KEY + grok-4
+  LLM_BACKEND=xai (default) → https://api.x.ai/v1 + XAI_API_KEY + grok-4.3
       with XAI_USE_SUBSCRIPTION=1 (+ XAI_AUTH_SIDECAR_URL / XAI_AUTH_TRIGGER_TOKEN)
       → {sidecar}/v1 + trigger token, one-shot fallback to XAI_API_KEY on
       sidecar 401/403/503/connection error (#397 Phase 2, see intelligence/xai_auth.py)
@@ -22,7 +22,12 @@ from typing import Any
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from intelligence.xai_auth import fallback_endpoint_after, resolve_xai_endpoint, XaiEndpoint
+from intelligence.xai_auth import (
+    DEFAULT_XAI_MODEL,
+    fallback_endpoint_after,
+    resolve_xai_endpoint,
+    XaiEndpoint,
+)
 from logger import log
 
 load_dotenv()
@@ -84,7 +89,7 @@ def llm_settings() -> LlmSettings:
     key = endpoint.api_key
     if not endpoint.via_subscription:
         key = key or os.environ.get("LLM_API_KEY") or ""
-    model = os.environ.get("GROK_PARSE_MODEL") or os.environ.get("LLM_MODEL") or "grok-4"
+    model = os.environ.get("GROK_PARSE_MODEL") or os.environ.get("LLM_MODEL") or DEFAULT_XAI_MODEL
     return LlmSettings(
         backend="xai",
         base_url=endpoint.base_url,

@@ -32,7 +32,18 @@ from intelligence.xai_auth import (
 SIDECAR = "http://xagent-xai-auth.railway.internal:8080"
 TRIGGER = "trigger-secret-0123456789"
 METERED = "xai-metered-key"
-_FLAG_VARS = ("XAI_USE_SUBSCRIPTION", "XAI_AUTH_SIDECAR_URL", "XAI_AUTH_TRIGGER_TOKEN", "XAI_API_KEY", "LLM_BACKEND", "LLM_API_KEY", "LLM_BASE_URL")
+_FLAG_VARS = (
+    "XAI_USE_SUBSCRIPTION",
+    "XAI_AUTH_SIDECAR_URL",
+    "XAI_AUTH_TRIGGER_TOKEN",
+    "XAI_API_KEY",
+    "LLM_BACKEND",
+    "LLM_API_KEY",
+    "LLM_BASE_URL",
+    "GROK_PARSE_MODEL",
+    "LLM_MODEL",
+    "GROK_MODEL",
+)
 
 
 def _status_error(code: int) -> APIStatusError:
@@ -150,12 +161,12 @@ class TestLlmClientRouting(_EnvCase):
     def test_flag_off_settings_unchanged(self):
         os.environ["XAI_API_KEY"] = METERED
         s = llm_settings()
-        self.assertEqual((s.backend, s.base_url, s.api_key, s.model, s.via_subscription), ("xai", XAI_DIRECT_BASE_URL, METERED, "grok-4", False))
+        self.assertEqual((s.backend, s.base_url, s.api_key, s.model, s.via_subscription), ("xai", XAI_DIRECT_BASE_URL, METERED, "grok-4.3", False))
 
     def test_flag_on_settings_point_at_sidecar(self):
         self._flag_on()
         s = llm_settings()
-        self.assertEqual((s.base_url, s.api_key, s.model, s.via_subscription), (f"{SIDECAR}/v1", TRIGGER, "grok-4", True))
+        self.assertEqual((s.base_url, s.api_key, s.model, s.via_subscription), (f"{SIDECAR}/v1", TRIGGER, "grok-4.3", True))
 
     def test_flag_on_client_constructed_with_sidecar_and_trigger(self):
         self._flag_on()
@@ -255,7 +266,7 @@ class TestGrokXSearchRouting(_EnvCase):
         self.assertEqual((kw["base_url"], kw["api_key"]), (f"{SIDECAR}/v1", TRIGGER))
         tools = client.responses.create.call_args.kwargs["tools"]
         self.assertEqual(tools[0]["type"], "x_search", "tool shape unchanged")
-        self.assertEqual(client.responses.create.call_args.kwargs["model"], "grok-4")
+        self.assertEqual(client.responses.create.call_args.kwargs["model"], "grok-4.3")
 
     def test_flag_on_sidecar_503_falls_back_once_to_metered(self):
         self._flag_on()
