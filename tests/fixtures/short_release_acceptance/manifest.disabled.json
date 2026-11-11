@@ -1,0 +1,41 @@
+{
+  "schema_version": "d-e2e-evidence-1",
+  "enabled": false,
+  "execution_authorized": false,
+  "executable": false,
+  "global_kill_switch": false,
+  "mode": "paper",
+  "allow_live": false,
+  "tenant_id": null,
+  "origin": "https://api-testnet.gateapi.io:443",
+  "actions": ["SHORT", "protective_stop", "COVER"],
+  "limits": {
+    "leverage": "1",
+    "notional_pct_of_virtual_nav": "10",
+    "stop_risk_pct": "0.25",
+    "aggregate_stop_risk_pct": "0.75",
+    "safety_cap_pct": "20",
+    "exchange_min_qty": null,
+    "min_qty_fits": null
+  },
+  "window": {
+    "timezone": "Europe/Berlin",
+    "cutoff": "20:00:00",
+    "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+    "max_holding_hours": "4",
+    "same_calendar_day": true,
+    "execution_buffer_minutes": null
+  },
+  "candidate_sha": "REPLACE_WITH_CANDIDATE_SHA",
+  "keys_authorization": "separately_authorized_not_in_repo",
+  "config_authorization": "separately_authorized_not_in_repo",
+  "orders_authorization": "separately_authorized_not_in_repo",
+  "redaction": {
+    "secrets_redacted": true,
+    "account_ids_redacted": true,
+    "raw_venue_payloads_redacted": true,
+    "no_credentials_in_evidence": true
+  },
+  "shorts": {"allow_live": false},
+  "notes": "Disabled template. Not an authorization to trade, deploy, or read secrets."
+}

@@ -1,0 +1,17 @@
+{
+  "candidate_id": "cand-1",
+  "symbol": "FIXTURE/USDT",
+  "venue": "gate",
+  "market_type": "futures_usdt",
+  "as_of": "2026-11-10T12:00:00+00:00",
+  "source_commit": "not-a-production-scan",
+  "asset_class": "perp",
+  "threshold_status": "unmeasured",
+  "signal": null,
+  "stale": false,
+  "raw": {
+    "funding": "0.01",
+    "rsi14": "81",
+    "volume_ratio": "1.4"
+  }
+}
