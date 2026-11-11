@@ -68,8 +68,8 @@ OPEN_PARAMETERS = (
     "exhaustion_thresholds",
 )
 
-# Cited from strategies/positions.py ``_ENTRY_SNAPSHOT_KEYS`` (#600).
-# A test asserts equality. Do not add keys here.
+# Copy of strategies/positions.py ``_ENTRY_SNAPSHOT_KEYS`` (#600).
+# tests/integration/test_short_release_offline.py asserts equality.
 ENTRY_SNAPSHOT_KEYS = (
     "captured_at",
     "fill_price",
@@ -86,6 +86,9 @@ ENTRY_SNAPSHOT_KEYS = (
     "size_before_mult",
     "size_after_mult",
     "cap_applied",
+    "cost_tier",
+    "coin_class",
+    "slippage_pct",
 )
 
 REQUIRED_STAGES = (
