@@ -966,9 +966,27 @@ class RiskManager:
                     resolve_long_market_cap_min_usd,
                 )
 
-                tier = _tier_key(
-                    pos.get("strategy_tier") if isinstance(pos, dict) else None
-                )
+                # #711: this block runs only when the lot is not open. A closed
+                # lot can still carry the previous cycle's strategy_tier. That
+                # value is stale and must not set the floor or be stamped as
+                # this entry's tier. Use the tier resolved for this order.
+                from strategies.entry_tier import entry_tier_for_order, normalize_tier
+
+                resolved_tier = entry_tier_for_order(order, config=self.config)
+                if resolved_tier and not normalize_tier(getattr(order, "strategy_tier", None)):
+                    try:
+                        order.strategy_tier = resolved_tier
+                    except Exception:
+                        pass
+                if not resolved_tier:
+                    from logger import log as _mcap_log
+
+                    _mcap_log(
+                        f"long mcap floor {order.symbol}: strategy_tier unresolved, "
+                        "legacy volatile floor",
+                        "INFO",
+                    )
+                tier = _tier_key(resolved_tier)
                 min_mcap = float(
                     resolve_long_market_cap_min_usd(
                         tier,
@@ -1478,6 +1496,7 @@ class RiskManager:
             ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
             ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
             ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
+            strategy_tier=getattr(order, "strategy_tier", None),
         )
         approved_decision = RiskDecision(
             approved=True,

@@ -333,16 +333,23 @@ def test_mcap_lookup_exception_is_long_mcap():
     assert "None" in dec.message
 
 
-def test_stable_tier_uses_20m_floor_without_a_lot_amount():
+def test_closed_lot_tier_does_not_set_the_mcap_floor_without_a_fresh_tier():
+    """A closed lot keeps strategy_tier, and that value is not this entry's tier.
+
+    L3 has no coin-class shortcut, so an unhinted re-entry stays on the legacy
+    5M floor. A stable hint on the order still uses the 20M floor.
+    """
     rm = RiskManager(_cfg())
     pos = {"amount": 0, "strategy_tier": "stable"}
     with _eval_env(rm, position=pos, mcap=6_000_000):
-        denied = rm.evaluate(_buy(source="cmc"), "4h", source="cmc")
+        fresh = rm.evaluate(_buy(source="cmc"), "4h", source="cmc")
+    assert fresh.code != "long_mcap"
+    hinted = _buy(source="cmc")
+    hinted.strategy_tier = "stable"
+    with _eval_env(rm, position=pos, mcap=6_000_000):
+        denied = rm.evaluate(hinted, "4h", source="cmc")
     assert denied.code == "long_mcap"
     assert "20000000" in denied.message
-    with _eval_env(rm, position=pos, mcap=21_000_000):
-        allowed = rm.evaluate(_buy(source="cmc"), "4h", source="cmc")
-    assert allowed.approved is True, f"{allowed.code}: {allowed.message}"
 
 
 @pytest.mark.parametrize(

@@ -108,13 +108,15 @@ class TestEntrySnapshot600(unittest.TestCase):
         update_position("SHRT/USDT", "4h", "SHORT_ADD", 0.35, 4, leverage=2, rsi=10.0)
         self.assertEqual(get_position("SHRT/USDT", "4h")["entry_snapshot"], first)
 
-    def test_passed_strategy_tier_is_not_read_from_the_lot(self):
+    def test_passed_strategy_tier_replaces_a_stale_lot_value(self):
         set_position_field("TIER/USDT", "4h", "strategy_tier", "stable")
         pos = self._open_long(
             symbol="TIER/USDT",
             strategy_tier="volatile",
         )
-        self.assertIsNone(pos["strategy_tier"])
+        # #711: the stale lot value is reset and the passed tier is frozen at
+        # the first fill (before #711 the lot tier stayed None here).
+        self.assertEqual(pos["strategy_tier"], "volatile")
         self.assertEqual(pos["entry_snapshot"]["strategy_tier"], "volatile")
 
     def test_missing_inputs_are_null_rationale_codes_empty(self):

@@ -23,6 +23,9 @@ ENTRY_SNAPSHOT_KEYS = (
     "size_before_mult",
     "size_after_mult",
     "cap_applied",
+    "cost_tier",
+    "coin_class",
+    "slippage_pct",
 )
 
 

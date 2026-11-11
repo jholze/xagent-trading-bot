@@ -2479,6 +2479,7 @@ class GateExecutionAdapter(ExecutionAdapter):
             ctx_coin_regime=getattr(order, "ctx_coin_regime", None),
             ctx_volume_rel=getattr(order, "ctx_volume_rel", None),
             ctx_volume_window_days=getattr(order, "ctx_volume_window_days", None),
+            strategy_tier=getattr(order, "strategy_tier", None),
         )
         result = self._sync_local_ledger(
             sync_order,
@@ -2632,6 +2633,7 @@ class GateExecutionAdapter(ExecutionAdapter):
                 ctx=ctx,
                 fee_unknown=fee_unknown,
                 order_type=row_order_type,
+                strategy_tier=getattr(order, "strategy_tier", None),
             )
         elif order.type == "SHORT":
             local = self.portfolio.execute_short(
