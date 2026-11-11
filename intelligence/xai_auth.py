@@ -43,6 +43,12 @@ API_KEY_VAR = "XAI_API_KEY"
 
 XAI_DIRECT_BASE_URL = "https://api.x.ai/v1"
 
+# Bare ``grok-4`` is not on the current xAI models catalog and is not in the
+# May 15 2026 redirect list (those slugs alias to grok-4.3). A missing model id
+# is HTTP 404 ``not-found`` from ``https://api.x.ai/v1``. grok-4.3 is the
+# long-context successor and still accepts chat completions.
+DEFAULT_XAI_MODEL = "grok-4.3"
+
 FALLBACK_LOG_MARKER = "xai subscription fallback to XAI_API_KEY"
 _FALLBACK_STATUSES = frozenset({401, 403, 503})
 _TRUE = frozenset({"1", "true", "yes", "on"})

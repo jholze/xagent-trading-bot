@@ -29,12 +29,24 @@ class TestLlmSettings(unittest.TestCase):
 
     def test_default_xai(self):
         os.environ.pop("LLM_BACKEND", None)
+        os.environ.pop("GROK_PARSE_MODEL", None)
+        os.environ.pop("LLM_MODEL", None)
         os.environ["XAI_API_KEY"] = "xai-test-key"
         os.environ.pop("LLM_BASE_URL", None)
         s = llm_settings()
         self.assertEqual(s.backend, "xai")
         self.assertEqual(s.base_url, "https://api.x.ai/v1")
         self.assertEqual(s.api_key, "xai-test-key")
+        # grok-4 is delisted (404 not-found, no redirect). grok-4.3 is the catalog successor.
+        self.assertEqual(s.model, "grok-4.3")
+        self.assertNotEqual(s.model, "grok-4")
+
+    def test_grok_parse_model_overrides_retired_default(self):
+        os.environ.pop("LLM_BACKEND", None)
+        os.environ["XAI_API_KEY"] = "xai-test-key"
+        os.environ["GROK_PARSE_MODEL"] = "grok-4.7"
+        os.environ.pop("LLM_MODEL", None)
+        self.assertEqual(llm_settings().model, "grok-4.7")
 
     def test_openai_compat_requires_base_url(self):
         os.environ["LLM_BACKEND"] = "openai_compat"
@@ -60,6 +72,8 @@ class TestAskLlmJson(unittest.TestCase):
         self._env = dict(os.environ)
         os.environ["LLM_BACKEND"] = "xai"
         os.environ["XAI_API_KEY"] = "test-key"
+        os.environ.pop("GROK_PARSE_MODEL", None)
+        os.environ.pop("LLM_MODEL", None)
 
     def tearDown(self):
         os.environ.clear()
@@ -80,7 +94,7 @@ class TestAskLlmJson(unittest.TestCase):
         self.assertEqual(data["a"], 1)
         mock_client.chat.completions.create.assert_called()
         kwargs = mock_client.chat.completions.create.call_args.kwargs
-        self.assertIn("model", kwargs)
+        self.assertEqual(kwargs["model"], "grok-4.3")
 
     def test_ask_llm_returns_error_string_not_raise(self):
         with patch("intelligence.llm_client._get_client", side_effect=RuntimeError("down")):

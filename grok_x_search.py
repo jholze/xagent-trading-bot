@@ -6,12 +6,15 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from intelligence.xai_auth import XaiEndpoint, fallback_endpoint_after, resolve_xai_endpoint
+from intelligence.xai_auth import (
+    DEFAULT_XAI_MODEL,
+    XaiEndpoint,
+    fallback_endpoint_after,
+    resolve_xai_endpoint,
+)
 from logger import log
 
 load_dotenv()
-
-DEFAULT_MODEL = os.getenv("GROK_MODEL", "grok-4")
 
 
 def _client(endpoint: XaiEndpoint | None = None) -> OpenAI:
@@ -85,7 +88,7 @@ def fetch_posts_from_handle(
 
     to_date = datetime.now(timezone.utc).date()
     from_date = to_date - timedelta(days=max(days, 1))
-    model = model or DEFAULT_MODEL
+    model = model or os.getenv("GROK_MODEL") or DEFAULT_XAI_MODEL
 
     prompt = (
         f"Find up to {max_posts} original posts (no retweets, no replies-only) "
