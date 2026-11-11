@@ -9,6 +9,7 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
+from execution import paper_testnet_freeze as freeze
 from execution.paper_testnet_freeze import (
     FROZEN_HOST,
     LEGACY_HOST,
@@ -147,5 +148,60 @@ def test_item8_emergency_permit_defaults_off_and_does_not_auto_close():
     )
     forced = json.loads(json.dumps(raw))
     forced["shorts"]["testnet_futures"]["paper_start"]["emergency_auto_close"] = True
-    assert emergency_close(forced).reason == "auto_close_forbidden"
+    assert frozen_paper_start(forced) is None
+    assert emergency_close(forced).reason == "paper_start_rejected"
     assert emergency_close(forced).auto_close is False
+
+
+def test_guard_branches_reject_with_their_reason():
+    infeasible = clearance_stop(entry="100", liquidation="100.4", tick="1")
+    assert infeasible.reason == "clearance_infeasible"
+    assert infeasible.value is None
+    at_liq = clearance_stop(entry="100", liquidation="110", tick="0.1", proposed_stop="110")
+    assert at_liq.reason == "no_exchange_data"
+    at_entry = clearance_stop(entry="100", liquidation="110", tick="0.1", proposed_stop="100")
+    assert at_entry.reason == "no_exchange_data"
+    assert clearance_stop(entry="100", liquidation="110", tick="0.1", min_ticks=0).reason == "ticks_loosened"
+    assert clearance_stop(entry="100", liquidation="110", tick="0.1", fraction="nope").reason == (
+        "unknown_clearance"
+    )
+    assert reconcile_usdt("10", "10", tolerance="0").reason == "unknown_tolerance"
+    assert reconcile_usdt("10", "10", tolerance="-1").reason == "unknown_tolerance"
+    assert reconcile_usdt("10", "10", quantum="0").reason == "unknown_quantum"
+    off_grid = clearance_stop(entry="100", liquidation="110", tick="0.7")
+    assert off_grid.allowed is True
+    assert off_grid.value == Decimal("109.2")
+    assert (Decimal("110") - off_grid.value) >= Decimal("0.7")
+
+
+def test_loosened_paper_start_is_rejected_and_a_tighter_block_is_kept():
+    raw = _committed()
+    loosened = json.loads(json.dumps(raw))
+    start = loosened["shorts"]["testnet_futures"]["paper_start"]
+    start["reconciliation_tolerance_usdt"] = "0.05"
+    start["liq_clearance_fraction"] = "0.01"
+    start["adl_keep_protection"] = False
+    assert frozen_paper_start(loosened) is None
+    tighter = json.loads(json.dumps(raw))
+    block = tighter["shorts"]["testnet_futures"]["paper_start"]
+    block["liq_clearance_fraction"] = "0.10"
+    block["reconciliation_tolerance_usdt"] = "0.005"
+    kept = frozen_paper_start(tighter)
+    assert kept is block
+    assert kept["liq_clearance_fraction"] == "0.10"
+
+
+def test_legacy_fallback_flag_and_bad_port_and_missing_config_deny(monkeypatch):
+    flagged = {"legacy_host_fallback": True, "host_allowlist": [FROZEN_HOST]}
+    assert origin_allowed(ORDER, flagged).reason == "allowlist_not_frozen"
+    raw = _committed()
+    copied = json.loads(json.dumps(raw))
+    copied["shorts"]["testnet_futures"]["paper_start"]["legacy_host_fallback"] = True
+    monkeypatch.setattr(freeze, "_load_committed_config", lambda: copied)
+    assert origin_allowed(ORDER).reason == "allowlist_not_frozen"
+    monkeypatch.setattr(freeze, "_load_committed_config", lambda: None)
+    assert origin_allowed(ORDER).reason == "allowlist_not_frozen"
+    bad_port = origin_allowed("https://api-testnet.gateapi.io:abc/api/v4/futures/usdt/orders", [FROZEN_HOST])
+    assert bad_port.reason == "origin_rejected"
+    huge_port = origin_allowed("https://api-testnet.gateapi.io:99999/api/v4/futures/usdt/orders", [FROZEN_HOST])
+    assert huge_port.reason == "origin_rejected"

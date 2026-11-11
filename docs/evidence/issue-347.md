@@ -19,7 +19,7 @@ at 18:40 Europe/Berlin. This is not a live approval and not a strategy result.
 | ADL warning / elevated / unknown new short | no frozen rule | denied, protection kept, no auto close |
 | emergency auto close | no frozen key | false, including if the key is forced true |
 | minute or USDT emergency limits in config | absent | absent |
-| `tests/unit/test_paper_testnet_freeze_2026_11_10.py` | 0 | 6 passed |
+| `tests/unit/test_paper_testnet_freeze_2026_11_10.py` | 0 | 9 passed; a loosened `paper_start` block is rejected |
 
 Mutant: `used > 0.01` was flipped to `used < 0.01`. A tolerance of `0.02`
 then returned `within_tolerance` instead of `tolerance_widened`.

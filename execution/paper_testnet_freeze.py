@@ -11,7 +11,7 @@ import json
 import posixpath
 import re
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -36,13 +36,21 @@ class FreezeDecision:
     auto_close: bool = False
 
 
-def frozen_paper_start(raw: dict | None = None) -> dict[str, Any]:
-    """Committed block, or the frozen floor when the block is missing."""
+def frozen_paper_start(raw: dict | None = None) -> dict[str, Any] | None:
+    """Frozen block, the floor when the block is missing, or None if it is looser.
+
+    A present block that widens clearance, tolerance, the host list, ADL, or
+    the emergency permit is rejected. Callers must treat None as deny.
+    """
     if raw is None:
         raw = _load_committed_config()
+    if raw is None:
+        return None
     block = _paper_start(raw)
-    if not isinstance(block, dict):
+    if block is None:
         return _floor_block()
+    if not isinstance(block, dict) or not _block_is_within_floor(block):
+        return None
     return block
 
 
@@ -77,7 +85,9 @@ def clearance_stop(
     required = max(tick_d * used_ticks, distance * used_fraction)
     if required <= 0 or required >= distance:
         return FreezeDecision(False, "clearance_infeasible", keep_protection=True)
-    ceiling = liq_d - required
+    ceiling = _snap_toward_entry(liq_d - required, tick_d, entry_d)
+    if ceiling is None or (liq_d - ceiling) < required:
+        return FreezeDecision(False, "clearance_infeasible", keep_protection=True)
     proposed = _decimal(proposed_stop) if proposed_stop is not None else None
     if proposed is None:
         return FreezeDecision(True, "tightened", ceiling, keep_protection=True)
@@ -157,8 +167,6 @@ def reconcile_usdt(
     gap = abs(left - right)
     if gap <= used:
         return FreezeDecision(True, "within_tolerance", gap)
-    if gap <= used + step and gap > used:
-        return FreezeDecision(False, "above_tolerance", gap)
     return FreezeDecision(False, "above_tolerance", gap)
 
 
@@ -176,6 +184,8 @@ def adl_new_short(state: Any) -> FreezeDecision:
 def emergency_close(config: dict | None = None, permit: Any = None) -> FreezeDecision:
     """No automatic emergency close. Limits are not given default minutes or amounts."""
     block = frozen_paper_start(config)
+    if not isinstance(block, dict):
+        return FreezeDecision(False, "paper_start_rejected", auto_close=False, keep_protection=True)
     if block.get("emergency_auto_close") is True:
         return FreezeDecision(False, "auto_close_forbidden", auto_close=False, keep_protection=True)
     if permit is not None:
@@ -213,7 +223,12 @@ def _paper_start(raw: Any) -> Any:
 
 def _allowlist(allowlist: Any) -> tuple[str, ...] | None:
     if allowlist is None:
-        block = frozen_paper_start()
+        try:
+            block = frozen_paper_start()
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return None
+        if not isinstance(block, dict):
+            return None
         allowlist = block.get("host_allowlist")
         if block.get("legacy_host_fallback") is not False:
             return None
@@ -233,13 +248,55 @@ def _origin(url: str) -> str | None:
         return None
     try:
         parts = urlsplit(url.strip())
+        host = parts.hostname
+        port = parts.port
     except ValueError:
         return None
     if parts.scheme != "https" or parts.username or parts.password or parts.fragment:
         return None
-    if parts.hostname != PINNED_HOST or parts.port not in (None, 443):
+    if host != PINNED_HOST or port not in (None, 443):
         return None
     return FROZEN_HOST
+
+
+def _snap_toward_entry(ceiling: Decimal, tick: Decimal, entry: Decimal) -> Decimal | None:
+    """Round the short stop down onto the tick grid, toward entry."""
+    steps = (ceiling / tick).to_integral_value(rounding=ROUND_DOWN)
+    snapped = steps * tick
+    if snapped <= entry:
+        return None
+    return snapped
+
+
+def _block_is_within_floor(block: dict) -> bool:
+    fraction = _decimal(block.get("liq_clearance_fraction"))
+    if fraction is None or fraction < FROZEN_CLEARANCE:
+        return False
+    ticks, tick_reason = _tightened_int(
+        block.get("liq_clearance_min_ticks"), FROZEN_MIN_TICKS, "ticks_loosened"
+    )
+    if tick_reason or ticks is None:
+        return False
+    hosts = block.get("host_allowlist")
+    if not isinstance(hosts, list) or hosts != [FROZEN_HOST]:
+        return False
+    if block.get("legacy_host_fallback") is not False:
+        return False
+    tolerance = _decimal(block.get("reconciliation_tolerance_usdt"))
+    if tolerance is None or tolerance <= 0 or tolerance > FROZEN_TOLERANCE:
+        return False
+    if block.get("reconciliation_tolerance_may_widen") is not False:
+        return False
+    adl = block.get("adl_block_new_short")
+    if not isinstance(adl, list) or any(name not in adl for name in ADL_BLOCK):
+        return False
+    if block.get("adl_keep_protection") is not True:
+        return False
+    if block.get("emergency_permit_default") is not False:
+        return False
+    if block.get("emergency_auto_close") is not False:
+        return False
+    return True
 
 
 def _tightened_decimal(
@@ -284,6 +341,9 @@ def _decimal(value: Any) -> Decimal | None:
     return number
 
 
-def _load_committed_config() -> dict:
+def _load_committed_config() -> dict | None:
     path = Path(__file__).resolve().parents[1] / "config.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
