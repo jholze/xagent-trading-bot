@@ -207,6 +207,127 @@ def test_legacy_short_hyphenated_key_keeps_the_hyphen():
     assert _clamp_gate_client_order_id("abc-key") == "abc-key"
 
 
+def test_head_digest_id_keeps_a_dot_inside_the_eleven_char_head():
+    from execution.gate_adapter import _GATE_CLIENT_ID_DIGEST_CHARS, _GATE_CLIENT_ID_HEAD_CHARS
+    from execution.recovery import _is_head_digest_client_id
+
+    digest = "a" * _GATE_CLIENT_ID_DIGEST_CHARS
+    head = ("ab." + ("c" * _GATE_CLIENT_ID_HEAD_CHARS))[:_GATE_CLIENT_ID_HEAD_CHARS]
+    assert len(head) == _GATE_CLIENT_ID_HEAD_CHARS and "." in head
+    assert _is_head_digest_client_id(f"{head}.{digest}") is True
+    assert _is_head_digest_client_id(f"{head}.{'z' * _GATE_CLIENT_ID_DIGEST_CHARS}") is False
+
+
+def _pre753_record(**over):
+    record = {
+        "id": "local-pre",
+        "symbol": "SOMECOIN/USDT",
+        "status": "active",
+        "side": "sell",
+        "qty": 0.25,
+        "timeframe": "1h",
+        "client_order_id": OLD,
+        "idempotency_key": OLD,
+        "timestamps": {"created": "2026-11-01T00:00:00+00:00"},
+        "request": {"price": 0.012345, "amount": 0.25, "usdt": 25.0},
+    }
+    record.update(over)
+    return record
+
+
+def _legacy_fetch(record, raw, *, market=None):
+    legacy = _legacy_gate_client_order_id(str(record.get("idempotency_key") or OLD))
+
+    def fetch_order(ident, *_args, **_kwargs):
+        if ident == legacy:
+            return raw
+        raise RuntimeError(f"miss {ident}")
+
+    ex = MagicMock()
+    ex.fetch_order.side_effect = fetch_order
+    ex.create_order.side_effect = AssertionError("recovery resent an order")
+    if market is None:
+        ex.market.side_effect = Exception("spot")
+    else:
+        ex.market.return_value = market
+    return ex, _fetch_order_raw(ex, record)
+
+
+def test_legacy_hit_with_wrong_side_size_or_age_is_not_adopted():
+    """A skipped or always-true match check must not adopt a foreign legacy hit."""
+    legacy = _legacy_gate_client_order_id(OLD)
+    good = {
+        "side": "sell",
+        "amount": 0.25,
+        "filled": 0.25,
+        "cost": 0.003,
+        "clientOrderId": f"{_GATE_TEXT_PREFIX}{legacy}",
+        "timestamp": 1_762_000_000_000,
+    }
+    cases = [
+        {**good, "side": "buy"},
+        {**good, "amount": 9.0, "filled": 9.0, "cost": 90.0},
+        {**good, "timestamp": 1_600_000_000_000},
+    ]
+    for extra in cases:
+        record = _pre753_record()
+        raw = _closed(filled=extra["filled"], oid="ex-foreign", extra=extra)
+        _ex, found = _legacy_fetch(record, raw)
+        assert found is None, extra
+
+
+def test_legacy_spot_market_buy_matches_quote_amount_not_base_qty():
+    """Spot market buy ``amount`` is quote USDT, not base qty."""
+    record = _pre753_record(
+        side="buy",
+        qty=0.25,
+        request={"price": 100.0, "amount": 0.25, "usdt": 25.0},
+    )
+    legacy = _legacy_gate_client_order_id(OLD)
+    raw = _closed(
+        filled=0.0,
+        oid="ex-buy",
+        extra={
+            "side": "buy",
+            "amount": 25.0,
+            "filled": None,
+            "cost": 25.0,
+            "clientOrderId": f"{_GATE_TEXT_PREFIX}{legacy}",
+            "timestamp": 1_799_500_000_000,
+        },
+    )
+    _ex, found = _legacy_fetch(record, raw)
+    assert found is not None
+    assert found["id"] == "ex-buy"
+    assert found["amount"] != record["qty"]
+
+
+def test_legacy_swap_short_matches_contracts_times_contract_size():
+    record = _pre753_record(
+        symbol="SOMECOIN/USDT:USDT",
+        side="short",
+        qty=20.0,
+        request={"price": 1.0, "amount": 20.0},
+    )
+    legacy = _legacy_gate_client_order_id(OLD)
+    raw = _closed(
+        filled=2.0,
+        oid="ex-swap",
+        extra={
+            "side": "sell",
+            "amount": 2.0,
+            "filled": 2.0,
+            "cost": 20.0,
+            "clientOrderId": f"{_GATE_TEXT_PREFIX}{legacy}",
+            "timestamp": 1_799_500_000_000,
+        },
+    )
+    _ex, found = _legacy_fetch(record, raw, market={"contractSize": 10})
+    assert found is not None
+    assert found["id"] == "ex-swap"
+    assert found["amount"] != record["qty"]
+
+
 def test_post_753_row_does_not_adopt_a_legacy_cut_from_another_key(monkeypatch):
     """#753 collision: the shared 26-character cut must not finalize a different order.
 

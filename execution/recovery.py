@@ -545,10 +545,14 @@ def _legacy_client_lookup(token: str) -> str:
 
 
 def _is_head_digest_client_id(token: str) -> bool:
-    """True for the post-#753 ``<11-char head>.<14-hex sha256>`` payload."""
+    """True for the post-#753 ``<11-char head>.<14-hex sha256>`` payload.
+
+    The head may itself contain ``.`` (the Gate charset allows it), so the
+    split is the last dot. The digest is exactly 14 hex characters.
+    """
     text = str(token or "").strip()
-    head, dot, digest = text.partition(".")
-    if not dot or "." in digest:
+    head, dot, digest = text.rpartition(".")
+    if not dot:
         return False
     if len(head) != _GATE_CLIENT_ID_HEAD_CHARS or len(digest) != _GATE_CLIENT_ID_DIGEST_CHARS:
         return False
@@ -632,21 +636,92 @@ def _record_created_ms(order: dict) -> float | None:
     return None
 
 
-def _legacy_match_belongs(order: dict, raw: dict) -> bool:
+def _quote_usdt(order: dict) -> float | None:
+    req = order.get("request") if isinstance(order.get("request"), dict) else {}
+    execution = order.get("execution") if isinstance(order.get("execution"), dict) else {}
+    for value in (
+        req.get("usdt"),
+        order.get("usdt_amount"),
+        execution.get("usdt"),
+        order.get("usdt"),
+    ):
+        num = _as_float(value)
+        if num is not None and num > 0:
+            return num
+    return None
+
+
+def _record_base_qty(order: dict) -> float | None:
+    req = order.get("request") if isinstance(order.get("request"), dict) else {}
+    for value in (order.get("qty"), req.get("amount")):
+        num = _as_float(value)
+        if num is not None:
+            return num
+    return None
+
+
+def _qty_close(left: float, right: float) -> bool:
+    tol = max(_LEGACY_QTY_ABS_TOL, abs(right) * _LEGACY_QTY_REL_TOL)
+    return abs(left - right) <= tol
+
+
+def _swap_contract_size(exchange, symbol: str) -> float | None:
+    """ccxt ``contractSize`` for a swap market, or None for spot."""
+    market_fn = getattr(exchange, "market", None) if exchange is not None else None
+    if not callable(market_fn):
+        return None
+    names = [symbol] if symbol else []
+    if symbol and ":" not in symbol:
+        names.append(f"{symbol}:USDT")
+    for name in names:
+        try:
+            market = market_fn(name)
+        except Exception:
+            continue
+        if not isinstance(market, dict):
+            continue
+        size = _as_float(market.get("contractSize"))
+        if size is not None and size > 0:
+            return size
+    return None
+
+
+def _legacy_size_matches(order: dict, raw: dict, exchange) -> bool:
+    """Compare the legacy hit in the unit the venue actually used.
+
+    Spot market buys store quote USDT in ``amount`` and ``cost``
+    (``create_market_buy_order_with_cost``). ``filled`` is base qty.
+    Swap orders store contract count in ``amount``; base qty is
+    ``amount * contractSize``.
+    """
+    rec_qty = _record_base_qty(order)
+    filled = _as_float(raw.get("filled"))
+    amount = _as_float(raw.get("amount"))
+    cost = _as_float(raw.get("cost"))
+    contract_size = _swap_contract_size(exchange, str(order.get("symbol") or ""))
+    if contract_size is not None and contract_size != 1.0:
+        if amount is None or rec_qty is None:
+            return False
+        return _qty_close(amount * contract_size, rec_qty)
+    if filled is not None and rec_qty is not None and _qty_close(filled, rec_qty):
+        return True
+    if _norm_recovery_side(order.get("side")) == "buy":
+        quote = _quote_usdt(order)
+        if quote is not None:
+            if cost is not None and _qty_close(cost, quote):
+                return True
+            if amount is not None and _qty_close(amount, quote):
+                return True
+    if amount is not None and rec_qty is not None and _qty_close(amount, rec_qty):
+        return True
+    return False
+
+
+def _legacy_match_belongs(order: dict, raw: dict, exchange=None) -> bool:
     """A legacy-cut hit must be this row, not an older order that shares the cut."""
     if _norm_recovery_side(raw.get("side")) != _norm_recovery_side(order.get("side")):
         return False
-    req = order.get("request") if isinstance(order.get("request"), dict) else {}
-    rec_qty = _as_float(order.get("qty"))
-    if rec_qty is None:
-        rec_qty = _as_float(req.get("amount"))
-    raw_qty = _as_float(raw.get("amount"))
-    if raw_qty is None:
-        raw_qty = _as_float(raw.get("filled"))
-    if rec_qty is None or raw_qty is None:
-        return False
-    tol = max(_LEGACY_QTY_ABS_TOL, abs(rec_qty) * _LEGACY_QTY_REL_TOL)
-    if abs(raw_qty - rec_qty) > tol:
+    if not _legacy_size_matches(order, raw, exchange):
         return False
     rec_ms = _record_created_ms(order)
     if rec_ms is None:
@@ -719,7 +794,7 @@ def _fetch_order_raw(exchange, order: dict):
                 last_err = e
                 continue
             if isinstance(raw, dict) and raw:
-                if ident in legacy_only and not _legacy_match_belongs(order, raw):
+                if ident in legacy_only and not _legacy_match_belongs(order, raw, exchange):
                     log(
                         f"legacy clientOrderId {ident!r} for {symbol} "
                         "does not match this row; not adopted",
