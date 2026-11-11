@@ -6,7 +6,7 @@ Backends:
       SuperGrok sidecar token; pi-ai and the sidecar probe both use responses.
       with XAI_USE_SUBSCRIPTION=1 (+ XAI_AUTH_SIDECAR_URL / XAI_AUTH_TRIGGER_TOKEN)
       → {sidecar}/v1 + trigger token, one-shot fallback to XAI_API_KEY on
-      sidecar 401/403/503/connection error (#397 Phase 2, see intelligence/xai_auth.py)
+      sidecar 401/403/404/503/connection error (#397 Phase 2, see intelligence/xai_auth.py)
   LLM_BACKEND=openai_compat → LLM_BASE_URL + LLM_API_KEY + LLM_MODEL
       via chat completions (local OpenAI-compatible servers).
 
@@ -26,10 +26,13 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from intelligence.llm_circuit import before_llm_call, record_llm_failure, record_llm_success
 from intelligence.xai_auth import (
     DEFAULT_XAI_MODEL,
     fallback_endpoint_after,
+    redact_secrets,
     resolve_xai_endpoint,
+    xai_error_string,
     XaiEndpoint,
 )
 from logger import log
@@ -120,7 +123,11 @@ def _endpoint_host(base_url: str) -> str:
 
 
 def _llm_failure_line(prefix: str, settings: LlmSettings, model: str, exc: BaseException) -> str:
-    return f"{prefix}: model={model} host={_endpoint_host(settings.base_url)}: {exc}"
+    line = f"{prefix}: model={model} host={_endpoint_host(settings.base_url)}: {exc}"
+    detail = xai_error_string(exc)
+    if detail and detail not in str(exc):
+        line += f" | error={detail}"
+    return redact_secrets(line)
 
 
 def _response_text(response: Any) -> str:
@@ -242,6 +249,9 @@ def ask_llm(
     api_key: str | None = None,
 ) -> str:
     """Free-text completion. Returns error string on failure (legacy grok_agent style)."""
+    skip = before_llm_call()
+    if skip:
+        return f"API-Fehler: {skip}"
     try:
         if base_url:
             settings = LlmSettings(
@@ -259,9 +269,12 @@ def ask_llm(
             temperature=temperature,
             timeout_sec=timeout_sec,
         )
-        return response.choices[0].message.content or ""
+        text = response.choices[0].message.content or ""
+        record_llm_success()
+        return text
     except Exception as e:
-        return f"API-Fehler: {e}"
+        record_llm_failure()
+        return f"API-Fehler: {redact_secrets(str(e))}"
 
 
 def ask_llm_json(
@@ -272,6 +285,9 @@ def ask_llm_json(
     timeout_sec: int = 30,
     required_keys: list[str] | None = None,
 ) -> dict[str, Any]:
+    skip = before_llm_call()
+    if skip:
+        raise LlmError(skip)
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         settings: LlmSettings | None = None
@@ -285,7 +301,9 @@ def ask_llm_json(
                 timeout_sec=timeout_sec,
             )
             content = response.choices[0].message.content or ""
-            return parse_llm_json(content, required_keys=required_keys)
+            data = parse_llm_json(content, required_keys=required_keys)
+            record_llm_success()
+            return data
         except Exception as e:
             last_error = e
             used_model = model or (settings.model if settings is not None else "unset")
@@ -295,12 +313,13 @@ def ask_llm_json(
             else:
                 prefix = f"LLM failed after {retries + 1} attempts"
             if settings is None:
-                log(f"{prefix}: model={used_model} host=unknown: {e}", "WARNING")
+                log(redact_secrets(f"{prefix}: model={used_model} host=unknown: {e}"), "WARNING")
             else:
                 log(_llm_failure_line(prefix, settings, used_model, e), "WARNING")
             if attempt < retries:
                 time.sleep(wait)
-    raise LlmError(str(last_error)) from last_error
+    record_llm_failure()
+    raise LlmError(redact_secrets(str(last_error))) from last_error
 
 
 # --- aliases used by existing call sites ---

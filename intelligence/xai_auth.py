@@ -10,18 +10,22 @@ With the flag on *and* both variables set, ``resolve_xai_endpoint()`` returns
 ``{SIDECAR_URL}/v1`` + the trigger token as ``api_key``. The sidecar
 (``services/xai_auth_sidecar``) checks that bearer, injects the kept-alive
 OAuth access token and relays the call to ``https://api.x.ai/v1``. The access
-token never reaches this process.
+token never reaches this process. A subscription bearer on that host is not on
+the developer-API model catalog, so both chat completions and responses come
+back HTTP 404 ``not-found`` with a string ``error`` field.
 
 Flag off (unset / ``0`` / ``false``), or URL / token missing → today's
 behaviour exactly: ``https://api.x.ai/v1`` + ``XAI_API_KEY``. Unsetting the
 flag is the whole rollback.
 
-Fallback: when a call *via the sidecar* fails with 401 / 403 / 503 or a
-connection error (sidecar down, no credential on the volume, refresh failed),
-the caller logs ``xai subscription fallback to XAI_API_KEY`` and repeats the
-call **once** against the metered endpoint. No key there → fails as today.
-Timeouts are deliberately not a fallback trigger (a slow xAI answer through
-the proxy would only be waited for twice).
+Fallback: when a call *via the sidecar* fails with 401 / 403 / 404 / 503 or a
+connection error (sidecar down, no credential on the volume, refresh failed,
+or the sidecar returns 404), the caller logs
+``xai subscription fallback to XAI_API_KEY`` plus the JSON body's ``error``
+string (never the key) and repeats the call **once** against the metered
+endpoint. No key there → fails as today. Timeouts are deliberately not a
+fallback trigger (a slow xAI answer through the proxy would only be waited
+for twice). Other relayed statuses (400, 429, 500, …) are not either.
 
 Every module that talks to xAI (``intelligence/llm_client.py``,
 ``grok_x_search.py`` → ``x_data_provider.py``, WQE ``ai_critic`` via
@@ -67,7 +71,8 @@ RETIRED_XAI_MODEL_IDS = frozenset(
 )
 
 FALLBACK_LOG_MARKER = "xai subscription fallback to XAI_API_KEY"
-_FALLBACK_STATUSES = frozenset({401, 403, 503})
+_FALLBACK_STATUSES = frozenset({401, 403, 404, 503})
+_SECRET_VARS = (API_KEY_VAR, TRIGGER_TOKEN_VAR, "LLM_API_KEY", "OPENAI_API_KEY")
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
 
@@ -132,8 +137,41 @@ def resolve_xai_endpoint() -> XaiEndpoint:
     return subscription_endpoint() or direct_endpoint()
 
 
+def redact_secrets(text: str) -> str:
+    """Replace known credential env values with ``[redacted]``. Empty stays empty."""
+    if not text:
+        return ""
+    out = text
+    for var in _SECRET_VARS:
+        secret = (os.environ.get(var) or "").strip()
+        if len(secret) >= 8 and secret in out:
+            out = out.replace(secret, "[redacted]")
+    return out
+
+
+def xai_error_string(exc: BaseException) -> str:
+    """The xAI JSON body's ``error`` string, redacted. Never the API key.
+
+    xAI and the sidecar both send ``{"error": "<string>"}`` (model not-found,
+    ``not found``, ``no_credential``). The OpenAI SDK only appends
+    ``error.message`` to ``str(exc)``, so a string ``error`` otherwise
+    disappears and the log is just ``Error code: 404``.
+    """
+    body = getattr(exc, "body", None)
+    text = ""
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, str):
+            text = err.strip()
+        elif isinstance(err, dict):
+            message = err.get("message")
+            if isinstance(message, str):
+                text = message.strip()
+    return redact_secrets(text)[:500]
+
+
 def is_subscription_fallback_error(exc: BaseException) -> bool:
-    """True for sidecar 401/403/503 or a connection error (not a timeout)."""
+    """True for sidecar 401/403/404/503 or a connection error (not a timeout)."""
     try:
         from openai import APIConnectionError, APIStatusError, APITimeoutError
     except Exception:  # pragma: no cover - openai is a hard dependency
@@ -160,6 +198,8 @@ def fallback_endpoint_after(exc: BaseException, endpoint: XaiEndpoint, *, contex
     status = getattr(exc, "status_code", None)
     reason = f"HTTP {status}" if status else type(exc).__name__
     where = f" [{context}]" if context else ""
+    detail = xai_error_string(exc)
+    extra = f": {detail}" if detail else ""
     tail = "" if direct.api_key else f" — {API_KEY_VAR} not set, call will fail"
-    log(f"{FALLBACK_LOG_MARKER}{where}: sidecar {reason}{tail}", "WARNING")
+    log(redact_secrets(f"{FALLBACK_LOG_MARKER}{where}: sidecar {reason}{extra}{tail}"), "WARNING")
     return direct

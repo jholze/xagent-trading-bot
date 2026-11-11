@@ -354,6 +354,16 @@ def restore_process_tz():
 
 
 @pytest.fixture(autouse=True)
+def reset_llm_circuit_between_tests():
+    """LLM failures must not open the breaker for a later test."""
+    from intelligence.llm_circuit import reset_llm_circuit
+
+    reset_llm_circuit()
+    yield
+    reset_llm_circuit()
+
+
+@pytest.fixture(autouse=True)
 def isolate_test_mongo(monkeypatch):
     """Pytest uses isolated xagent_pytest — never the operator dev ledger xagent_test."""
     monkeypatch.delenv("MONGO_URL", raising=False)

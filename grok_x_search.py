@@ -6,11 +6,14 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from intelligence.llm_circuit import before_llm_call, record_llm_failure, record_llm_success
 from intelligence.xai_auth import (
     DEFAULT_XAI_MODEL,
     XaiEndpoint,
     fallback_endpoint_after,
+    redact_secrets,
     resolve_xai_endpoint,
+    xai_error_string,
 )
 from logger import log
 
@@ -29,7 +32,7 @@ def _client(endpoint: XaiEndpoint | None = None) -> OpenAI:
 
 def _responses_create(endpoint: XaiEndpoint, **kwargs):
     """`responses.create` on `endpoint`; via the sidecar it is repeated once on
-    `XAI_API_KEY` when the sidecar answers 401/403/503 or is unreachable."""
+    `XAI_API_KEY` when the sidecar answers 401/403/404/503 or is unreachable."""
     try:
         return _client(endpoint).responses.create(**kwargs)
     except Exception as e:
@@ -80,6 +83,9 @@ def fetch_posts_from_handle(
     if not handle:
         return []
 
+    if before_llm_call():
+        return []
+
     endpoint = resolve_xai_endpoint()
     if not endpoint.api_key:
         # flag off (or sidecar not configured) and no metered key → nothing to call with
@@ -113,8 +119,12 @@ def fetch_posts_from_handle(
             }],
         )
         posts = _parse_json_posts(_extract_response_text(response))
+        record_llm_success()
         log(f"Grok X Search returned {len(posts)} posts for @{handle}", "INFO")
         return posts[:max_posts]
     except Exception as e:
-        log(f"Grok X Search failed for @{handle}: {e}", "WARNING")
+        record_llm_failure()
+        detail = xai_error_string(e)
+        extra = f" | error={detail}" if detail and detail not in str(e) else ""
+        log(redact_secrets(f"Grok X Search failed for @{handle}: {e}{extra}"), "WARNING")
         return []
