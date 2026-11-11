@@ -2,10 +2,13 @@
 
 Backends:
   LLM_BACKEND=xai (default) → https://api.x.ai/v1 + XAI_API_KEY + grok-4.3
+      via the Responses API (POST /v1/responses). Chat completions 404 for the
+      SuperGrok sidecar token; pi-ai and the sidecar probe both use responses.
       with XAI_USE_SUBSCRIPTION=1 (+ XAI_AUTH_SIDECAR_URL / XAI_AUTH_TRIGGER_TOKEN)
       → {sidecar}/v1 + trigger token, one-shot fallback to XAI_API_KEY on
       sidecar 401/403/503/connection error (#397 Phase 2, see intelligence/xai_auth.py)
   LLM_BACKEND=openai_compat → LLM_BASE_URL + LLM_API_KEY + LLM_MODEL
+      via chat completions (local OpenAI-compatible servers).
 
 ask_grok* remain as thin aliases for compatibility.
 """
@@ -18,6 +21,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -110,6 +114,53 @@ def _direct_xai_settings(settings: LlmSettings, endpoint: XaiEndpoint) -> LlmSet
     )
 
 
+def _endpoint_host(base_url: str) -> str:
+    """Hostname only. Never the path, query, or userinfo (those can carry secrets)."""
+    return urlparse(base_url or "").hostname or "unknown"
+
+
+def _llm_failure_line(prefix: str, settings: LlmSettings, model: str, exc: BaseException) -> str:
+    return f"{prefix}: model={model} host={_endpoint_host(settings.base_url)}: {exc}"
+
+
+def _response_text(response: Any) -> str:
+    """Assistant text from a Responses API result. Chat-shaped objects are not accepted."""
+    direct = getattr(response, "output_text", None)
+    if isinstance(direct, str) and direct.strip():
+        return direct
+    parts: list[str] = []
+    output = getattr(response, "output", None)
+    if not isinstance(output, list):
+        return ""
+    for item in output:
+        if getattr(item, "type", None) not in (None, "message"):
+            continue
+        content = getattr(item, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            text = getattr(part, "text", None)
+            if isinstance(text, str) and text:
+                parts.append(text)
+    return "".join(parts)
+
+
+def _as_chat(text: str) -> Any:
+    """Shape a Responses payload like a chat completion so existing callers stay unchanged."""
+    message = type("Msg", (), {"content": text})()
+    choice = type("Choice", (), {"message": message})()
+    return type("Chat", (), {"choices": [choice]})()
+
+
+def _invoke(settings: LlmSettings, *, model: str, messages: list[dict[str, str]], temperature: float, timeout_sec: int):
+    """One completion. xAI uses Responses; OpenAI-compatible servers stay on chat completions."""
+    client = _get_client(settings, timeout_sec)
+    if settings.backend == "xai":
+        response = client.responses.create(model=model, input=messages, temperature=temperature)
+        return _as_chat(_response_text(response))
+    return client.chat.completions.create(model=model, messages=messages, temperature=temperature)
+
+
 def _chat_completion(
     settings: LlmSettings,
     *,
@@ -118,16 +169,20 @@ def _chat_completion(
     temperature: float,
     timeout_sec: int,
 ):
-    """One chat completion; via the sidecar it is repeated once on XAI_API_KEY when the sidecar fails."""
+    """One completion; via the sidecar it is repeated once on XAI_API_KEY when the sidecar fails."""
     try:
-        client = _get_client(settings, timeout_sec)
-        return client.chat.completions.create(model=model, messages=messages, temperature=temperature)
+        return _invoke(settings, model=model, messages=messages, temperature=temperature, timeout_sec=timeout_sec)
     except Exception as e:
         direct = fallback_endpoint_after(e, settings.endpoint, context="llm_client")
         if direct is None:
             raise
-        client = _get_client(_direct_xai_settings(settings, direct), timeout_sec)
-        return client.chat.completions.create(model=model, messages=messages, temperature=temperature)
+        return _invoke(
+            _direct_xai_settings(settings, direct),
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            timeout_sec=timeout_sec,
+        )
 
 
 def _get_client(settings: LlmSettings, timeout_sec: int) -> OpenAI:
@@ -219,6 +274,7 @@ def ask_llm_json(
 ) -> dict[str, Any]:
     last_error: Exception | None = None
     for attempt in range(retries + 1):
+        settings: LlmSettings | None = None
         try:
             settings = llm_settings()
             response = _chat_completion(
@@ -232,12 +288,18 @@ def ask_llm_json(
             return parse_llm_json(content, required_keys=required_keys)
         except Exception as e:
             last_error = e
+            used_model = model or (settings.model if settings is not None else "unset")
             if attempt < retries:
                 wait = 2**attempt
-                log(f"LLM retry {attempt + 1}/{retries} after {wait}s: {e}", "WARNING")
-                time.sleep(wait)
+                prefix = f"LLM retry {attempt + 1}/{retries} after {wait}s"
             else:
-                log(f"LLM failed after {retries + 1} attempts: {e}", "WARNING")
+                prefix = f"LLM failed after {retries + 1} attempts"
+            if settings is None:
+                log(f"{prefix}: model={used_model} host=unknown: {e}", "WARNING")
+            else:
+                log(_llm_failure_line(prefix, settings, used_model, e), "WARNING")
+            if attempt < retries:
+                time.sleep(wait)
     raise LlmError(str(last_error)) from last_error
 
 
