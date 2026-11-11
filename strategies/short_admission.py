@@ -232,31 +232,32 @@ def _frozen_limits(
     reserve = _reservation_sum(profile.get("reservations") if "reservations" in profile else None)
     if reserve is None:
         reasons.append("reservation_unknown")
-    exposure_cap, cap_reason = _ceiling(
-        profile,
-        "max_exposure_pct",
-        tightened_decimal(config_raw, "max_exposure_pct", MAX_EXPOSURE_PCT),
+    exposure_ceiling, exposure_invalid = tightened_decimal(
+        config_raw, "max_exposure_pct", MAX_EXPOSURE_PCT
     )
+    stop_ceiling, stop_invalid = tightened_decimal(config_raw, "max_stop_loss_pct", MAX_STOP_LOSS_PCT)
+    book_ceiling, book_invalid = tightened_decimal(
+        config_raw, "max_stop_loss_pct_all", MAX_STOP_LOSS_PCT_ALL
+    )
+    legacy_ceiling, legacy_invalid = tightened_decimal(
+        config_raw, "legacy_margin_cap_pct", LEGACY_MARGIN_CAP_PCT
+    )
+    for invalid in (exposure_invalid, stop_invalid, book_invalid, legacy_invalid):
+        if invalid:
+            reasons.append(invalid)
+    exposure_cap, cap_reason = _ceiling(profile, "max_exposure_pct", exposure_ceiling or MAX_EXPOSURE_PCT)
     if cap_reason:
         reasons.append(cap_reason)
-    stop_cap, stop_reason = _ceiling(
-        profile,
-        "max_stop_loss_pct",
-        tightened_decimal(config_raw, "max_stop_loss_pct", MAX_STOP_LOSS_PCT),
-    )
+    stop_cap, stop_reason = _ceiling(profile, "max_stop_loss_pct", stop_ceiling or MAX_STOP_LOSS_PCT)
     if stop_reason:
         reasons.append(stop_reason)
     book_cap, book_reason = _ceiling(
-        profile,
-        "max_stop_loss_pct_all",
-        tightened_decimal(config_raw, "max_stop_loss_pct_all", MAX_STOP_LOSS_PCT_ALL),
+        profile, "max_stop_loss_pct_all", book_ceiling or MAX_STOP_LOSS_PCT_ALL
     )
     if book_reason:
         reasons.append(book_reason)
     legacy_cap, legacy_reason = _ceiling(
-        profile,
-        "legacy_margin_cap_pct",
-        tightened_decimal(config_raw, "legacy_margin_cap_pct", LEGACY_MARGIN_CAP_PCT),
+        profile, "legacy_margin_cap_pct", legacy_ceiling or LEGACY_MARGIN_CAP_PCT
     )
     if legacy_reason:
         reasons.append(legacy_reason)
@@ -371,8 +372,10 @@ def _regime_reasons(
         return reasons
     as_of = ledger_datetime_utc(candidate.get("regime_as_of"))
     now_utc = ledger_datetime_utc(now)
-    limit = regime_max_age_seconds(config_raw)
-    if as_of is None or now_utc is None or as_of > now_utc or (now_utc - as_of).total_seconds() > limit:
+    limit, limit_reason = regime_max_age_seconds(config_raw)
+    if limit_reason or limit is None:
+        reasons.append(limit_reason or "paper_start_invalid")
+    elif as_of is None or now_utc is None or as_of > now_utc or (now_utc - as_of).total_seconds() > limit:
         reasons.append("regime_stale")
     return reasons
 
@@ -417,6 +420,10 @@ def _position_reasons(candidate: Mapping[str, Any] | None) -> list[str]:
         return ["existing_qty_invalid"]
     qty = _number(candidate.get("existing_qty"))
     if qty is None:
+        return ["existing_qty_invalid"]
+    if side == "flat" and qty != 0:
+        return ["flat_qty_nonzero"]
+    if side == "short" and qty < 0:
         return ["existing_qty_invalid"]
     if side == "long" and qty != 0:
         return ["long_not_flipped"]

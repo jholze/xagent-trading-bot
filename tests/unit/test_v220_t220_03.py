@@ -8,7 +8,7 @@ deferral is short-path only.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -129,7 +129,7 @@ def test_committed_config_is_unchanged():
     assert shorts["leverage_default"] == 2
     assert "sandbox_admission_v220" not in shorts
     assert "sandbox_v220" not in shorts
-    assert "paper_start" not in shorts["testnet_futures"]
+    assert "sandbox_admission_v220" not in shorts
     assert sandbox_admission_enabled(raw) is False
     assert sandbox_start_defaults() == {
         "leverage": "1",
@@ -258,6 +258,7 @@ def test_freeze_regime_cells_start_closed():
     decision = _decide(_PROFILE, candidate=_ready_candidate(), config_raw=_on())
     assert decision.admitted is False
     assert "regime_closed" in decision.reasons
+    assert decision.regime_applied is True
     attempt = dict(_PROFILE)
     attempt["opened_regimes"] = "RANGE"
     forced = _decide(attempt, candidate=_ready_candidate(), config_raw=_on())
@@ -346,6 +347,60 @@ def test_ac5_stock_deferral_is_not_a_global_ban():
     assert perp.admitted is True
     assert perp.stock_exclusion_applied is False
     assert perp.short_path_deferred is False
+
+
+def test_regime_age_boundary_margin_and_flat_qty():
+    fresh = _ready_candidate(regime_as_of=(_NOW - timedelta(seconds=60)).isoformat())
+    assert _decide(_PROFILE, candidate=fresh).admitted is True
+    stale = _ready_candidate(regime_as_of=(_NOW - timedelta(seconds=61)).isoformat())
+    assert "regime_stale" in _decide(_PROFILE, candidate=stale).reasons
+    tight = _on(opened=("RANGE",), regime_max_age_seconds=30)
+    aged = _ready_candidate(regime_as_of=(_NOW - timedelta(seconds=31)).isoformat())
+    assert "regime_stale" in _decide(_PROFILE, candidate=aged, config_raw=tight).reasons
+    still = _ready_candidate(regime_as_of=(_NOW - timedelta(seconds=30)).isoformat())
+    assert _decide(_PROFILE, candidate=still, config_raw=tight).admitted is True
+    mismatch = dict(_PROFILE)
+    mismatch["margin"] = "1"
+    assert "margin_notional_mismatch" in _decide(mismatch, candidate=_ready_candidate()).reasons
+    assert "flat_qty_nonzero" in _decide(
+        _PROFILE, candidate=_ready_candidate(existing_qty="5")
+    ).reasons
+    assert "existing_qty_invalid" in _decide(
+        _PROFILE, candidate=_ready_candidate(existing_side="short", existing_qty="-3")
+    ).reasons
+
+
+def test_paper_start_without_opened_regimes_stays_closed():
+    cfg = {
+        "shorts": {
+            "sandbox_admission_v220": {"enabled": True},
+            "allow_live": False,
+            "testnet_futures": {
+                "enabled": False,
+                "tenants": [],
+                "paper_start": {"mode_proof_max_age_seconds": 60},
+            },
+        }
+    }
+    decision = _decide(_PROFILE, candidate=_ready_candidate(), config_raw=cfg)
+    assert decision.admitted is False
+    assert "regime_closed" in decision.reasons
+    assert decision.regime_applied is True
+
+
+def test_zero_quantum_and_negative_slots_deny():
+    zero_q = dict(_PROFILE)
+    zero_q["quote_quantum"] = "0"
+    assert "quantum_unknown" in _decide(zero_q).reasons
+    negative = dict(_PROFILE)
+    negative["notional"] = "-1"
+    assert "notional_unknown" in _decide(negative).reasons
+    negative_stop = dict(_PROFILE)
+    negative_stop["stop_risk"] = "-1"
+    assert "stop_risk_unknown" in _decide(negative_stop).reasons
+    negative_book = dict(_PROFILE)
+    negative_book["existing_short_stop_risk"] = "-1"
+    assert "stop_book_unknown" in _decide(negative_book).reasons
 
 
 def test_negative_open_notional_and_unknown_side_deny():

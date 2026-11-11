@@ -48,30 +48,44 @@ def paper_start(config_raw: Mapping[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
-def tightened_int(config_raw: Mapping[str, Any] | None, key: str, ceiling: int) -> int:
+def tightened_int(
+    config_raw: Mapping[str, Any] | None, key: str, ceiling: int
+) -> tuple[int | None, str | None]:
+    """Return (value, reason). Zero is the tightest legal value. Malformed denies."""
     raw = paper_start(config_raw).get(key)
-    if isinstance(raw, bool) or raw is None:
-        return ceiling
+    if raw is None:
+        return ceiling, None
+    if isinstance(raw, bool):
+        return None, "paper_start_invalid"
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        return ceiling
-    if value < 0 or value > ceiling:
-        return ceiling
-    return value
+        return None, "paper_start_invalid"
+    if value < 0:
+        return None, "paper_start_invalid"
+    if value > ceiling:
+        return ceiling, None
+    return value, None
 
 
-def tightened_decimal(config_raw: Mapping[str, Any] | None, key: str, ceiling: Decimal) -> Decimal:
+def tightened_decimal(
+    config_raw: Mapping[str, Any] | None, key: str, ceiling: Decimal
+) -> tuple[Decimal | None, str | None]:
+    """Return (value, reason). Zero is the tightest legal value. Malformed denies."""
     raw = paper_start(config_raw).get(key)
-    if raw is None or isinstance(raw, bool):
-        return ceiling
+    if raw is None:
+        return ceiling, None
+    if isinstance(raw, bool):
+        return None, "paper_start_invalid"
     try:
         value = Decimal(str(raw).strip())
     except Exception:
-        return ceiling
-    if not value.is_finite() or value <= 0 or value > ceiling:
-        return ceiling
-    return value
+        return None, "paper_start_invalid"
+    if not value.is_finite() or value < 0:
+        return None, "paper_start_invalid"
+    if value > ceiling:
+        return ceiling, None
+    return value, None
 
 
 def tightened_cutoff(config_raw: Mapping[str, Any] | None) -> time:
@@ -93,16 +107,21 @@ def tightened_cutoff(config_raw: Mapping[str, Any] | None) -> time:
     return candidate
 
 
-def mode_proof_max_age_seconds(config_raw: Mapping[str, Any] | None) -> int:
+def mode_proof_max_age_seconds(config_raw: Mapping[str, Any] | None) -> tuple[int | None, str | None]:
     return tightened_int(config_raw, "mode_proof_max_age_seconds", DEFAULT_MAX_AGE_SECONDS)
 
 
-def regime_max_age_seconds(config_raw: Mapping[str, Any] | None) -> int:
+def regime_max_age_seconds(config_raw: Mapping[str, Any] | None) -> tuple[int | None, str | None]:
     return tightened_int(config_raw, "regime_max_age_seconds", DEFAULT_MAX_AGE_SECONDS)
 
 
-def clock_skew_seconds(config_raw: Mapping[str, Any] | None) -> int:
+def clock_skew_seconds(config_raw: Mapping[str, Any] | None) -> tuple[int | None, str | None]:
     return tightened_int(config_raw, "clock_skew_seconds", MAX_CLOCK_SKEW_SECONDS)
+
+
+def paper_start_present(config_raw: Mapping[str, Any] | None) -> bool:
+    block = shorts_config(config_raw).get("testnet_futures")
+    return isinstance(block, dict) and isinstance(block.get("paper_start"), dict)
 
 
 def opened_regimes(config_raw: Mapping[str, Any] | None) -> frozenset[str]:
@@ -197,7 +216,9 @@ def parse_sandbox_mode_proof(
     if stamped is None:
         return SandboxModeProof(False, "mode_proof_stale", margin, position, tenant.strip(), market_name)
     age = int(observed.timestamp()) - stamped
-    limit = mode_proof_max_age_seconds(config_raw)
+    limit, limit_reason = mode_proof_max_age_seconds(config_raw)
+    if limit_reason or limit is None:
+        return SandboxModeProof(False, "paper_start_invalid", margin, position, tenant.strip(), market_name)
     if age < 0 or age > limit:
         return SandboxModeProof(False, "mode_proof_stale", margin, position, tenant.strip(), market_name)
     return SandboxModeProof(True, "ok", margin, position, tenant.strip(), market_name, False)
