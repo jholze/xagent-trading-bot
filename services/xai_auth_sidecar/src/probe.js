@@ -3,7 +3,7 @@
  * `npm run probe` — answer the three open questions of issue #397 live:
  *
  *   Q1  Does the subscription OAuth access token work as a Bearer key against
- *       https://api.x.ai/v1 (GET /models, responses.create) and for which models?
+ *       the Grok CLI proxy (GET /models, responses.create) and for which models?
  *   Q2  Does it authorise the `x_search` tool with grok_x_search.py's exact shape?
  *   Q3  What rate-limit headers come back, and does a tiny 5-call burst trip 429?
  *
@@ -14,7 +14,7 @@
  */
 import { fileURLToPath } from "node:url";
 import OpenAI from "openai";
-import { XAI_BASE_URL } from "./oauth.js";
+import { XAI_DEVELOPER_BASE_URL, XAI_SUBSCRIPTION_BASE_URL, subscriptionProxyHeaders, modelFromBody } from "./upstream.js";
 import {
   resolveCredentialPath,
   load,
@@ -43,7 +43,8 @@ import {
 export const USAGE = `Usage: node src/probe.js [--help]
 
 Loads the stored xAI subscription credential (refreshing it if needed), then
-probes https://api.x.ai/v1 with the OAuth access token as Bearer key:
+probes the Grok subscription proxy (https://cli-chat-proxy.grok.com/v1) with the
+OAuth access token. The optional XAI_API_KEY control run stays on https://api.x.ai/v1:
 
   Q1  GET /v1/models + responses.create for each candidate model
   Q2  responses.create with grok_x_search.py's exact x_search tool shape
@@ -61,13 +62,27 @@ Run \`npm run login\` first if no credential exists.
 
 const REQUEST_TIMEOUT_MS = 120_000;
 
-export function makeClient(apiKey, { baseURL = XAI_BASE_URL, fetch: fetchImpl } = {}) {
+function withSubscriptionHeaders(fetchImpl, env) {
+  const base = fetchImpl ?? globalThis.fetch;
+  return async (url, init = {}) => {
+    const headers = new Headers(init.headers);
+    const model = modelFromBody(init.body);
+    for (const [name, value] of Object.entries(subscriptionProxyHeaders(env, model))) {
+      headers.set(name, value);
+    }
+    return base(url, { ...init, headers });
+  };
+}
+
+export function makeClient(apiKey, { baseURL = XAI_SUBSCRIPTION_BASE_URL, fetch: fetchImpl, env = process.env, subscription = true } = {}) {
+  const onSubscriptionProxy = subscription && String(baseURL).startsWith(XAI_SUBSCRIPTION_BASE_URL);
   return new OpenAI({
     apiKey,
     baseURL,
     maxRetries: 0, // we want to SEE 429s, not have the SDK hide them behind retries
     timeout: REQUEST_TIMEOUT_MS,
-    ...(fetchImpl ? { fetch: fetchImpl } : {}),
+    ...(onSubscriptionProxy ? { defaultHeaders: subscriptionProxyHeaders(env) } : {}),
+    ...(onSubscriptionProxy || fetchImpl ? { fetch: onSubscriptionProxy ? withSubscriptionHeaders(fetchImpl, env) : fetchImpl } : {}),
   });
 }
 
@@ -203,7 +218,7 @@ export async function runProbe({
     phase: 1,
     generatedAt: new Date(startedAt).toISOString(),
     durationMs: now() - startedAt,
-    baseUrl: XAI_BASE_URL,
+    baseUrl: XAI_SUBSCRIPTION_BASE_URL,
     credentialPath,
     tokenExpiresAt,
     refreshed,
@@ -310,8 +325,10 @@ export async function run(
       errLine(`Token refreshed; new expiry ${new Date(credential.expires).toISOString()}`);
     }
 
-    const tokenClient = createClient(credential.access);
-    const keyClient = env.XAI_API_KEY ? createClient(env.XAI_API_KEY) : null;
+    const tokenClient = createClient(credential.access, { baseURL: XAI_SUBSCRIPTION_BASE_URL, env, subscription: true });
+    const keyClient = env.XAI_API_KEY
+      ? createClient(env.XAI_API_KEY, { baseURL: XAI_DEVELOPER_BASE_URL, env, subscription: false })
+      : null;
     if (!keyClient) errLine("XAI_API_KEY not set — control run will be skipped.");
 
     const report = await probe({
