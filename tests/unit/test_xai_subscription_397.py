@@ -60,10 +60,14 @@ def _timeout_error() -> APITimeoutError:
 
 
 def _chat_client(content: str = '{"a": 1}') -> MagicMock:
-    resp = MagicMock()
-    resp.choices = [MagicMock(message=MagicMock(content=content))]
+    """xAI calls use Responses; chat.completions stays for the openai_compat path."""
+    chat_resp = MagicMock()
+    chat_resp.choices = [MagicMock(message=MagicMock(content=content))]
+    responses_resp = MagicMock()
+    responses_resp.output_text = content
     client = MagicMock()
-    client.chat.completions.create.return_value = resp
+    client.chat.completions.create.return_value = chat_resp
+    client.responses.create.return_value = responses_resp
     return client
 
 
@@ -190,7 +194,7 @@ class TestLlmClientRouting(_EnvCase):
     def test_sidecar_503_falls_back_once_to_metered_and_logs(self):
         self._flag_on()
         sidecar_client = MagicMock()
-        sidecar_client.chat.completions.create.side_effect = _status_error(503)
+        sidecar_client.responses.create.side_effect = _status_error(503)
         metered_client = _chat_client('{"a": 2}')
         constructed: list[dict] = []
 
@@ -202,8 +206,10 @@ class TestLlmClientRouting(_EnvCase):
             data = ask_llm_json("json please", retries=0, required_keys=["a"])
         self.assertEqual(data, {"a": 2})
         self.assertEqual([(c["base_url"], c["api_key"]) for c in constructed], [(f"{SIDECAR}/v1", TRIGGER), (XAI_DIRECT_BASE_URL, METERED)])
-        self.assertEqual(sidecar_client.chat.completions.create.call_count, 1, "sidecar is not retried")
-        self.assertEqual(metered_client.chat.completions.create.call_count, 1)
+        self.assertEqual(sidecar_client.responses.create.call_count, 1, "sidecar is not retried")
+        self.assertEqual(metered_client.responses.create.call_count, 1)
+        sidecar_client.chat.completions.create.assert_not_called()
+        metered_client.chat.completions.create.assert_not_called()
         self.assertIn(FALLBACK_LOG_MARKER, mock_log.call_args.args[0])
 
     def test_sidecar_connection_error_falls_back_but_timeout_does_not(self):
@@ -211,7 +217,7 @@ class TestLlmClientRouting(_EnvCase):
         for exc, expect_fallback in ((_conn_error(), True), (_timeout_error(), False), (_status_error(401), True), (_status_error(500), False)):
             reset_llm_clients()
             sidecar_client = MagicMock()
-            sidecar_client.chat.completions.create.side_effect = exc
+            sidecar_client.responses.create.side_effect = exc
             metered_client = _chat_client("fallback-ok")
             fake = lambda **kw: sidecar_client if kw["base_url"].startswith(SIDECAR) else metered_client  # noqa: E731
             with patch.object(llm_client, "OpenAI", side_effect=fake), patch.object(xai_auth, "log"):
@@ -220,12 +226,12 @@ class TestLlmClientRouting(_EnvCase):
                 self.assertEqual(out, "fallback-ok", type(exc).__name__)
             else:
                 self.assertTrue(out.startswith("API-Fehler:"), type(exc).__name__)
-                self.assertEqual(metered_client.chat.completions.create.call_count, 0)
+                self.assertEqual(metered_client.responses.create.call_count, 0)
 
     def test_sidecar_503_without_metered_key_fails_as_today(self):
         self._flag_on(metered=None)
         sidecar_client = MagicMock()
-        sidecar_client.chat.completions.create.side_effect = _status_error(503)
+        sidecar_client.responses.create.side_effect = _status_error(503)
         with patch.object(llm_client, "OpenAI", return_value=sidecar_client) as mock_openai, patch.object(xai_auth, "log") as mock_log:
             with self.assertRaises(LlmError) as ctx:
                 ask_llm_json("json please", retries=0)

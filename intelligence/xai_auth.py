@@ -49,6 +49,23 @@ XAI_DIRECT_BASE_URL = "https://api.x.ai/v1"
 # long-context successor and still accepts chat completions.
 DEFAULT_XAI_MODEL = "grok-4.3"
 
+# These ids 404 on api.x.ai (no redirect). The May 15 2026 slugs that still
+# resolve (grok-3, grok-4-0709, grok-4-fast-*, grok-code-fast-1) are not listed.
+RETIRED_XAI_MODEL_IDS = frozenset(
+    {
+        "grok-4",
+        "grok-4-latest",
+        "grok-2",
+        "grok-2-latest",
+        "grok-2-1212",
+        "grok-2-vision-1212",
+        "grok-beta",
+        "grok-vision-beta",
+        "grok-3-mini",
+        "grok-3-mini-fast",
+    }
+)
+
 FALLBACK_LOG_MARKER = "xai subscription fallback to XAI_API_KEY"
 _FALLBACK_STATUSES = frozenset({401, 403, 503})
 _TRUE = frozenset({"1", "true", "yes", "on"})
