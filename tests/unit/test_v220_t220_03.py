@@ -388,6 +388,23 @@ def test_paper_start_without_opened_regimes_stays_closed():
     assert decision.regime_applied is True
 
 
+def test_zero_config_ceiling_is_not_loosened():
+    for raw in ("0", 0):
+        cfg = _on(opened=("RANGE",))
+        start = cfg["shorts"]["testnet_futures"]["paper_start"]
+        start["max_exposure_pct"] = raw
+        start["max_stop_loss_pct"] = raw
+        start["max_stop_loss_pct_all"] = raw
+        start["legacy_margin_cap_pct"] = raw
+        decision = _decide(_PROFILE, config_raw=cfg)
+        assert decision.admitted is False
+        assert "paper_start_invalid" not in decision.reasons
+        assert "exposure_cap" in decision.reasons
+        assert "stop_loss_cap" in decision.reasons
+        assert "stop_loss_book_cap" in decision.reasons
+        assert "legacy_margin_cap" in decision.reasons
+
+
 def test_zero_quantum_and_negative_slots_deny():
     zero_q = dict(_PROFILE)
     zero_q["quote_quantum"] = "0"

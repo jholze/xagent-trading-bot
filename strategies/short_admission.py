@@ -245,19 +245,31 @@ def _frozen_limits(
     for invalid in (exposure_invalid, stop_invalid, book_invalid, legacy_invalid):
         if invalid:
             reasons.append(invalid)
-    exposure_cap, cap_reason = _ceiling(profile, "max_exposure_pct", exposure_ceiling or MAX_EXPOSURE_PCT)
+    exposure_cap, cap_reason = _ceiling(
+        profile,
+        "max_exposure_pct",
+        MAX_EXPOSURE_PCT if exposure_ceiling is None else exposure_ceiling,
+    )
     if cap_reason:
         reasons.append(cap_reason)
-    stop_cap, stop_reason = _ceiling(profile, "max_stop_loss_pct", stop_ceiling or MAX_STOP_LOSS_PCT)
+    stop_cap, stop_reason = _ceiling(
+        profile,
+        "max_stop_loss_pct",
+        MAX_STOP_LOSS_PCT if stop_ceiling is None else stop_ceiling,
+    )
     if stop_reason:
         reasons.append(stop_reason)
     book_cap, book_reason = _ceiling(
-        profile, "max_stop_loss_pct_all", book_ceiling or MAX_STOP_LOSS_PCT_ALL
+        profile,
+        "max_stop_loss_pct_all",
+        MAX_STOP_LOSS_PCT_ALL if book_ceiling is None else book_ceiling,
     )
     if book_reason:
         reasons.append(book_reason)
     legacy_cap, legacy_reason = _ceiling(
-        profile, "legacy_margin_cap_pct", legacy_ceiling or LEGACY_MARGIN_CAP_PCT
+        profile,
+        "legacy_margin_cap_pct",
+        LEGACY_MARGIN_CAP_PCT if legacy_ceiling is None else legacy_ceiling,
     )
     if legacy_reason:
         reasons.append(legacy_reason)
