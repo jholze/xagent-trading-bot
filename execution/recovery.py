@@ -665,25 +665,37 @@ def _qty_close(left: float, right: float) -> bool:
     return abs(left - right) <= tol
 
 
-def _swap_contract_size(exchange, symbol: str) -> float | None:
-    """ccxt ``contractSize`` for a swap market, or None for spot."""
+def _row_is_swap(order: dict) -> bool:
+    """Swap vs spot comes from the row, not from whether a perp market exists.
+
+    ``order.symbol`` stays the spot pair for both. A short or cover is a swap
+    row. A symbol that already names the swap market is one too.
+    """
+    side = str(order.get("side") or "").strip().lower()
+    if side in ("short", "cover"):
+        return True
+    symbol = str(order.get("symbol") or "")
+    return ":" in symbol
+
+
+def _swap_contract_size(exchange, order: dict) -> float | None:
+    """ccxt ``contractSize`` for a swap row. Spot rows are never looked up."""
+    if not _row_is_swap(order):
+        return None
     market_fn = getattr(exchange, "market", None) if exchange is not None else None
     if not callable(market_fn):
         return None
-    names = [symbol] if symbol else []
-    if symbol and ":" not in symbol:
-        names.append(f"{symbol}:USDT")
-    for name in names:
-        try:
-            market = market_fn(name)
-        except Exception:
-            continue
-        if not isinstance(market, dict):
-            continue
-        size = _as_float(market.get("contractSize"))
-        if size is not None and size > 0:
-            return size
-    return None
+    swap_symbol = _as_swap_symbol(str(order.get("symbol") or ""))
+    try:
+        market = market_fn(swap_symbol)
+    except Exception:
+        return None
+    if not isinstance(market, dict):
+        return None
+    size = _as_float(market.get("contractSize"))
+    if size is None or size <= 0:
+        return None
+    return size
 
 
 def _legacy_size_matches(order: dict, raw: dict, exchange) -> bool:
@@ -691,16 +703,17 @@ def _legacy_size_matches(order: dict, raw: dict, exchange) -> bool:
 
     Spot market buys store quote USDT in ``amount`` and ``cost``
     (``create_market_buy_order_with_cost``). ``filled`` is base qty.
-    Swap orders store contract count in ``amount``; base qty is
-    ``amount * contractSize``.
+    Only a swap row (side short/cover, or a swap symbol) uses
+    ``amount * contractSize``. A spot row never applies ``contractSize``,
+    even when that coin also has a perp.
     """
     rec_qty = _record_base_qty(order)
     filled = _as_float(raw.get("filled"))
     amount = _as_float(raw.get("amount"))
     cost = _as_float(raw.get("cost"))
-    contract_size = _swap_contract_size(exchange, str(order.get("symbol") or ""))
-    if contract_size is not None and contract_size != 1.0:
-        if amount is None or rec_qty is None:
+    if _row_is_swap(order):
+        contract_size = _swap_contract_size(exchange, order)
+        if contract_size is None or amount is None or rec_qty is None:
             return False
         return _qty_close(amount * contract_size, rec_qty)
     if filled is not None and rec_qty is not None and _qty_close(filled, rec_qty):

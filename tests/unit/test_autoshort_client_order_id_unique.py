@@ -248,9 +248,65 @@ def _legacy_fetch(record, raw, *, market=None):
     ex.create_order.side_effect = AssertionError("recovery resent an order")
     if market is None:
         ex.market.side_effect = Exception("spot")
+    elif callable(market):
+        ex.market.side_effect = market
     else:
         ex.market.return_value = market
     return ex, _fetch_order_raw(ex, record)
+
+
+def _both_markets(name):
+    """Spot market for the pair, and a 100-contract perp for the swap symbol."""
+    if ":USDT" in str(name):
+        return {"contractSize": 100, "spot": False}
+    return {"contractSize": None, "spot": True}
+
+
+def test_legacy_spot_row_ignores_perp_contract_size():
+    """A coin with a perp must not make a spot legacy fill use contractSize.
+
+    ``25 * 100`` is not the base qty, so the old 'perp exists => swap' check
+    rejects these. Quote buy and base sell must both be adopted.
+    """
+    legacy = _legacy_gate_client_order_id(OLD)
+    stamp = 1_799_500_000_000
+    buy = _pre753_record(
+        side="buy",
+        qty=0.4,
+        request={"price": 50.0, "amount": 0.4, "usdt": 20.0},
+    )
+    buy_raw = _closed(
+        filled=0.0,
+        oid="ex-spot-buy",
+        extra={
+            "side": "buy",
+            "amount": 20.0,
+            "filled": None,
+            "cost": 20.0,
+            "clientOrderId": f"{_GATE_TEXT_PREFIX}{legacy}",
+            "timestamp": stamp,
+        },
+    )
+    _ex, found_buy = _legacy_fetch(buy, buy_raw, market=_both_markets)
+    assert found_buy is not None
+    assert found_buy["id"] == "ex-spot-buy"
+
+    sell = _pre753_record(side="sell", qty=0.4, request={"price": 50.0, "amount": 0.4})
+    sell_raw = _closed(
+        filled=0.4,
+        oid="ex-spot-sell",
+        extra={
+            "side": "sell",
+            "amount": 0.4,
+            "filled": 0.4,
+            "cost": 20.0,
+            "clientOrderId": f"{_GATE_TEXT_PREFIX}{legacy}",
+            "timestamp": stamp,
+        },
+    )
+    _ex, found_sell = _legacy_fetch(sell, sell_raw, market=_both_markets)
+    assert found_sell is not None
+    assert found_sell["id"] == "ex-spot-sell"
 
 
 def test_legacy_hit_with_wrong_side_size_or_age_is_not_adopted():
