@@ -139,6 +139,7 @@ def _replay_time(order: dict) -> str:
 
 
 def _replay_identity(order: dict) -> str | None:
+    """Side is part of the key so a buy and a sell cannot collapse together."""
     side = _norm_side(order)
     exchange_id = _text(order.get("exchange_order_id"))
     if exchange_id:
@@ -148,6 +149,10 @@ def _replay_identity(order: dict) -> str | None:
         if token:
             return f"{side}|{key}:{token}"
     return None
+
+
+def _partial_status(order: dict) -> bool:
+    return _norm_status(order) in _PARTIAL_STATUSES
 
 
 def _replaces(new_idx: int, new: dict, old_idx: int, old: dict) -> bool:
@@ -163,20 +168,35 @@ def _replaces(new_idx: int, new: dict, old_idx: int, old: dict) -> bool:
 
 
 def select_replay_rows(orders: list | None) -> list:
-    """One current cumulative row per order id, then chronological order."""
-    chosen: dict[str, tuple[int, dict]] = {}
-    anonymous: list[tuple[int, dict]] = []
+    """Collapse only identities that include a partial or canceled row.
+
+    Filled-only rows stay one-for-one, including two filled rows that share
+    an exchange id and have different ledger ids. A partial row and a later
+    filled row for the same identity count once, at the current cumulative
+    fill. Same timestamp: the larger execution amount wins, then the later
+    input.
+    """
+    counted: list[tuple[int, dict]] = []
+    partial_ids: set[str] = set()
     for idx, order in enumerate(orders or []):
-        if not row_counts_for_replay(order):
+        if not isinstance(order, dict) or not row_counts_for_replay(order):
             continue
+        counted.append((idx, order))
+        if _partial_status(order):
+            identity = _replay_identity(order)
+            if identity:
+                partial_ids.add(identity)
+    chosen: dict[str, tuple[int, dict]] = {}
+    kept: list[tuple[int, dict]] = []
+    for idx, order in counted:
         identity = _replay_identity(order)
-        if identity is None:
-            anonymous.append((idx, order))
+        if identity is None or identity not in partial_ids:
+            kept.append((idx, order))
             continue
         prev = chosen.get(identity)
         if prev is None or _replaces(idx, order, prev[0], prev[1]):
             chosen[identity] = (idx, order)
-    rows = list(chosen.values()) + anonymous
+    rows = list(chosen.values()) + kept
     rows.sort(key=lambda pair: (_replay_time(pair[1]), pair[0]))
     return [order for _, order in rows]
 

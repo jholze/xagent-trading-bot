@@ -335,7 +335,8 @@ def test_ac04_flag_missing_or_live_returns_no_actual_and_no_zero():
 
 
 def test_ac04_module_imports_no_venue_client_and_replay_cover_stays_price_only():
-    source = Path("core/net_cashflow.py").read_text(encoding="utf-8")
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "core/net_cashflow.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     imported: list[str] = []
     for node in ast.walk(tree):
@@ -344,6 +345,6 @@ def test_ac04_module_imports_no_venue_client_and_replay_cover_stays_price_only()
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.append(node.module)
     assert set(imported) == {"__future__", "math", "datetime", "decimal"}
-    replay = Path("core/sim_ledger_replay.py").read_text(encoding="utf-8")
+    replay = (root / "core/sim_ledger_replay.py").read_text(encoding="utf-8")
     assert "pnl = cover_amt * (entry - price)" in replay
     assert ".account(" not in replay

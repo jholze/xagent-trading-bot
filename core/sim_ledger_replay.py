@@ -385,6 +385,17 @@ def _apply_acknowledged_sell(
     return realized
 
 
+def _log_unpriced_partial_sell(order: dict, *, tenant_id: str | None, amount: float) -> None:
+    """A remainder sell with no execution price and no execution quote is not booked."""
+    status = str(order.get("status") or "").strip().lower()
+    log(
+        "replay skipped unpriced partial sell "
+        f"tenant={tenant_id or ''} symbol={order.get('symbol') or ''} "
+        f"side=sell status={status} filled_qty={amount}",
+        "WARNING",
+    )
+
+
 def _log_partial_fill(order: dict, *, tenant_id: str | None, side: str, amount: float) -> None:
     """#659 F5: one INFO line per taken partial or remainder-canceled spot row."""
     status = str(order.get("status") or "").strip().lower()
@@ -574,6 +585,18 @@ def replay_simulated_ledger(
         elif side == "sell":
             if amount <= 0:
                 continue
+            status = str(order.get("status") or "").strip().lower()
+            if status in {"partially_filled", "canceled", "cancelled"} and price <= 0:
+                raw_usdt = execution.get("usdt")
+                try:
+                    usdt_ok = float(raw_usdt) > 0
+                except (TypeError, ValueError):
+                    usdt_ok = False
+                if not usdt_ok:
+                    _log_unpriced_partial_sell(
+                        order, tenant_id=tenant_id, amount=amount,
+                    )
+                    continue
             from strategies.positions import get_key
 
             symbol = order.get("symbol", "")

@@ -1,12 +1,22 @@
 # Net cash flow and partial-fill replay – Requirements
 
-Version: Rev 1 · Date: 2026-11-10 · Status: **binding for the pure module in this phase**
+Version: Rev 2 · Date: 2026-11-11 · Status: **binding**. Rev 1 stays below and is not rewritten. Rev 2 is the Opus fix on PR #813.
 
 Local draft id: T220-04. Not a GitHub issue. Existing issue: #659. Out of scope: #665 (TWR/capital), #676 (generic partial polling; B owns it), #68 (funding fetch/geo).
 
 Hindsight: `RECALL_FAILED`. The bank `coding-agent::trading_bot` is not reachable from this cloud VM (Mac loopback only). Git and this file win over memory.
 
 Package F still owns `services/portfolio_service.py`, `core/models.py`, and `strategies/positions.py`. This revision does not edit those files or `execution/`.
+
+## Rev 2 (2026-11-11, Opus review of #813)
+
+The replay predicate is what production callers pass into `replay_simulated_ledger`. `services/ledger_sync.py`, `data_manager.py` (`resolve_sim_cash_balance`, `resolve_sim_realized_pnl`, `_reconcile_scoped_trade_history`), `notifications/daily_portfolio.py`, and `notifications/telegram_commands/position_display.py` no longer drop a row because its status is not `filled`.
+
+Dedup applies only to an identity that has at least one `partially_filled` or canceled row. Two filled rows with different ids and the same `exchange_order_id` both count. Identity still includes the side, so a buy and a sell that share an id both count. Same timestamp: the larger execution amount wins, then the later row.
+
+A partial or canceled sell with no execution price and no execution quote is skipped and logged. It does not reduce the lot.
+
+`stats_from_filled_orders` and `query_day(filled_only=True)` still mean filled. After this revision, replay realized PnL can include a remainder-canceled sell that the daily-loss reader does not. That split stays a follow-up. Do not change `is_executed_status` here.
 
 ## Rev 0 (archived 2026-11-10, sprint draft — not edited in place)
 

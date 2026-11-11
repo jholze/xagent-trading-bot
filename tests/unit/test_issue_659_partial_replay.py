@@ -272,6 +272,141 @@ def test_t6_short_and_cover_partials_do_not_change_the_short_branch():
     assert lot["side"] == "short"
 
 
+def test_same_timestamp_keeps_larger_cumulative_qty():
+    symbol = "TIE/USDT"
+    ts = "2026-10-07T12:00:00"
+    larger = _order(
+        "tie", "buy", symbol, 1.0, 100.0, status="canceled", usdt=100.0, ts=ts,
+        request={"amount": 200.0, "usdt": 200.0},
+    )
+    smaller = _order(
+        "tie", "buy", symbol, 1.0, 30.0, status="partially_filled", usdt=30.0, ts=ts,
+        request={"amount": 200.0, "usdt": 200.0},
+    )
+    replay = replay_simulated_ledger([larger, smaller], INITIAL)
+    assert _lot(replay, symbol)["amount"] == pytest.approx(100.0)
+    assert replay["cash"] == pytest.approx(INITIAL - 100.0)
+
+
+def test_same_timestamp_and_qty_keeps_later_row():
+    symbol = "IDX/USDT"
+    ts = "2026-10-07T12:00:00"
+    first = _order(
+        "idx", "buy", symbol, 1.0, 40.0, status="canceled", usdt=40.08, ts=ts,
+    )
+    later = _order(
+        "idx", "buy", symbol, 1.0, 40.0, status="canceled", usdt=80.0, ts=ts,
+    )
+    replay = replay_simulated_ledger([first, later], INITIAL)
+    assert _lot(replay, symbol)["amount"] == pytest.approx(40.0)
+    assert replay["cash"] == pytest.approx(INITIAL - 80.0)
+
+
+def test_buy_and_sell_sharing_an_id_both_apply():
+    symbol = "BOTH/USDT"
+    buy = _order(
+        "shared", "buy", symbol, 2.0, 100.0, usdt=200.0, ts="2026-10-07T12:00:00",
+        request={"amount": 100.0},
+    )
+    buy["exchange_order_id"] = "ex-shared"
+    sell = _order(
+        "shared", "sell", symbol, 3.0, 20.0, status="canceled", usdt=60.0,
+        ts="2026-10-07T13:00:00", pnl=20.0,
+        request={"amount": 50.0, "usdt": 150.0},
+    )
+    sell["exchange_order_id"] = "ex-shared"
+    replay = replay_simulated_ledger([buy, sell], INITIAL)
+    lot = _lot(replay, symbol)
+    assert lot["amount"] == pytest.approx(80.0)
+    assert lot["average_entry"] == pytest.approx(2.0)
+    assert replay["realized_pnl"] == pytest.approx(20.0)
+
+
+def test_two_filled_rows_with_one_exchange_id_both_count():
+    symbol = "EX/USDT"
+    first = _order(
+        "ex-a", "buy", symbol, 1.0, 10.0, usdt=10.0, ts="2026-10-07T12:00:00",
+    )
+    second = _order(
+        "ex-b", "buy", symbol, 1.0, 7.0, usdt=7.0, ts="2026-10-07T12:05:00",
+    )
+    first["exchange_order_id"] = "ex-same"
+    second["exchange_order_id"] = "ex-same"
+    replay = replay_simulated_ledger([first, second], INITIAL)
+    assert _lot(replay, symbol)["amount"] == pytest.approx(17.0)
+    assert replay["cash"] == pytest.approx(INITIAL - 17.0)
+
+
+def test_unpriced_partial_sell_does_not_reduce_the_lot(monkeypatch):
+    symbol = "UNP/USDT"
+    messages: list[str] = []
+
+    def _log(message, level="INFO"):
+        messages.append(f"{level}:{message}")
+
+    monkeypatch.setattr("core.sim_ledger_replay.log", _log)
+    buy = _order(
+        "unp-buy", "buy", symbol, 2.0, 100.0, usdt=200.0, ts="2026-10-07T12:00:00",
+    )
+    sell = _order(
+        "unp-sell", "sell", symbol, 0.0, 20.0, status="canceled",
+        ts="2026-10-07T13:00:00", pnl=20.0,
+        request={"price": 3.0, "amount": 50.0, "usdt": 150.0},
+    )
+    sell["execution"].pop("price", None)
+    replay = replay_simulated_ledger([buy, sell], INITIAL)
+    lot = _lot(replay, symbol)
+    assert lot["amount"] == pytest.approx(100.0)
+    assert replay["cash"] == pytest.approx(INITIAL - 200.0)
+    assert replay["realized_pnl"] == pytest.approx(0.0)
+    assert any("replay skipped unpriced partial sell" in text for text in messages)
+
+
+def test_reload_snapshot_keeps_remainder_canceled_buy():
+    from unittest.mock import patch
+
+    from services.ledger_sync import _build_positions_snapshot_from_orders
+
+    symbol = "REL/USDT"
+    order = _order(
+        "rel", "buy", symbol, 1.0, 40.0, status="canceled", usdt=40.08,
+        ts="2026-10-07T12:00:00", request={"amount": 100.0, "usdt": 100.0},
+    )
+    ignored = _order(
+        "nope", "buy", symbol, 1.0, 9.0, status="rejected", usdt=9.0,
+        ts="2026-10-07T12:01:00",
+    )
+    with patch("data_manager.load_orders", return_value={"orders": [order, ignored]}), patch(
+        "data_manager.get_config", return_value={"trading_mode": "paper"},
+    ), patch("core.portfolio_baseline.initial_capital", return_value=INITIAL):
+        snap = _build_positions_snapshot_from_orders("paper")
+    lot = snap[get_key(symbol, TF)]
+    assert lot["amount"] == pytest.approx(40.0)
+    assert lot["average_entry"] == pytest.approx(40.08 / 40.0)
+
+
+def test_sim_cash_from_orders_includes_remainder_canceled_buy():
+    from unittest.mock import patch
+
+    from data_manager import compute_sim_cash_from_orders, resolve_sim_cash_balance
+
+    order = _order(
+        "cash", "buy", "CASH/USDT", 1.0, 40.0, status="canceled", usdt=40.08,
+        ts="2026-10-07T12:00:00", request={"amount": 100.0, "usdt": 100.0},
+    )
+    direct = compute_sim_cash_from_orders([order], INITIAL)
+    assert direct == pytest.approx(INITIAL - 40.08)
+    cfg = {
+        "trading_mode": "live",
+        "live": {"dry_run": True, "dry_run_enhanced": True, "simulated_balance_usdt": INITIAL},
+    }
+    with patch("data_manager.load_orders", return_value={"orders": [order]}), patch(
+        "data_manager.get_config", return_value=cfg,
+    ):
+        resolved = resolve_sim_cash_balance(scope="demo", config=cfg)
+    assert resolved == pytest.approx(INITIAL - 40.08)
+
+
 def test_partial_rows_log_once_per_taken_order(monkeypatch):
     symbol = "LG/USDT"
     messages: list[str] = []

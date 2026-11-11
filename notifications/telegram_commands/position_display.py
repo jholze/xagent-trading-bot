@@ -1773,10 +1773,12 @@ def _sim_order_ledger_bundle(
             "day_stats": day_stats,
         }
 
+    from core.net_cashflow import row_counts_for_replay
+
     filled = [
         o
         for o in load_orders(ledger_scope, tenant_id=tenant_id).get("orders", [])
-        if o.get("status") == "filled"
+        if row_counts_for_replay(o)
     ]
     initial = initial_capital(
         scope=ledger_scope,

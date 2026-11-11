@@ -45,10 +45,12 @@ def _position_value_from_snapshot(snapshot: dict, prices: dict) -> float:
 
 
 def _filled_orders_before(cutoff_iso: str, scope: str) -> list:
+    from core.net_cashflow import row_counts_for_replay
+
     orders = [
         o
         for o in load_orders(scope).get("orders", [])
-        if o.get("status") == "filled"
+        if row_counts_for_replay(o)
         and ((o.get("timestamps") or {}).get("filled") or "") < cutoff_iso
     ]
     orders.sort(
@@ -73,9 +75,12 @@ def _cash_at_cutoff(
 
 
 def _snapshot_from_orders_before(cutoff_iso: str, scope: str) -> dict:
-    orders = _filled_orders_before(cutoff_iso, scope)
+    from core.net_cashflow import execution_only_view, select_replay_rows
+
+    orders = select_replay_rows(_filled_orders_before(cutoff_iso, scope))
     snapshot: dict = {}
     for order in orders:
+        order = execution_only_view(order)
         symbol = order.get("symbol", "")
         tf = order.get("timeframe", "4h")
         if not symbol:
