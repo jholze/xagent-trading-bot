@@ -16,6 +16,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 _PROBLEM_STATUSES = frozenset({"timeout", "rejected", "canceled", "cancelled"})
+_KNOWN_STOP_STATUSES = frozenset({"open"}) | _PROBLEM_STATUSES
 
 
 @dataclass(frozen=True)
@@ -99,8 +100,9 @@ def plan_protection(
     plan = _decide(raw, incoming)
     if client is None:
         return plan
-    if not bool(getattr(client, "synthetic", False)):
+    if getattr(client, "synthetic", False) is not True:
         return replace(plan, reasons=plan.reasons + ("client_not_synthetic",), submitted=False)
+    sent = False
     for order in plan.stop_orders:
         client.create_stop(
             qty=format(order.qty, "f"),
@@ -108,6 +110,7 @@ def plan_protection(
             side=order.side,
             position_id=order.position_id,
         )
+        sent = True
     for order in plan.flatten_orders:
         client.flatten(
             qty=format(order.qty, "f"),
@@ -115,7 +118,8 @@ def plan_protection(
             side=order.side,
             position_id=order.position_id,
         )
-    return replace(plan, submitted=True)
+        sent = True
+    return replace(plan, submitted=sent)
 
 
 def _decide(raw: Any, incoming: ProtectionInput) -> ProtectionPlan:
@@ -131,7 +135,8 @@ def _decide(raw: Any, incoming: ProtectionInput) -> ProtectionPlan:
     orphans = bool(incoming.orphan_order_ids) or bool(incoming.orphan_position)
     owned = bool(incoming.residual.owned) and bool(str(incoming.residual.position_id or "").strip())
     if incoming.tenant_id != incoming.residual.tenant_id or not str(incoming.tenant_id or "").strip():
-        return _unknown("tenant_mismatch", incoming, orphans, owned)
+        denied = _unknown("tenant_mismatch", incoming, orphans, owned)
+        return replace(denied, cover_allowed=False)
     if orphans and not owned:
         return ProtectionPlan(
             active=True,
@@ -148,6 +153,15 @@ def _decide(raw: Any, incoming: ProtectionInput) -> ProtectionPlan:
         return _unknown("venue_unconfirmed", incoming, orphans, owned, extra=tuple(reasons))
     if orphans:
         reasons.append("orphan_present")
+    if any(_stop_is_unreadable(stop) for stop in incoming.stops):
+        reasons.append("stop_status_unknown")
+        return ProtectionPlan(
+            active=True,
+            inhibits_entries=True,
+            cover_allowed=bool(incoming.cover_authorized and owned),
+            protection_state="unknown",
+            reasons=tuple(reasons),
+        )
     problem = _problem_reason(incoming.stops)
     effective = _effective_stops(incoming.stops, venue)
     inhibits = bool(incoming.uncertain_open or orphans or problem or len(effective) != 1)
@@ -272,6 +286,13 @@ def _permit_valid(incoming: ProtectionInput) -> bool:
         and permit.position_id == incoming.residual.position_id
         and permit.tenant_id == incoming.residual.tenant_id
     )
+
+
+def _stop_is_unreadable(stop: ProtectiveStop) -> bool:
+    status = str(stop.status).strip().lower()
+    if status not in _KNOWN_STOP_STATUSES:
+        return True
+    return status == "open" and stop.reduce_only is not True
 
 
 def _effective_stops(stops: tuple[ProtectiveStop, ...], venue: Decimal) -> tuple[ProtectiveStop, ...]:

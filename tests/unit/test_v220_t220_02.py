@@ -8,6 +8,9 @@ this file does not import the unmerged #676 helper.
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import MagicMock
+
+import pytest
 
 from execution.short_protection import (
     FlattenPermit,
@@ -284,3 +287,68 @@ def test_ac_t02_real_shaped_client_is_not_called():
     assert client.calls == []
     assert plan.submitted is False
     assert "client_not_synthetic" in plan.reasons
+
+
+@pytest.mark.parametrize("status", ["NEW", "pending"])
+def test_ac_t02_unknown_stop_status_does_not_plan_another_stop(status):
+    plan = plan_protection(_cfg(), _inp(stops=(_stop("5", status),)))
+    assert plan.protection_state == "unknown"
+    assert plan.inhibits_entries is True
+    assert plan.stop_orders == ()
+    assert "stop_status_unknown" in plan.reasons
+
+
+def test_ac_t02_open_stop_without_reduce_only_does_not_plan_another_stop():
+    plan = plan_protection(_cfg(), _inp(stops=(_stop("5", reduce_only=False),)))
+    assert plan.protection_state == "unknown"
+    assert plan.inhibits_entries is True
+    assert plan.stop_orders == ()
+
+
+def test_ac_t02_tenant_mismatch_does_not_allow_cover():
+    residual = _residual()
+    plan = plan_protection(
+        _cfg(),
+        _inp(tenant_id="other-tenant", residual=residual, cover_authorized=True),
+    )
+    assert plan.protection_state == "unknown"
+    assert "tenant_mismatch" in plan.reasons
+    assert plan.cover_allowed is False
+    assert plan.inhibits_entries is True
+
+
+def test_ac_t02_truthy_synthetic_attribute_is_not_called():
+    client = MagicMock()
+    client.synthetic = "true"
+    plan = plan_protection(_cfg(), _inp(), client)
+    assert plan.submitted is False
+    assert "client_not_synthetic" in plan.reasons
+    client.create_stop.assert_not_called()
+    client.flatten.assert_not_called()
+    bare = MagicMock()
+    bare_plan = plan_protection(_cfg(), _inp(), bare)
+    assert bare_plan.submitted is False
+    bare.create_stop.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "permit",
+    [
+        _permit(allow=False),
+        _permit(allow="true"),
+        _permit(run_id="other-run"),
+        _permit(tenant_id="other-tenant"),
+        _permit(run_id=""),
+        _permit(tenant_id=""),
+        _permit(position_id=""),
+    ],
+)
+def test_ac_t02_permit_fields_must_match_literally(permit):
+    client = SyntheticVenue()
+    plan = plan_protection(
+        _cfg(),
+        _inp(flatten_qty=Decimal("5"), permit=permit, stops=(_stop("5"),)),
+        client,
+    )
+    assert plan.flatten_orders == ()
+    assert client.calls == []
