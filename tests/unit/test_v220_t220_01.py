@@ -533,6 +533,66 @@ def test_ac_t01_non_positive_bounds_do_not_accept_a_zero_order(
     assert result.contracts is None
 
 
+@pytest.mark.parametrize("flag", [False, 0, 1, "true", "True", "false"])
+def test_ac_t01_strict_route_is_literal_true_only(flag):
+    raw = _cfg(strict=flag)
+    assert route.strict_route_enabled(raw) is False
+    decision = route.admit_tenant(raw, "tenant-a", "testnet")
+    assert decision.allowed is False
+    assert decision.reason == "strict_route_off"
+    assert decision.inhibits_existing_adapter is False
+
+
+@pytest.mark.parametrize("enabled", [1, "true", "True", False])
+def test_ac_t01_testnet_enabled_is_literal_true_only(enabled):
+    raw = _cfg()
+    raw["shorts"]["testnet_futures"]["enabled"] = enabled
+    decision = route.admit_tenant(raw, "tenant-a", "testnet")
+    assert decision.allowed is False
+    assert decision.reason == "testnet_futures_disabled"
+
+
+@pytest.mark.parametrize(
+    ("response", "reason"),
+    [
+        ({}, "response_unreadable"),
+        ({"status": None}, "response_unreadable"),
+        ({"status": True}, "response_unreadable"),
+        ({"status": "200"}, "response_unreadable"),
+        ({"status": 199}, "response_rejected"),
+        ({"status": 300}, "response_rejected"),
+        ({"status": 404}, "response_rejected"),
+        ({"status": 500}, "response_rejected"),
+    ],
+)
+def test_ac_t01_response_deny_branches(response, reason):
+    class _Transport:
+        follows_redirects = False
+
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, url):
+            self.calls.append((method, url))
+            return response
+
+    transport = _Transport()
+    decision = route.authorize_route(
+        _cfg(),
+        tenant_id="tenant-a",
+        mode="testnet",
+        url=PINNED,
+        mode_proof=_ok_proof(),
+        live_env="GATE_API_KEY",
+        testnet_env="GATE_TESTNET_KEY",
+        transport=transport,
+    )
+    assert decision.allowed is False
+    assert decision.reason == reason
+    assert decision.followed_redirect is False
+    assert len(transport.calls) == 1
+
+
 def test_ac_t01_stale_set_future_stamp_and_negative_age_deny():
     stale_set = _proof(as_of=NOW - AGE - 1)
     assert route.prove_mode(stale_set, _proof(), observed_at=NOW, max_age_seconds=AGE).reason == (
