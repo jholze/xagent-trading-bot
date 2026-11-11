@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from core.net_cashflow import (
+    execution_only_view,
+    row_counts_for_replay,
+    select_replay_rows,
+)
 from logger import log
 
 _SIM_CASH_EPS = 0.01
@@ -380,6 +385,33 @@ def _apply_acknowledged_sell(
     return realized
 
 
+def _log_unpriced_partial_sell(order: dict, *, tenant_id: str | None, amount: float) -> None:
+    """A remainder sell with no execution price and no execution quote is not booked."""
+    status = str(order.get("status") or "").strip().lower()
+    log(
+        "replay skipped unpriced partial sell "
+        f"tenant={tenant_id or ''} symbol={order.get('symbol') or ''} "
+        f"side=sell status={status} filled_qty={amount}",
+        "WARNING",
+    )
+
+
+def _log_partial_fill(order: dict, *, tenant_id: str | None, side: str, amount: float) -> None:
+    """#659 F5: one INFO line per taken partial or remainder-canceled spot row."""
+    status = str(order.get("status") or "").strip().lower()
+    if status not in {"partially_filled", "canceled", "cancelled"}:
+        return
+    if side not in {"buy", "sell"}:
+        return
+    symbol = order.get("symbol") or ""
+    log(
+        "replay counted partial fill "
+        f"tenant={tenant_id or ''} symbol={symbol} side={side} "
+        f"status={status} filled_qty={amount}",
+        "INFO",
+    )
+
+
 def replay_simulated_ledger(
     orders: list,
     initial: float = 5000.0,
@@ -390,6 +422,11 @@ def replay_simulated_ledger(
 
     ``config`` is the tenant config (``get_config(tenant_id)``). F7 copies it
     with ``costs.fee_source`` set to ``config`` so a reload never fetches fees.
+
+    Spot buy and sell rows also count when they are ``partially_filled`` or
+    canceled with a positive ``execution.amount`` (#659). The request size is
+    not used for those rows. One order id is applied once, at its current
+    cumulative fill. Short and cover still require status ``filled``.
     """
     balance = float(initial)
     realized_pnl = 0.0
@@ -400,18 +437,12 @@ def replay_simulated_ledger(
     costs = dict(costs) if isinstance(costs, dict) else {}
     costs["fee_source"] = "config"
     fee_config["costs"] = costs
-    sorted_orders = sorted(
-        orders or [],
-        key=lambda o: (
-            (o.get("timestamps") or {}).get("filled")
-            or (o.get("timestamps") or {}).get("created")
-            or ""
-        ),
-    )
+    sorted_orders = select_replay_rows(orders)
 
-    for order in sorted_orders:
-        if order.get("status") != "filled":
+    for raw_order in sorted_orders:
+        if not row_counts_for_replay(raw_order):
             continue
+        order = execution_only_view(raw_order)
 
         side = (order.get("side") or "").lower()
         execution = order.get("execution") or {}
@@ -439,6 +470,9 @@ def replay_simulated_ledger(
                 config_raw=fee_config,
             )
             balance -= usdt
+            _log_partial_fill(
+                order, tenant_id=tenant_id, side=side, amount=amount,
+            )
             _apply_acknowledged_buy(
                 positions,
                 order,
@@ -527,6 +561,8 @@ def replay_simulated_ledger(
             lev = float(pos.get("leverage") or 2) or 2.0
             frac = cover_amt / original if original else 1.0
             margin_back = (original * entry / lev) * frac
+            # Price PnL only. Venue net stays in core.net_cashflow until the
+            # flag-gated cover hook is wired. Do not subtract fees here.
             pnl = cover_amt * (entry - price)
             balance += margin_back + pnl
             pos["amount"] = original - cover_amt
@@ -549,6 +585,18 @@ def replay_simulated_ledger(
         elif side == "sell":
             if amount <= 0:
                 continue
+            status = str(order.get("status") or "").strip().lower()
+            if status in {"partially_filled", "canceled", "cancelled"} and price <= 0:
+                raw_usdt = execution.get("usdt")
+                try:
+                    usdt_ok = float(raw_usdt) > 0
+                except (TypeError, ValueError):
+                    usdt_ok = False
+                if not usdt_ok:
+                    _log_unpriced_partial_sell(
+                        order, tenant_id=tenant_id, amount=amount,
+                    )
+                    continue
             from strategies.positions import get_key
 
             symbol = order.get("symbol", "")
@@ -573,6 +621,9 @@ def replay_simulated_ledger(
             pnl_scale = sell_amount / amount if amount > 0 else 1.0
             cash_proceeds = order_usdt * pnl_scale
             balance += cash_proceeds
+            _log_partial_fill(
+                order, tenant_id=tenant_id, side=side, amount=amount,
+            )
             realized_pnl += _apply_acknowledged_sell(
                 positions,
                 order,

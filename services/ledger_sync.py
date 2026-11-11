@@ -6,7 +6,7 @@ import os
 import shutil
 import warnings
 
-from core.models import OrderStatus
+from core.net_cashflow import row_counts_for_replay
 from logger import log
 
 _RECONCILE_RECENT_HIGHS_WARNED = False
@@ -105,7 +105,7 @@ def _build_positions_snapshot_from_orders(
     orders = [
         o
         for o in load_orders(scope, tenant_id=tenant_id).get("orders", [])
-        if o.get("status") == OrderStatus.EXECUTED.value
+        if row_counts_for_replay(o)
     ]
     initial = initial_capital(scope=scope, config=cfg)
     snapshot = dict(
@@ -214,7 +214,7 @@ def rebuild_positions_from_orders(
     orders = [
         o
         for o in load_orders(scope, tenant_id=tid).get("orders", [])
-        if o.get("status") == OrderStatus.EXECUTED.value
+        if row_counts_for_replay(o)
     ]
 
     with tenant_context(tid, scope=scope):
@@ -222,7 +222,7 @@ def rebuild_positions_from_orders(
         flush_positions(scope, force=True)
     open_count = sum(1 for p in snapshot.values() if is_open_position(p))
     log(
-        f"Rebuilt positions for scope={scope} from {len(orders)} filled order(s), "
+        f"Rebuilt positions for scope={scope} from {len(orders)} replayed order(s), "
         f"{open_count} open",
         "INFO",
     )

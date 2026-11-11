@@ -1,0 +1,61 @@
+{
+  "side": "short",
+  "entry": "100",
+  "exit": "90",
+  "fills": [
+    {
+      "order_id": "syn-ord-1",
+      "record_id": "syn-snap-1",
+      "semantics": "cumulative",
+      "filled_qty": "0.4",
+      "status": "partially_filled",
+      "as_of": "2026-11-10T11:00:00+00:00"
+    },
+    {
+      "order_id": "syn-ord-1",
+      "record_id": "syn-snap-1",
+      "semantics": "cumulative",
+      "filled_qty": "0.4",
+      "status": "partially_filled",
+      "as_of": "2026-11-10T11:00:00+00:00"
+    },
+    {
+      "order_id": "syn-ord-1",
+      "record_id": "syn-snap-2",
+      "semantics": "cumulative",
+      "filled_qty": "1",
+      "status": "canceled",
+      "as_of": "2026-11-10T12:00:00+00:00"
+    }
+  ],
+  "fees": [
+    {
+      "record_id": "syn-fee-open",
+      "amount": "0.10",
+      "quote": "USDT",
+      "state": "actual"
+    },
+    {
+      "record_id": "syn-fee-close",
+      "amount": "0.09",
+      "quote": "USDT",
+      "state": "actual"
+    }
+  ],
+  "funding": [
+    {
+      "record_id": "syn-fund-receipt",
+      "signed_amount": "0.02",
+      "quote": "USDT",
+      "provenance": "venue_cashflow",
+      "settlement_time": "2026-11-10T12:00:00+00:00",
+      "publication_time": "2026-11-10T18:00:00+00:00"
+    }
+  ],
+  "window": {
+    "start": "2026-11-10T08:00:00+00:00",
+    "end": "2026-11-10T16:00:00+00:00",
+    "inclusive_start": true,
+    "inclusive_end": true
+  }
+}

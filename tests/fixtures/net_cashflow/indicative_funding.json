@@ -1,0 +1,35 @@
+{
+  "side": "short",
+  "qty": "1",
+  "entry": "100",
+  "exit": "90",
+  "fees": [
+    {
+      "record_id": "syn-fee-open",
+      "amount": "0.10",
+      "quote": "USDT",
+      "state": "actual"
+    },
+    {
+      "record_id": "syn-fee-close",
+      "amount": "0.09",
+      "quote": "USDT",
+      "state": "actual"
+    }
+  ],
+  "funding": [
+    {
+      "record_id": "syn-fund-indicative",
+      "signed_amount": "0.02",
+      "quote": "USDT",
+      "provenance": "indicative",
+      "settlement_time": "2026-11-10T12:00:00+00:00"
+    }
+  ],
+  "window": {
+    "start": "2026-11-10T08:00:00+00:00",
+    "end": "2026-11-10T16:00:00+00:00",
+    "inclusive_start": true,
+    "inclusive_end": true
+  }
+}

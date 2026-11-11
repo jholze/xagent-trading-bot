@@ -44,18 +44,25 @@ def _position_value_from_snapshot(snapshot: dict, prices: dict) -> float:
     return total
 
 
+def _order_event_time(order: dict) -> str:
+    """Same clock as replay. Empty must not compare as before every cutoff."""
+    from core.net_cashflow import order_event_time
+
+    return order_event_time(order)
+
+
 def _filled_orders_before(cutoff_iso: str, scope: str) -> list:
-    orders = [
-        o
-        for o in load_orders(scope).get("orders", [])
-        if o.get("status") == "filled"
-        and ((o.get("timestamps") or {}).get("filled") or "") < cutoff_iso
-    ]
-    orders.sort(
-        key=lambda o: (o.get("timestamps") or {}).get("filled")
-        or (o.get("timestamps") or {}).get("created")
-        or ""
-    )
+    from core.net_cashflow import row_counts_for_replay
+
+    orders = []
+    for order in load_orders(scope).get("orders", []):
+        if not row_counts_for_replay(order):
+            continue
+        stamp = _order_event_time(order)
+        if not stamp or not stamp < cutoff_iso:
+            continue
+        orders.append(order)
+    orders.sort(key=_order_event_time)
     return orders
 
 
@@ -73,9 +80,12 @@ def _cash_at_cutoff(
 
 
 def _snapshot_from_orders_before(cutoff_iso: str, scope: str) -> dict:
-    orders = _filled_orders_before(cutoff_iso, scope)
+    from core.net_cashflow import execution_only_view, select_replay_rows
+
+    orders = select_replay_rows(_filled_orders_before(cutoff_iso, scope))
     snapshot: dict = {}
     for order in orders:
+        order = execution_only_view(order)
         symbol = order.get("symbol", "")
         tf = order.get("timeframe", "4h")
         if not symbol:
@@ -101,6 +111,15 @@ def _snapshot_from_orders_before(cutoff_iso: str, scope: str) -> dict:
             pos["peak_amount"] = new
             pos["sold_percent"] = 0.0
         elif side == "sell" and amount > 0:
+            status = str(order.get("status") or "").strip().lower()
+            if status in {"partially_filled", "canceled", "cancelled"} and price <= 0:
+                raw_usdt = execution.get("usdt")
+                try:
+                    quoted = float(raw_usdt) > 0
+                except (TypeError, ValueError):
+                    quoted = False
+                if not quoted:
+                    continue
             original = pos["amount"]
             sell_amount = min(amount, original) if original > 0 else amount
             pos["amount"] = max(0.0, original - sell_amount)

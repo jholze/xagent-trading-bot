@@ -1314,10 +1314,12 @@ def resolve_sim_cash_balance(
         hist = history or load_trade_history_document(resolved_scope, cfg, tenant_id=tid)
         return float(hist.get("virtual_balance", 0) or 0)
 
-    filled = [
+    from core.net_cashflow import row_counts_for_replay
+
+    counted = [
         o
         for o in load_orders(resolved_scope, tenant_id=tid).get("orders", [])
-        if o.get("status") == "filled"
+        if row_counts_for_replay(o)
     ]
     initial = initial_capital(
         scope=resolved_scope,
@@ -1325,7 +1327,7 @@ def resolve_sim_cash_balance(
         history=history,
         trading_mode=cfg.get("trading_mode"),
     )
-    return float(compute_sim_cash_from_orders(filled, initial))
+    return float(compute_sim_cash_from_orders(counted, initial))
 
 
 def resolve_sim_realized_pnl(
@@ -1352,18 +1354,20 @@ def resolve_sim_realized_pnl(
         return float(raw)
     from core.portfolio_baseline import initial_capital
 
+    from core.net_cashflow import row_counts_for_replay
+
     tid = resolve_tenant_id(tenant_id)
-    filled = [
+    counted = [
         o
         for o in load_orders(resolved_scope, tenant_id=tid).get("orders", [])
-        if o.get("status") == "filled"
+        if row_counts_for_replay(o)
     ]
     initial = initial_capital(
         scope=resolved_scope,
         config=cfg,
         trading_mode=cfg.get("trading_mode"),
     )
-    return float(compute_realized_pnl_from_orders(filled, initial))
+    return float(compute_realized_pnl_from_orders(counted, initial))
 
 def _filled_order_usdt(order: dict) -> float:
     execution = order.get("execution") or {}
@@ -1415,15 +1419,17 @@ def _reconcile_scoped_trade_history(
     from core.tenant_context import resolve_tenant_id
     from services.ledger_sync import count_open_positions_from_orders
 
+    from core.net_cashflow import row_counts_for_replay
+
     tid = resolve_tenant_id(tenant_id)
     initial = initial_capital(scope=scope, config=cfg)
-    filled = [
+    counted = [
         o
         for o in load_orders(scope, tenant_id=tid).get("orders", [])
-        if o.get("status") == "filled"
+        if row_counts_for_replay(o)
     ]
-    computed_cash = compute_sim_cash_from_orders(filled, initial)
-    computed_pnl = compute_realized_pnl_from_orders(filled, initial)
+    computed_cash = compute_sim_cash_from_orders(counted, initial)
+    computed_pnl = compute_realized_pnl_from_orders(counted, initial)
     changed = False
     stored_cash = history.get("virtual_balance")
     if stored_cash is None or abs(float(stored_cash) - computed_cash) > 0.01:
