@@ -1,7 +1,7 @@
-"""T220-05 draft: intraday hold under 24h. Synthetic clocks are not production cutoffs.
+"""T220-05: sandbox hold is 4h and the cutoff is 20:00 Europe/Berlin.
 
-The 4h default is the existing resolver base. 20:00 Europe/Berlin is an example
-session end in one test only. No figure is copied from an owner-freeze file.
+A plan longer than 4h, or past 20:00 local, is invalid. This file does not
+edit config.json. Missing paper_start denies a new entry.
 """
 
 from __future__ import annotations
@@ -29,6 +29,8 @@ from strategies.short_policy import resolve_short_params
 
 _REPO = Path(__file__).resolve().parents[2]
 _BERLIN = ZoneInfo("Europe/Berlin")
+
+
 def _proof(moment, **overrides):
     body = {
         "tenant_id": "fixture-tenant",
@@ -45,7 +47,11 @@ def _proof(moment, **overrides):
 
 
 def _on(**shorts):
-    block = {"sandbox_expiry_v220": {"enabled": True}, "allow_live": False}
+    block = {
+        "sandbox_expiry_v220": {"enabled": True},
+        "allow_live": False,
+        "testnet_futures": {"paper_start": {}},
+    }
     block.update(shorts)
     return {"shorts": block}
 
@@ -61,6 +67,8 @@ def _pos(*, opened, amount=1.0, entry=100.0, mark_tier="volatile"):
         "entry_at": stamp,
         "symbol": "AAA/USDT",
         "sandbox_path": "v220_paper",
+        "execution_budget_seconds": 0,
+        "reconcile_budget_seconds": 0,
     }
 
 
@@ -845,3 +853,90 @@ def test_plan_start_outside_5s_window_denies():
     future = gate(now + timedelta(seconds=6))
     assert past.open is False and "clock_skew" in past.reasons
     assert future.open is False and "clock_skew" in future.reasons
+
+
+def test_protection_requires_reduce_only_short():
+    assert protection_allowed(position_side="short", reduce_only=True) is True
+    assert protection_allowed(position_side="SHORT", reduce_only=True) is True
+    assert protection_allowed(position_side="short", reduce_only=False) is False
+    assert protection_allowed(position_side=None, reduce_only=True) is False
+    assert protection_allowed(position_side="long", reduce_only=True) is False
+
+
+def test_schedule_with_one_budget_key_stays_unknown():
+    opened = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    cfg = _on()
+    pos = _pos(opened=opened)
+    hit = evaluate_short_cover(
+        pos,
+        100.2,
+        now=opened,
+        config_raw=cfg,
+        sandbox_schedule={"execution_budget_seconds": 0},
+    )
+    assert hit is not None and hit["state"] == "overdue"
+
+
+def test_missing_paper_start_denies_entry():
+    now = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    cfg = {"shorts": {"sandbox_expiry_v220": {"enabled": True}, "allow_live": False}}
+    decision = schedule_allows_entry(
+        now=now,
+        opened=now,
+        planned_exit=now + timedelta(hours=1),
+        config_raw=cfg,
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    )
+    assert decision.open is False
+    assert decision.reasons == ("paper_start_missing",)
+
+
+def test_runtime_due_reserves_budget_before_cutoff():
+    opened = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    cfg = _on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.5})
+    pos = _pos(opened=opened)
+    pos["execution_budget_seconds"] = 600
+    pos["reconcile_budget_seconds"] = 0
+    due = opened + timedelta(hours=4) - timedelta(seconds=600)
+    assert evaluate_short_cover(pos, 100.2, now=due - timedelta(seconds=1), config_raw=cfg) is None
+    hit = evaluate_short_cover(pos, 100.2, now=due, config_raw=cfg)
+    assert hit is not None and hit["source"] == "time_cap" and hit["flat"] is False
+    later = evaluate_short_cover(pos, 100.2, now=due + timedelta(seconds=1), config_raw=cfg)
+    assert later is not None and later["source"] == "time_cap"
+    unknown = _pos(opened=opened)
+    del unknown["execution_budget_seconds"]
+    del unknown["reconcile_budget_seconds"]
+    assert evaluate_short_cover(
+        unknown, 100.2, now=opened + timedelta(minutes=1), config_raw=cfg
+    )["state"] == "overdue"
+
+
+def test_zero_mark_does_not_emit_cover_order():
+    opened = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    cfg = _on()
+    pos = _pos(opened=opened)
+    pos["side"] = "short"
+    pos["amount"] = 1
+    assert evaluate_short_cover(pos, 0, now=opened, config_raw=cfg) is None
+    report = report_sandbox_exposure(pos, now=opened, config_raw=cfg, mark=0, halted=False)
+    assert report.state == "overdue" and report.flat is False
+
+    from services.signal_orchestrator import SignalOrchestrator
+
+    calls = []
+
+    class _Trading:
+        def execute_order(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return {"executed": True}
+
+    orch = SignalOrchestrator.__new__(SignalOrchestrator)
+    orch.config = type("Cfg", (), {"raw": cfg})()
+    orch.trading = _Trading()
+    analysis = type("Analysis", (), {"symbol": "AAA/USDT", "timeframe": "1h"})()
+    handled, result = orch._cycle_short_cover(pos, analysis, 0)
+    assert handled is True
+    assert result is None
+    assert calls == []

@@ -51,7 +51,9 @@ def evaluate_short_cover(
         return None
     px = float(mark or 0)
     entry = float((pos or {}).get("average_entry") or 0)
-    if lot_uses_sandbox_expiry(pos, config_raw) and (price_stale or timed_out or px <= 0 or entry <= 0):
+    if lot_uses_sandbox_expiry(pos, config_raw) and (px <= 0 or entry <= 0):
+        return None
+    if lot_uses_sandbox_expiry(pos, config_raw) and (price_stale or timed_out):
         return unpriced_cover()
     if px <= 0 or entry <= 0:
         return None

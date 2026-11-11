@@ -13,8 +13,10 @@ Paper/testnet start schedule, only when `shorts.sandbox_expiry_v220.enabled` is 
 - Cutoff 20:00:00 Europe/Berlin, Monday–Friday. A new short at or after 20:00:00 is denied. An explicit session end later than that cutoff is `cutoff_loosened`.
 - Maximum hold is 4 hours. Explicit 0, 8, 24 and 72 hour overlays are invalid and are not replaced with 24 or 72. A tighter overlay (under 4h) still applies. The flag-off path is unchanged. With the flag on, only lots tagged `sandbox_path = v220_paper` use this schedule. Untagged lots keep the existing cover rules.
 - Planned exit must be the same Europe/Berlin calendar day as the entry.
-- No new short on Saturday or Sunday. `weekend_admission: true` does not loosen that. Stop and cover of an open short still run.
-- This PR does not edit `config.json`. Numeric ceilings live in code. `shorts.testnet_futures.paper_start`, when #807 adds it, can only tighten those ceilings. If that key is absent, regime cells stay closed. `allow_live` stays false.
+- No new short on Saturday or Sunday. `weekend_admission: true` does not loosen that. Stop and cover of an open short still run when a price is known.
+- A tagged lot with a missing or zero mark is reported overdue and does not produce a COVER order. Production callers (`SignalOrchestrator._cycle_short_cover`, exit-realtime hub) do not yet pass `price_stale`, `halted`, `timed_out`, or `sandbox_schedule`. Those inputs are unit-tested on `evaluate_short_cover` only. Wiring them from the live callers is deferred.
+- Entry is denied with `paper_start_missing` when `shorts.testnet_futures.paper_start` is absent. A known budget moves the runtime cover due to `min(cap_end, cutoff) - budget`. Unknown budgets are overdue.
+- This PR does not edit `config.json`. Numeric ceilings live in code. `shorts.testnet_futures.paper_start`, when #807 adds it, can only tighten those ceilings. If that key is absent, a new entry is denied with `paper_start_missing`. An empty object is present and uses the code ceilings. `allow_live` stays false.
 
 Rev 0 below is the pre-freeze draft. Its "<24h" ceiling is tightened to 4h for the sandbox path only.
 
@@ -36,13 +38,13 @@ Test: `tests/unit/test_v220_t220_05.py::test_ac1_flag_off_keeps_existing_cover`.
 
 Rev 0 said "under 24h". That ceiling is superseded. The sandbox cap is 4 hours.
 
-The sandbox resolver walks tier, then coin, then lot `time_cap_hours`. A missing stack uses 4h, the same base as `resolve_short_params` with no overlay. An explicit value that is missing-as-null, non-finite, not positive, greater than 4h, or a plan past 20:00 Europe/Berlin is invalid. Invalid does not become 24h, 72h, or the previous layer. `climax_fade.time_cap_hours` is not read. Lot `time_cap_hours` is applied here; `resolve_short_params` still ignores it.
+The sandbox resolver walks tier, then coin, then lot `time_cap_hours`. A missing stack uses 4h, the same base as `resolve_short_params` with no overlay. An explicit value that is missing-as-null, non-finite, negative, greater than 4h, or a plan past 20:00 Europe/Berlin is invalid. Zero is the tightest legal hold, not a fallback to 4h. Malformed values deny with `paper_start_invalid`. Invalid does not become 24h, 72h, or the previous layer. `climax_fade.time_cap_hours` is not read. Lot `time_cap_hours` is applied here; `resolve_short_params` still ignores it.
 
 Test: `test_ac2_hold_cap_bounds_and_overlays`.
 
 ## AC3 — Session due and budgets
 
-When `session_required` is true, due is the earlier of the cap end and the session end. Exclusive session end is overdue at that instant. Inclusive session end is overdue on the following instant. Cap end stays overdue at `now >= cap_end`, matching the existing cover comparison. Execution and reconcile budgets must be explicit non-negative integers when a session is required. A missing budget is not zero. A new entry is open only when `opened_at` is at most 5 seconds after `now`, `planned_exit` is at most `opened_at + 4h`, the exit is the same Europe/Berlin calendar day, and `planned_exit + execution budget + reconcile budget` is at or before both the 4h cap and the 20:00:00 cutoff. 20:00:00 Europe/Berlin is the committed cutoff, not an example. A missing budget is not zero.
+When `session_required` is true, due is the earlier of the cap end and the session end. Exclusive session end is overdue at that instant. Inclusive session end is overdue on the following instant. Cap end stays overdue at `now >= cap_end`, matching the existing cover comparison. Execution and reconcile budgets must be explicit non-negative integers when a session is required. A missing budget is not zero. A new entry is open only when `|opened_at - now|` is at most 5 seconds, `planned_exit` is at most `opened_at + 4h`, the exit is the same Europe/Berlin calendar day, and `planned_exit + execution budget + reconcile budget` is at or before both the 4h cap and the 20:00:00 cutoff. 20:00:00 Europe/Berlin is the committed cutoff, not an example. A missing budget is not zero.
 
 Test: `test_ac3_session_due_and_budget`.
 

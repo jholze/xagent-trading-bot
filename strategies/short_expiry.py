@@ -21,6 +21,7 @@ from strategies.short_math import is_short
 from strategies.short_mode_proof import (
     MAX_HOLD_HOURS,
     clock_skew_seconds,
+    paper_start_present,
     parse_sandbox_mode_proof,
     tightened_cutoff,
     tightened_decimal,
@@ -94,7 +95,9 @@ def resolve_sandbox_hold(
     lot_map = lot if isinstance(lot, dict) else {}
     tier_name = _tier_key(tier or lot_map.get("strategy_tier"))
     tier_block = cfg.get("stable") if tier_name == "stable" else cfg.get("volatile")
-    ceiling = tightened_decimal(config_raw, "max_hold_hours", _EXISTING_DEFAULT_HOURS)
+    ceiling, hold_reason = tightened_decimal(config_raw, "max_hold_hours", _EXISTING_DEFAULT_HOURS)
+    if hold_reason or ceiling is None:
+        return HoldCap(False, None, hold_reason or "paper_start_invalid")
     chosen: Decimal | None = None
     for block in (tier_block, _coin_block(cfg, symbol, lot_map), lot_map):
         state, value = _read_cap(block, ceiling)
@@ -124,6 +127,8 @@ def schedule_allows_entry(
     """Clock and calendar permission only. This does not place an order."""
     if not sandbox_expiry_enabled(config_raw):
         return ScheduleDecision(False, ("sandbox_disabled",))
+    if not paper_start_present(config_raw):
+        return ScheduleDecision(False, ("paper_start_missing",))
     reasons: list[str] = []
     proof = parse_sandbox_mode_proof(mode_proof, now=now, config_raw=config_raw)
     if shorts_allow_live(config_raw) or proof.live or proof.reason == "live_denied":
@@ -146,8 +151,10 @@ def schedule_allows_entry(
         reasons.append("session_unknown")
     else:
         reasons.extend(_clock_reasons(now_utc, opened_utc, planned_utc, config_raw))
-        skew = timedelta(seconds=clock_skew_seconds(config_raw))
-        if abs(opened_utc - now_utc) > skew:
+        skew_seconds, skew_reason = clock_skew_seconds(config_raw)
+        if skew_reason or skew_seconds is None:
+            reasons.append(skew_reason or "paper_start_invalid")
+        elif abs(opened_utc - now_utc) > timedelta(seconds=skew_seconds):
             reasons.append("clock_skew")
         session_end, boundary, session_reason = _frozen_session(schedule, opened_utc, config_raw)
         if session_reason:
@@ -189,12 +196,17 @@ def report_sandbox_exposure(
     schedule: Mapping[str, Any] | None = None,
 ) -> ExposureReport:
     """Open quantity is overdue or open. Flat only when quantity is zero."""
-    del mark
     amount = float((pos or {}).get("amount") or 0) if isinstance(pos, dict) else 0.0
     if not is_short(pos) or amount <= 0:
         return ExposureReport("flat", True, "qty_zero")
     if not lot_uses_sandbox_expiry(pos, config_raw):
         return ExposureReport("inactive", False, "untagged")
+    try:
+        mark_px = float(mark or 0)
+    except (TypeError, ValueError):
+        mark_px = 0.0
+    if mark_px <= 0:
+        return ExposureReport("overdue", False, "unpriced")
     if price_stale or timed_out or halted is not False:
         return ExposureReport("overdue", False, "unconfirmed")
     return _exposure_from_clock(pos, now=now, config_raw=config_raw, schedule=schedule)
@@ -262,20 +274,28 @@ def cover_time_decision(
         return _overdue("entry timestamp missing")
     if _past_frozen_hold(now_utc, opened, config_raw):
         return _overdue("frozen cutoff or calendar day")
-    session_required, session_end, boundary, _budget, session_reason = _session(schedule)
-    if session_reason:
-        return _overdue(session_reason)
+    budget, buffer_reason = _lot_budgets(schedule, pos)
+    if buffer_reason or budget is None:
+        return _overdue(buffer_reason or "budget unknown")
     cap_end = opened + _hours_td(hold.hours)
-    if _holding_overdue(
-        now_utc,
-        cap_end=cap_end,
-        session_end=session_end,
-        boundary=boundary,
-        session_required=session_required,
-    ):
-        age_h = (now_utc - opened).total_seconds() / 3600.0
-        return _overdue(f"held {age_h:.1f}h, cap {hold.hours}h")
+    cutoff = _cutoff_utc(opened, config_raw)
+    bound = cap_end if cutoff is None else min(cap_end, cutoff)
+    due = bound - timedelta(seconds=budget)
+    if now_utc >= due:
+        return _overdue(f"due {due.isoformat()}")
     return None
+
+
+def _lot_budgets(schedule, pos):
+    if isinstance(schedule, dict) and (
+        "execution_budget_seconds" in schedule or "reconcile_budget_seconds" in schedule
+    ):
+        return _explicit_budgets(schedule)
+    if isinstance(pos, dict) and (
+        "execution_budget_seconds" in pos or "reconcile_budget_seconds" in pos
+    ):
+        return _explicit_budgets(pos)
+    return None, "buffer_unknown"
 
 
 def _exposure_from_clock(pos, *, now, config_raw, schedule) -> ExposureReport:
@@ -293,17 +313,13 @@ def _exposure_from_clock(pos, *, now, config_raw, schedule) -> ExposureReport:
         return ExposureReport("overdue", False, "opened_unknown")
     if _past_frozen_hold(now_utc, opened, config_raw):
         return ExposureReport("overdue", False, "cutoff")
-    session_required, session_end, boundary, _budget, session_reason = _session(schedule)
-    if session_reason:
-        return ExposureReport("overdue", False, session_reason)
+    budget, buffer_reason = _lot_budgets(schedule, pos)
+    if buffer_reason or budget is None:
+        return ExposureReport("overdue", False, buffer_reason or "buffer_unknown")
     cap_end = opened + _hours_td(hold.hours)
-    if _holding_overdue(
-        now_utc,
-        cap_end=cap_end,
-        session_end=session_end,
-        boundary=boundary,
-        session_required=session_required,
-    ):
+    cutoff = _cutoff_utc(opened, config_raw)
+    bound = cap_end if cutoff is None else min(cap_end, cutoff)
+    if now_utc >= bound - timedelta(seconds=budget):
         return ExposureReport("overdue", False, "due")
     return ExposureReport("open", False, "inside")
 
