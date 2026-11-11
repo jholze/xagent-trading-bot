@@ -214,3 +214,92 @@ def test_timeout_blocks_buy_and_short_and_lets_sell_and_cover_reduce(monkeypatch
         assert rejected.executed is False
         assert rejected.order_status is OrderStatus.REJECTED
         assert "fail closed" in rejected.message
+
+
+def test_evaluate_redis_timeout_holds_buy_and_keeps_stop_loss_sell(monkeypatch):
+    """#765: a Redis timeout inside evaluate() holds a BUY and still sells a stop.
+
+    Both mutants must fail this test: deleting the try/except lets
+    OracleReadTimeout escape (including a stop-loss SELL), and dropping the
+    BUY/SHORT hold leaves the buy action in place.
+    """
+    from unittest.mock import patch
+
+    from core.models import MarketContext
+    from tests.unit.test_shadow_mode_live_sell import _engine, _technical
+
+    def _timeout():
+        raise OracleReadTimeout("oracle get timed out")
+
+    monkeypatch.setattr("strategies.decision_engine.read_oracle_state", _timeout)
+
+    def _run(technical, *, has_position: bool):
+        engine = _engine()
+        market = MarketContext(
+            symbol=technical.symbol,
+            timeframe="1h",
+            current_price=1.0,
+            has_position=has_position,
+            average_entry=1.0 if has_position else 0.0,
+            rsi=40.0,
+            strategy_params={
+                "strategy_profile": "baseline",
+                "stop_loss_pct": 8.0,
+                "dca": {},
+            },
+            ohlcv_df=None,
+        )
+        position = (
+            {"amount": 10.0, "average_entry": 1.0, "strategy_tier": None}
+            if has_position
+            else {"amount": 0.0, "average_entry": 0.0, "strategy_tier": None}
+        )
+
+        class _Strat:
+            def analyze(self, coin, market, x_signals=None):
+                return technical
+
+        engine.build_market_context = lambda coin, price: market
+        with patch(
+            "strategies.decision_engine.get_strategy", return_value=_Strat()
+        ), patch(
+            "strategies.decision_engine.get_position", return_value=position
+        ), patch(
+            "strategies.decision_engine.evaluate_market_structure_sells",
+            return_value=[],
+        ), patch(
+            "strategies.decision_engine.evaluate_trailing_take_profit",
+            return_value=None,
+        ), patch(
+            "strategies.decision_engine.evaluate_trailing_stop",
+            return_value=None,
+        ), patch(
+            "strategies.decision_engine.evaluate_time_profit_exit",
+            return_value=None,
+        ), patch(
+            "strategies.decision_engine.evaluate_profit_max_lifetime",
+            return_value=None,
+        ), patch(
+            "strategies.decision_engine.evaluate_exit_sensor_sells",
+            return_value=[],
+        ), patch(
+            "strategies.decision_engine.sync_profit_armed_at", return_value=False
+        ):
+            return engine.evaluate(
+                {"symbol": technical.symbol, "timeframe": "1h"}, 1.0
+            )
+
+    buy_technical = _technical("ORCLBUY/USDT", "BUY", ["technical"])
+    buy = _run(buy_technical, has_position=False)
+    assert buy is not None
+    assert buy.action == "HOLD"
+    assert buy.recommended is False
+
+    stop = _technical("ORCLSTOP/USDT", "SELL_STOP_FULL", ["technical", "stop_loss"])
+    stop.long_hard_stop = True
+    sell = _run(stop, has_position=True)
+    assert sell is not None
+    assert sell.sell_source == "stop_loss"
+    assert "SELL" in sell.action
+    assert sell.action != "HOLD"
+    assert sell.long_hard_stop is True
