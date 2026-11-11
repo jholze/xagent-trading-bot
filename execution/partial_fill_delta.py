@@ -18,7 +18,24 @@ from decimal import Decimal, InvalidOperation
 
 _OPEN = "open"
 _CANCELED = frozenset({"cancelled", "canceled"})
-_TERMINAL_FINISH = _CANCELED | frozenset({"filled", "ioc", "stp", "poc", "fok"})
+# Same finish_as sets as execution.gate_adapter. Positive ioc stays a fill.
+# stp/poc/fok below the request are a canceled remainder. The extra names are
+# zero-fill cancels on the adapter; a positive quantity is still a real fill.
+_ZERO_FILL_CANCEL_FINISH_AS = frozenset(
+    {
+        "ioc",
+        "stp",
+        "poc",
+        "fok",
+        "trader_not_enough",
+        "depth_not_enough",
+        "small",
+        "liquidate_cancelled",
+    }
+)
+_REMAINDER_FINISH = _CANCELED | (_ZERO_FILL_CANCEL_FINISH_AS - {"ioc"})
+_ACCEPTED_FINISH = frozenset({_OPEN, "filled"}) | _CANCELED | _ZERO_FILL_CANCEL_FINISH_AS
+_TERMINAL_FINISH = _CANCELED | frozenset({"filled"}) | _ZERO_FILL_CANCEL_FINISH_AS
 
 
 @dataclass(frozen=True)
@@ -69,7 +86,7 @@ def apply_fill_snapshot(
     if cumulative > requested:
         return state, FillDelta(False, "above_requested", None, ())
     finish = str(snapshot.finish_as or "").strip().lower()
-    if finish not in {_OPEN, "filled"} and finish not in _CANCELED:
+    if finish not in _ACCEPTED_FINISH:
         return state, FillDelta(False, "unknown_finish", None, ())
     ids, id_error = _trade_ids(snapshot.trade_ids)
     if id_error:
@@ -84,6 +101,8 @@ def apply_fill_snapshot(
     if state.phase in {"canceled_remainder", "filled"}:
         if _same_terminal(state, cumulative, ids, phase):
             return state, FillDelta(True, "idempotent", Decimal("0"), ())
+        if cumulative > booked:
+            return state, FillDelta(False, "terminal_growth", None, ())
         return state, FillDelta(False, "terminal", None, ())
     new_ids = tuple(trade_id for trade_id in ids if trade_id not in state.trade_ids)
     delta = cumulative - booked
@@ -106,7 +125,9 @@ def partial_open_needs_revisit(order: dict) -> Revisit:
     finish = str(order.get("finish_as") or "").strip().lower()
     if finish in _TERMINAL_FINISH:
         return Revisit(False, "terminal")
-    if finish == _OPEN:
+    # Stored partially_filled rows do not carry finish_as. Absence means the
+    # order is still the open partial the tracker dropped.
+    if finish in {"", _OPEN}:
         return Revisit(True, "open_partial")
     return Revisit(False, "unknown_finish")
 
@@ -138,10 +159,18 @@ def load_state(payload: dict) -> TrackerState:
 
 
 def _phase_for(finish: str, cumulative: Decimal, requested: Decimal) -> str:
-    if finish in _CANCELED:
-        return "canceled_remainder"
-    if finish == "filled" or (requested > 0 and cumulative == requested):
+    if finish == _OPEN:
+        if requested > 0 and cumulative == requested:
+            return "filled"
+        return "open_partial"
+    if finish == "ioc":
+        return "filled" if cumulative > 0 else "canceled_remainder"
+    if finish == "filled":
         return "filled"
+    if finish in _REMAINDER_FINISH:
+        if cumulative > 0 and requested > 0 and cumulative >= requested:
+            return "filled"
+        return "canceled_remainder"
     return "open_partial"
 
 

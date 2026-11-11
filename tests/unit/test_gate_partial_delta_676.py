@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
+
 from core.models import OrderStatus
 from execution.partial_fill_delta import (
     FillSnapshot,
@@ -82,7 +84,7 @@ def test_ac_676_canceled_remainder_retains_filled_quantity():
     assert state.phase == "canceled_remainder"
     assert state.booked_qty == Decimal("4")
     grown, extra = apply_fill_snapshot(state, _snap("6", ("t1", "t2"), "cancelled"))
-    assert extra.reason == "terminal"
+    assert extra.reason == "terminal_growth"
     assert grown.booked_qty == Decimal("4")
     revisit = partial_open_needs_revisit(
         {"status": "partially_filled", "finish_as": "cancelled", "needs_reconcile": False}
@@ -138,3 +140,105 @@ def test_ac_676_unknown_qty_finish_or_trade_id_does_not_book_zero():
     assert regressed.reason == "qty_regression"
     assert regressed.qty is None
     assert kept.booked_qty == Decimal("4")
+
+
+@pytest.mark.parametrize("finish", ["ioc", "stp", "poc", "fok"])
+def test_ac_676_positive_terminal_finish_books_the_delta(finish):
+    state, delta = apply_fill_snapshot(empty_state(), _snap("4", ("t1",), finish))
+    assert delta.accepted is True
+    assert delta.qty == Decimal("4")
+    assert state.booked_qty == Decimal("4")
+    if finish == "ioc":
+        assert state.phase == "filled"
+    else:
+        assert state.phase == "canceled_remainder"
+
+
+@pytest.mark.parametrize(
+    "finish",
+    ["trader_not_enough", "depth_not_enough", "small", "liquidate_cancelled"],
+)
+def test_ac_676_zero_fill_names_with_a_positive_qty_still_book(finish):
+    state, delta = apply_fill_snapshot(empty_state(), _snap("4", ("t1",), finish))
+    assert delta.qty == Decimal("4")
+    assert state.phase == "canceled_remainder"
+    assert state.booked_qty == Decimal("4")
+
+
+def test_ac_676_stored_partial_without_finish_as_stays_eligible():
+    stored = {
+        "status": "partially_filled",
+        "needs_reconcile": False,
+        "filled_qty": 4,
+        "symbol": "BASE/USDT",
+        "execution": {"amount": 4, "filled_qty_gross": 4},
+    }
+    revisit = partial_open_needs_revisit(stored)
+    assert revisit.eligible is True
+    assert revisit.reason == "open_partial"
+    assert "finish_as" not in stored
+
+
+def test_ac_676_open_snapshot_that_completes_the_request_is_filled():
+    state, delta = apply_fill_snapshot(empty_state(), _snap("10", ("t1",), "open", "10"))
+    assert delta.qty == Decimal("10")
+    assert state.phase == "filled"
+    replayed, again = apply_fill_snapshot(load_state(dump_state(state)), _snap("10", ("t1",), "open", "10"))
+    assert again.reason == "idempotent"
+    assert again.qty == Decimal("0")
+    assert replayed.booked_qty == Decimal("10")
+
+
+@pytest.mark.parametrize(
+    ("qty", "requested", "reason"),
+    [
+        (None, "10", "unknown_qty"),
+        ("nan", "10", "unknown_qty"),
+        ("-1", "10", "unknown_qty"),
+        (True, "10", "unknown_qty"),
+        ("4", "0", "unknown_qty"),
+        ("4", "-1", "unknown_qty"),
+        ("11", "10", "above_requested"),
+    ],
+)
+def test_ac_676_unknown_or_impossible_quantities_leave_state_unchanged(qty, requested, reason):
+    state = empty_state()
+    cumulative = qty if qty is None or qty is True or qty == "nan" else Decimal(str(qty))
+    if qty == "nan":
+        cumulative = "nan"
+    snap = FillSnapshot(cumulative, ("t1",), "open", Decimal(requested))
+    kept, delta = apply_fill_snapshot(state, snap)
+    assert delta.accepted is False
+    assert delta.reason == reason
+    assert delta.qty is None
+    assert kept == state
+
+
+def test_ac_676_duplicate_trade_id_missing_prior_id_and_zero_delta_with_a_new_id():
+    state = empty_state()
+    kept, duplicate = apply_fill_snapshot(state, _snap("4", ("t1", "t1"), "open"))
+    assert duplicate.reason == "duplicate_trade_id"
+    assert kept == state
+    booked, _first = apply_fill_snapshot(state, _snap("4", ("t1",), "open"))
+    kept, dropped = apply_fill_snapshot(booked, _snap("7", ("t2",), "open"))
+    assert dropped.reason == "unknown_trade_id"
+    assert kept == booked
+    kept, extra = apply_fill_snapshot(booked, _snap("4", ("t1", "t2"), "open"))
+    assert extra.reason == "unknown_increment"
+    assert extra.qty is None
+    assert kept == booked
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ("nope", "not an object"),
+        ({"booked_qty": "nan", "trade_ids": [], "phase": "unseen"}, "booked_qty"),
+        ({"booked_qty": "1", "trade_ids": "t1", "phase": "unseen"}, "trade_ids"),
+        ({"booked_qty": "1", "trade_ids": [""], "phase": "unseen"}, "unknown_trade_id"),
+        ({"booked_qty": "1", "trade_ids": ["t1"], "phase": "nope"}, "phase"),
+    ],
+)
+def test_ac_676_load_state_rejects_unknown_payloads(payload, message):
+    with pytest.raises(ValueError, match=message):
+        load_state(payload)
