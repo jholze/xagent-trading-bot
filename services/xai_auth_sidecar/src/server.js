@@ -12,11 +12,14 @@
  *     (`XAI_AUTH_LOGIN_ON_BOOT=1`, default off),
  *   - keeps the stored session alive by refreshing it before expiry
  *     (`XAI_AUTH_KEEPALIVE`, default on) so it survives deploys on the volume,
- *   - Phase 2: proxies `GET|POST /v1/*` to `https://api.x.ai/v1/*` for the
- *     Python bot (bearer `XAI_AUTH_TRIGGER_TOKEN`, same as `/login`). The
- *     stored access token is refreshed if needed and injected here — it never
- *     leaves this process. No credential → 503 `{error:"no_credential"}` so the
- *     bot can fall back to its metered `XAI_API_KEY`.
+ *   - Phase 2: proxies `GET|POST /v1/*` to the Grok CLI subscription proxy
+ *     (`https://cli-chat-proxy.grok.com/v1/*`) for the Python bot (bearer
+ *     `XAI_AUTH_TRIGGER_TOKEN`, same as `/login`). The stored access token is
+ *     refreshed if needed and injected here — it never leaves this process.
+ *     There is no path allowlist under `/v1`: chat completions and responses
+ *     are both relayed. `api.x.ai` is the metered API and 404s a subscription
+ *     bearer for models that team does not carry. No credential → 503
+ *     `{error:"no_credential"}` so the bot can fall back to `XAI_API_KEY`.
  */
 import http from "node:http";
 import crypto from "node:crypto";
@@ -37,6 +40,11 @@ import {
 import { runLogin } from "./login.js";
 import { redactText, secretsFrom } from "./redact.js";
 import { createOperatorNotifier, telegramConfigFrom } from "./telegram.js";
+import {
+  XAI_SUBSCRIPTION_ORIGIN,
+  modelFromBody,
+  subscriptionProxyHeaders,
+} from "./upstream.js";
 
 export const SERVICE_NAME = "xai-auth-sidecar";
 export const TRIGGER_TOKEN_VAR = "XAI_AUTH_TRIGGER_TOKEN";
@@ -50,8 +58,12 @@ export const DEFAULT_KEEPALIVE_INTERVAL_MS = 5 * 60_000;
 /** Refresh once less than this remains (pi-ai's 5-min skew is already inside `expires`). */
 export const DEFAULT_REFRESH_MARGIN_MS = 15 * 60_000;
 export const MAX_BACKOFF_MS = 6 * 60 * 60_000;
-/** Upstream of the `/v1` proxy. Fixed on purpose: the access token goes to xAI and nowhere else. */
-export const XAI_UPSTREAM_ORIGIN = "https://api.x.ai";
+/**
+ * Upstream of the `/v1` proxy. Fixed on purpose: the access token goes to the
+ * Grok subscription proxy and nowhere else (not to `api.x.ai`, which 404s this
+ * bearer, and not to a caller-supplied host).
+ */
+export const XAI_UPSTREAM_ORIGIN = XAI_SUBSCRIPTION_ORIGIN;
 /** x_search calls can run long; the bot's own OpenAI client timeout is the tighter bound. */
 export const DEFAULT_PROXY_TIMEOUT_MS = 180_000;
 export const PROXY_PREFIX = "/v1";
@@ -68,7 +80,21 @@ const HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 /** Request headers that are replaced or recomputed by the proxy. */
-const REQUEST_HEADERS_DROPPED = new Set(["host", "authorization", "x-auth-token", "content-length", "accept-encoding"]);
+const REQUEST_HEADERS_DROPPED = new Set([
+  "host",
+  "authorization",
+  "x-auth-token",
+  "content-length",
+  "accept-encoding",
+  // Subscription identity is owned by this process. A caller must not pin a
+  // stale client version or a different token-auth marker.
+  "x-xai-token-auth",
+  "x-grok-client-version",
+  "x-grok-client-identifier",
+  "x-grok-client-mode",
+  "x-authenticateresponse",
+  "x-grok-model-override",
+]);
 /** Response headers that no longer describe the body we relay (fetch has already decoded it). */
 const RESPONSE_HEADERS_DROPPED = new Set(["content-encoding", "content-length"]);
 
@@ -346,6 +372,12 @@ export function createSidecar({
     headers.authorization = `Bearer ${cred.access}`;
     headers["accept-encoding"] = "identity";
     const body = req.method === "POST" ? await readBody(req) : undefined;
+    // Subscription proxy identity. Set after the client header copy so a caller
+    // cannot drop or replace them. The trigger token is already not in `headers`.
+    const model = modelFromBody(body);
+    for (const [name, value] of Object.entries(subscriptionProxyHeaders(env, model))) {
+      headers[name] = value;
+    }
     const target = `${XAI_UPSTREAM_ORIGIN}${url.pathname}${url.search}`;
 
     const started = now();

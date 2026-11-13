@@ -450,8 +450,13 @@ test("proxy: happy path injects the stored access token, strips hop-by-hop + cli
   assert.equal(calls.length, 1);
   const [{ url, init }] = calls;
   assert.equal(url, `${XAI_UPSTREAM_ORIGIN}/v1/responses?foo=bar`);
+  assert.equal(XAI_UPSTREAM_ORIGIN, "https://cli-chat-proxy.grok.com", "subscription catalog, not api.x.ai");
   assert.equal(init.method, "POST");
   assert.equal(init.headers.authorization, `Bearer ${ACCESS}`, "stored access token injected");
+  assert.equal(init.headers["x-xai-token-auth"], "xai-grok-cli");
+  assert.equal(init.headers["x-grok-client-version"], "1.0.77");
+  assert.equal(init.headers["x-grok-client-identifier"], "grok-shell");
+  assert.equal(init.headers["x-grok-model-override"], "grok-4", "proxy routes on this header, not only the JSON model");
   assert.equal(init.headers["x-auth-token"], undefined, "client trigger header never forwarded");
   assert.equal(init.headers["content-type"], "application/json");
   assert.equal(init.headers["x-request-id"], "abc-123", "ordinary end-to-end headers pass through");
@@ -533,4 +538,45 @@ test("proxy: upstream unreachable → 502 upstream_unreachable; upstream 4xx/5xx
   assert.equal(st.body.proxy.upstreamErrors, 1);
   assert.equal(st.body.proxy.lastUpstreamStatus, 429);
   for (const l of [...logs, st.text]) assertNoSecrets(assert, l);
+});
+
+test("proxy: /v1/responses and /v1/chat/completions are relayed, not this process's 404", async (t) => {
+  const dir = await tmpDir(t);
+  await save(credential(), path.join(dir, "xai_oauth.json"));
+  const { oauth } = gatedOauth();
+  const { calls, fetchImpl } = fakeUpstream(
+    () => new Response(JSON.stringify({ code: "not-found", error: "The model grok-4.3 does not exist" }), { status: 404, headers: { "content-type": "application/json" } }),
+  );
+  const { sidecar } = makeSidecar(t, dir, {
+    oauth,
+    fetchImpl,
+    env: { XAI_AUTH_GROK_CLIENT_VERSION: "1.2.3" },
+  });
+  const call = await serve(t, sidecar);
+
+  const responses = await call(
+    "POST",
+    "/v1/responses",
+    { authorization: `Bearer ${TRIGGER}`, "content-type": "application/json", "x-xai-token-auth": "caller-must-not-win" },
+    JSON.stringify({ model: "grok-4.3\ninjected", input: "ping" }),
+  );
+  assert.equal(responses.status, 404, "upstream 404 is relayed");
+  assert.equal(responses.body.error, "The model grok-4.3 does not exist");
+  assert.notEqual(responses.body.ok, false, "not the sidecar's own {ok:false,error:not found}");
+
+  const chat = await call(
+    "POST",
+    "/v1/chat/completions",
+    { authorization: `Bearer ${TRIGGER}`, "content-type": "application/json" },
+    JSON.stringify({ model: "grok-4.3", messages: [] }),
+  );
+  assert.equal(chat.status, 404);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, "https://cli-chat-proxy.grok.com/v1/responses");
+  assert.equal(calls[1].url, "https://cli-chat-proxy.grok.com/v1/chat/completions");
+  assert.equal(calls[0].init.headers["x-grok-client-version"], "1.2.3");
+  assert.equal(calls[0].init.headers["x-xai-token-auth"], "xai-grok-cli", "caller cannot replace the subscription marker");
+  assert.equal(calls[0].init.headers["x-grok-model-override"], undefined, "newline in model is not a header");
+  assert.equal(calls[1].init.headers["x-grok-model-override"], "grok-4.3");
+  assert.ok(!Object.values(calls[0].init.headers).some((v) => String(v).includes(TRIGGER)));
 });

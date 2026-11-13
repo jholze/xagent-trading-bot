@@ -56,6 +56,7 @@ Variables on the `xagent-xai-auth` service:
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | — | operator chat that receives the verification URL + code, "session stored, expires …", and refresh failures. Same values as the bot service. |
 | `XAI_AUTH_TRIGGER_TOKEN` | — (trigger + proxy disabled) | shared secret for `POST /login` **and** the `/v1` proxy; set the **same** value on the bot service to enable `/xai_login` and `XAI_USE_SUBSCRIPTION` |
 | `XAI_AUTH_PROXY_TIMEOUT_MS` | `180000` | upper bound for one relayed xAI call (the bot's own client timeout is normally the tighter one) |
+| `XAI_AUTH_GROK_CLIENT_VERSION` | `1.0.77` | `x-grok-client-version` sent to the CLI proxy. The proxy 426s below its floor (1.0.13 as of 2026-11). Leave unset unless the floor moves. |
 | `XAI_AUTH_LOGIN_ON_BOOT` | `0` | `1`: start a device-code login automatically when the service boots without a credential (each boot without a login = one URL+code message) |
 | `XAI_AUTH_KEEPALIVE` | `1` | refresh the stored session before it expires (`0` to disable) |
 | `XAI_AUTH_KEEPALIVE_INTERVAL_MS` | `300000` | keepalive check interval |
@@ -67,7 +68,7 @@ HTTP surface (JSON on the sidecar's own routes, never a token):
 
 - `GET /health`, `GET /status` — `credential.{present,expiresAt,expiresInSec,expiringSoon}`, `login.{running,lastResult,lastError}`, `keepalive.*`, `proxy.{enabled,requests,rejected,noCredential,upstreamErrors,lastUpstreamStatus}`, `triggerEnabled`, `telegram.configured`
 - `POST /login` with `Authorization: Bearer $XAI_AUTH_TRIGGER_TOKEN` — `202 {started:true}`, `409` while a login runs, `403` when the trigger token is unset on the sidecar, `401` on mismatch
-- `GET|POST /v1/*` with the same bearer — relayed to `https://api.x.ai/v1/*` with the stored access token (Phase 2, below). `/login`, `/health`, `/status` are never proxied; `/health` stays token-free.
+- `GET|POST /v1/*` with the same bearer — relayed to `https://cli-chat-proxy.grok.com/v1/*` with the stored access token and the Grok CLI identity headers (Phase 2, below). There is no path allowlist: `/v1/responses` and `/v1/chat/completions` are both forwarded. `/login`, `/health`, `/status` are never proxied; `/health` stays token-free. A path outside that table is this process's own `404 {error:"not found"}`.
 
 ### How jholze logs in
 
@@ -196,7 +197,15 @@ stays `grok-4`, and the bot's xAI calls can move behind one flag.
 
 ### Sidecar side: `GET|POST /v1/*`
 
-`src/server.js` relays `GET`/`POST /v1/*` to `https://api.x.ai/v1/*`:
+`src/server.js` relays `GET`/`POST /v1/*` to `https://cli-chat-proxy.grok.com/v1/*`
+(not `https://api.x.ai`). A SuperGrok bearer is not on the developer API's
+model catalog, so `api.x.ai` answers both `/v1/chat/completions` and
+`/v1/responses` with HTTP 404 `not-found` and a string `error` field. The
+sidecar's own route table does not 404 those paths — it has no allowlist under
+`/v1`. The subscription catalog is the Grok CLI chat proxy, which also requires
+`X-XAI-Token-Auth: xai-grok-cli`, `x-grok-client-version` (default `1.0.77`,
+override `XAI_AUTH_GROK_CLIENT_VERSION`), and `x-grok-model-override` taken from
+the JSON `model` field:
 
 1. Bearer check with the **same** `XAI_AUTH_TRIGGER_TOKEN` as `POST /login`
    (constant-time compare). Token unset on the sidecar → `403
@@ -206,14 +215,16 @@ stays `grok-4`, and the bot's xAI calls can move behind one flag.
    inside the refresh margin, persists the rotated token). No file / unreadable →
    `503 {error:"no_credential"}`; refresh failed → `503 {error:"refresh_failed"}`.
    Both make the bot fall back to `XAI_API_KEY`.
-3. Replaces the client's `Authorization` with `Bearer <access>` and forwards the
-   request (path + query + body; hop-by-hop headers, `host`, `x-auth-token`,
-   `accept-encoding` dropped). xAI's status, headers and body come back
-   unchanged (`429`, `500`, … are the bot's to handle — the proxy does not
-   retry). xAI unreachable → `502 {error:"upstream_unreachable"}`.
+3. Replaces the client's `Authorization` with `Bearer <access>`, sets the Grok
+   CLI identity headers (including `x-grok-model-override` from the JSON
+   `model`), and forwards the request (path + query + body; hop-by-hop headers,
+   `host`, `x-auth-token`, `accept-encoding` dropped). The upstream status,
+   headers and body come back unchanged (`404`, `429`, `500`, … are the bot's
+   to handle — the proxy does not retry). Upstream unreachable → `502
+   {error:"upstream_unreachable"}`.
 
 The access token exists only inside the sidecar process and in the request to
-`api.x.ai`; the upstream origin is a constant, not configurable. Logs go
+`cli-chat-proxy.grok.com`; the upstream origin is a constant, not configurable. Logs go
 through `redactText` with the access, refresh **and** trigger token registered,
 so a `proxy: POST /v1/responses → 200 (812 ms)` line is all you see. Requests
 counters live in `GET /status` → `proxy`. No public Railway domain is needed or
