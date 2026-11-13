@@ -276,6 +276,36 @@ def _order_trade_ts(order: dict) -> str:
     return _format_ts_short(ts.get("filled") or ts.get("created") or "")
 
 
+def _stamp_order_lineage(
+    record: dict,
+    order,
+    *,
+    idempotency_key: str,
+    timeframe: str,
+    rejected: bool,
+) -> None:
+    """Attempt identity, plus the decision block when the order was stamped.
+
+    A rejected row is attempt_only and is never given a filled timestamp.
+    """
+    from services.entry_lineage import attempt_fields, decision_lineage_from_order
+
+    record.update(
+        attempt_fields(
+            str(record.get("id") or ""),
+            idempotency_key=idempotency_key,
+            prior_attempt_id=getattr(order, "prior_attempt_id", None),
+            rejected=rejected,
+        )
+    )
+    try:
+        block = decision_lineage_from_order(order, timeframe=timeframe)
+    except Exception:
+        block = None
+    if isinstance(block, dict):
+        record["entry_lineage"] = block
+
+
 class OrderService:
     def __init__(self, scope: str = None):
         self.scope = scope or resolve_tenant_scope()
@@ -396,6 +426,13 @@ class OrderService:
         }
         if idem:
             record["idempotency_key"] = idem
+        _stamp_order_lineage(
+            record,
+            order,
+            idempotency_key=idem,
+            timeframe=timeframe,
+            rejected=False,
+        )
         data.setdefault("orders", []).append(record)
         self._save(data)
         self._dual_write_v2(record)
@@ -442,7 +479,55 @@ class OrderService:
             "error": decision.message,
             "timestamps": {"created": _now(), "updated": _now()},
         }
+        _stamp_order_lineage(
+            record,
+            order,
+            idempotency_key=getattr(order, "idempotency_key", "") or "",
+            timeframe=timeframe,
+            rejected=True,
+        )
         data.setdefault("orders", []).append(record)
+        self._save(data)
+        self._dual_write_v2(record)
+        return record
+
+    def attach_exit_lineage(self, order_id: str, leg: dict) -> dict | None:
+        """Append one exit allocation. Does not change status or filled time."""
+        if not order_id or not isinstance(leg, dict):
+            return None
+        data = self._load()
+        record = self._find(data, order_id=order_id)
+        if not record or record.get("ledger_scope") != self.scope:
+            return None
+        from services.entry_lineage import SCHEMA, SCHEMA_VERSION
+
+        block = record.get("exit_lineage")
+        if not isinstance(block, dict):
+            block = {
+                "schema": SCHEMA,
+                "schema_version": SCHEMA_VERSION,
+                "exit_order_id": order_id,
+                "allocations": [],
+            }
+        allocs = [row for row in (block.get("allocations") or []) if isinstance(row, dict)]
+        key = (
+            str(leg.get("entry_allocation_id") or ""),
+            str(leg.get("exit_order_id") or order_id),
+        )
+        if not any(
+            (
+                str(row.get("entry_allocation_id") or ""),
+                str(row.get("exit_order_id") or order_id),
+            )
+            == key
+            for row in allocs
+        ):
+            stored = dict(leg)
+            stored["exit_order_id"] = stored.get("exit_order_id") or order_id
+            allocs.append(stored)
+        block["allocations"] = allocs
+        block["unlinked"] = sum(1 for row in allocs if not row.get("linked"))
+        record["exit_lineage"] = block
         self._save(data)
         self._dual_write_v2(record)
         return record

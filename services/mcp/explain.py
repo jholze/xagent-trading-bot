@@ -218,6 +218,16 @@ def _statuses(raw: Any) -> set[str]:
 def sanitize_order(order: Any) -> dict:
     src = _as_mapping(order)
     out = _pick(src, _ORDER_KEYS)
+    try:
+        from services.entry_lineage import public_order_fields
+
+        extra = public_order_fields(src)
+    except Exception:
+        extra = {}
+    for key, value in extra.items():
+        if value is None:
+            continue
+        out[key] = value
     req = src.get("request") if isinstance(src.get("request"), dict) else {}
     out["request"] = _pick(req, _REQUEST_KEYS)
     risk = src.get("risk") if isinstance(src.get("risk"), dict) else {}

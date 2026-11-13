@@ -27,6 +27,43 @@ from strategies.positions import (
 _QTY_EPS = 1e-12
 
 
+def _resolve_fill_lineage(lineage, *, order_id, timeframe: str, source: str | None):
+    """Explicit lineage wins. Otherwise the order row written before the fill.
+
+    A missing row or a bad payload leaves the snapshot fields null. It does
+    not raise and it does not fetch indicators.
+    """
+    from services.entry_lineage import lineage_from_mapping
+
+    if isinstance(lineage, dict):
+        return lineage_from_mapping(lineage, timeframe=timeframe, source=source)
+    if not order_id:
+        return None
+    try:
+        from services.order_service import OrderService
+
+        row = OrderService().get_by_id(str(order_id))
+    except Exception:
+        return None
+    if not isinstance(row, dict):
+        return None
+    block = row.get("entry_lineage")
+    if not isinstance(block, dict):
+        return None
+    return lineage_from_mapping(block, timeframe=timeframe, source=source)
+
+
+def _remember_exit(order_id: str | None, leg: dict | None) -> None:
+    if not order_id or not isinstance(leg, dict):
+        return
+    try:
+        from services.order_service import OrderService
+
+        OrderService().attach_exit_lineage(str(order_id), leg)
+    except Exception as exc:
+        log(f"exit lineage attach failed for {order_id}: {exc}", "WARNING")
+
+
 def _default_entry_source(source: str | None) -> str | None:
     """Sources that must be tagged on the open lot for guards/caps.
 
@@ -272,6 +309,7 @@ class PortfolioService:
         fee_unknown: bool = False,
         order_type: str | None = None,
         strategy_tier: str | None = None,
+        lineage: dict | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "BUY", symbol, message="Invalid price")
@@ -308,7 +346,31 @@ class PortfolioService:
         else:
             net_entry = f.quote_net / f.qty_net
         signal = "BUY_DCA" if source in ("dca", "dca_recovery") else "BUY"
-        effective_entry_source = entry_source or _default_entry_source(source)
+        from strategies.positions import is_open_position as _lot_is_open
+
+        new_lot = not _lot_is_open(existing)
+        resolved_lineage = None
+        if new_lot:
+            resolved_lineage = _resolve_fill_lineage(
+                lineage, order_id=order_id, timeframe=timeframe, source=source,
+            )
+        from services.entry_lineage import new_lot_entry_source, snapshot_update_kwargs
+
+        effective_entry_source = new_lot_entry_source(
+            entry_source=entry_source,
+            source=source,
+            lineage=resolved_lineage,
+            new_lot=new_lot,
+            tagged_source=_default_entry_source(source),
+        )
+        snap_kw = snapshot_update_kwargs(resolved_lineage) if new_lot else {}
+        # #772 owns strategy_tier / cost fields. Do not pass them twice.
+        snap_kw.pop("strategy_tier", None)
+        stored_lineage = None
+        if new_lot and isinstance(resolved_lineage, dict):
+            stored_lineage = dict(resolved_lineage)
+            if order_id and not stored_lineage.get("entry_order_id"):
+                stored_lineage["entry_order_id"] = str(order_id)
         update_position(
             symbol,
             timeframe,
@@ -318,6 +380,8 @@ class PortfolioService:
             entry_source=effective_entry_source,
             entry_15m_vol_ratio=entry_15m_vol_ratio,
             fee_estimated=bool(fee_unknown),
+            lineage=stored_lineage,
+            **snap_kw,
             **_entry_tier_fields(symbol, strategy_tier, self.config, cm, f, source),
         )
         try:
@@ -415,9 +479,17 @@ class PortfolioService:
         else:
             pnl_basis = "net"
         pnl_fee_source = str(getattr(cm.params, "source", "") or "config")
+        try:
+            from services.entry_lineage import allocation_from_lot
+
+            exit_leg = allocation_from_lot(pos, exit_order_id=order_id, qty=qty_sold)
+        except Exception:
+            exit_leg = None
         update_position(
             symbol, timeframe, signal, f.fill_price, qty_sold, exit_source=exit_source
         )
+        if isinstance(exit_leg, dict) and exit_leg.get("linked"):
+            _remember_exit(order_id, exit_leg)
         if source == "cmc":
             from strategies.positions import save_positions, set_position_field
 
@@ -464,6 +536,7 @@ class PortfolioService:
         fee_estimated: bool = False,
         fee_rate_source: str = "",
         rate: float = 0.0,
+        lineage: dict | None = None,
     ) -> TradeResult:
         if price <= 0:
             return TradeResult(False, "SHORT", symbol, message="Invalid price")
@@ -515,6 +588,20 @@ class PortfolioService:
         prior_est = bool(existing.get("open_fee_estimated")) if adding else False
         open_fee = prior_fee + float(fee_slice or 0)
         open_est = bool(prior_est or fee_estimated)
+        new_short = not adding
+        resolved_lineage = _resolve_fill_lineage(
+            lineage, order_id=order_id, timeframe=timeframe, source=source,
+        )
+        from services.entry_lineage import snapshot_update_kwargs
+
+        snap_kw = snapshot_update_kwargs(resolved_lineage) if new_short else {}
+        if new_short and (entry_source or source) and "source" not in snap_kw:
+            snap_kw["source"] = entry_source or source
+        stored_lineage = None
+        if new_short and isinstance(resolved_lineage, dict):
+            stored_lineage = dict(resolved_lineage)
+            if order_id and not stored_lineage.get("entry_order_id"):
+                stored_lineage["entry_order_id"] = str(order_id)
         update_position(
             symbol,
             timeframe,
@@ -526,6 +613,8 @@ class PortfolioService:
             short_recipe=short_recipe,
             exit_source=exit_source,
             open_fee_tracked=True,
+            lineage=stored_lineage,
+            **snap_kw,
         )
         set_position_field(symbol, timeframe, "open_fee_usdt", open_fee)
         set_position_field(symbol, timeframe, "open_fee_estimated", open_est)
@@ -648,7 +737,15 @@ class PortfolioService:
             )
         pnl -= open_share
         pnl -= float(close_fee or 0)
+        try:
+            from services.entry_lineage import allocation_from_lot
+
+            exit_leg = allocation_from_lot(pos, exit_order_id=order_id, qty=qty)
+        except Exception:
+            exit_leg = None
         update_position(symbol, timeframe, "COVER", price, qty)
+        if isinstance(exit_leg, dict) and exit_leg.get("linked"):
+            _remember_exit(order_id, exit_leg)
         remaining_fee = lot_open_fee - open_share
         if remaining_fee < _QTY_EPS:
             remaining_fee = 0.0
@@ -707,6 +804,12 @@ class PortfolioService:
         source = order.source or "auto"
         oid = order.order_id or None
         ctx = trade_ctx_fields(order)
+        try:
+            from services.entry_lineage import decision_lineage_from_order
+
+            lineage = decision_lineage_from_order(order, timeframe=timeframe)
+        except Exception:
+            lineage = None
         if order.type == "BUY":
             return self.execute_buy(
                 order.symbol,
@@ -718,6 +821,7 @@ class PortfolioService:
                 entry_15m_vol_ratio=order.entry_15m_vol_ratio,
                 ctx=ctx,
                 strategy_tier=getattr(order, "strategy_tier", None),
+                lineage=lineage,
             )
         if order.type == "SHORT":
             return self.execute_short(
@@ -731,6 +835,7 @@ class PortfolioService:
                 entry_source=order.signal or source,
                 ctx=ctx,
                 exit_source=getattr(order, "exit_source", "") or None,
+                lineage=lineage,
             )
         if order.type == "COVER":
             return self.execute_cover(

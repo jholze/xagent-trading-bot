@@ -468,6 +468,24 @@ class TradingService:
                 )
 
             approved_order = decision.order
+            if approved_order is not None and approved_order is not order:
+                try:
+                    from services.entry_lineage import (
+                        copy_decision_lineage,
+                        stamp_size_from_decision,
+                    )
+
+                    copy_decision_lineage(order, approved_order)
+                    stamp_size_from_decision(approved_order, decision)
+                except Exception as exc:
+                    log(f"entry lineage copy skipped {order.symbol}: {exc}", "WARNING")
+            elif approved_order is not None:
+                try:
+                    from services.entry_lineage import stamp_size_from_decision
+
+                    stamp_size_from_decision(approved_order, decision)
+                except Exception as exc:
+                    log(f"entry lineage size skipped {order.symbol}: {exc}", "WARNING")
             if (
                 str(getattr(approved_order, "type", "") or "") == "SHORT"
                 and str(getattr(approved_order, "exit_source", "") or "").strip() == "climax_fade"

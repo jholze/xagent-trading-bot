@@ -219,6 +219,13 @@ def _normalize_positions(positions: dict) -> dict:
             return float(v)
         if k == "entry_snapshot" and isinstance(v, dict):
             return {sk: sv for sk, sv in v.items() if sk != "captured_at"}
+        if k == "entry_lineage" and isinstance(v, dict):
+            # Ledger ids are new on every run, like captured_at.
+            return {
+                sk: sv
+                for sk, sv in v.items()
+                if sk not in ("entry_order_id", "entry_allocation_id")
+            }
         return v
 
     return {
@@ -229,6 +236,9 @@ def _normalize_positions(positions: dict) -> dict:
                 "last_trade_at",
                 "last_dca_at",
                 "first_buy_at",
+                # AC-LIN-2 channels stamp entry_at from first_buy_at (wall clock).
+                # Two sequential buy/sell runs cannot share one clock reading.
+                "entry_at",
                 # F0/F7 stamp these with datetime.now() on a new entry.
                 # Two sequential buy/sell runs cannot share one clock reading.
                 "peak_at",
