@@ -1,0 +1,942 @@
+"""T220-05: sandbox hold is 4h and the cutoff is 20:00 Europe/Berlin.
+
+A plan longer than 4h, or past 20:00 local, is invalid. This file does not
+edit config.json. Missing paper_start denies a new entry.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from strategies.short_cover import evaluate_short_cover
+from strategies.short_expiry import (
+    cover_time_decision,
+    funding_acceptance,
+    protection_allowed,
+    report_sandbox_exposure,
+    resolve_sandbox_hold,
+    sandbox_expiry_enabled,
+    schedule_allows_entry,
+)
+from strategies.short_policy import resolve_short_params
+
+_REPO = Path(__file__).resolve().parents[2]
+_BERLIN = ZoneInfo("Europe/Berlin")
+
+
+def _proof(moment, **overrides):
+    body = {
+        "tenant_id": "fixture-tenant",
+        "market": "paper",
+        "live": False,
+        "readback_ok": True,
+        "margin_mode": "isolated",
+        "position_mode": "one_way",
+        "leverage": "1",
+        "as_of": int(moment.timestamp()),
+    }
+    body.update(overrides)
+    return body
+
+
+def _on(**shorts):
+    block = {
+        "sandbox_expiry_v220": {"enabled": True},
+        "allow_live": False,
+        "testnet_futures": {"paper_start": {}},
+    }
+    block.update(shorts)
+    return {"shorts": block}
+
+
+def _pos(*, opened, amount=1.0, entry=100.0, mark_tier="volatile"):
+    stamp = opened.isoformat() if isinstance(opened, datetime) else opened
+    return {
+        "side": "short",
+        "amount": amount,
+        "average_entry": entry,
+        "leverage": 2,
+        "strategy_tier": mark_tier,
+        "entry_at": stamp,
+        "symbol": "AAA/USDT",
+        "sandbox_path": "v220_paper",
+        "execution_budget_seconds": 0,
+        "reconcile_budget_seconds": 0,
+    }
+
+
+def _sched(**extra):
+    body = {
+        "execution_budget_seconds": 0,
+        "reconcile_budget_seconds": 0,
+    }
+    body.update(extra)
+    return body
+
+
+def _calendar(now, **overrides):
+    body = {
+        "as_of": now.isoformat(),
+        "max_age_seconds": 3600,
+        "timezone": "Europe/Berlin",
+        "weekend_admission": False,
+        "maintenance": [],
+    }
+    body.update(overrides)
+    return body
+
+
+@contextmanager
+def _host_tz(tz_name: str):
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = tz_name
+    time.tzset()
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old
+        time.tzset()
+
+
+def test_ac1_flag_off_keeps_existing_cover():
+    assert sandbox_expiry_enabled({}) is False
+    assert sandbox_expiry_enabled({"shorts": {"sandbox_expiry_v220": {"enabled": "true"}}}) is False
+    climax = {"shorts": {"climax_fade": {"enabled": True, "time_cap_hours": 16}}}
+    assert sandbox_expiry_enabled(climax) is False
+    raw = json.loads((_REPO / "config.json").read_text(encoding="utf-8"))
+    assert raw["shorts"]["allow_live"] is False
+    assert "sandbox_expiry_v220" not in raw["shorts"]
+    opened = datetime(2026, 11, 10, 8, tzinfo=timezone.utc)
+    cfg = {"shorts": {"volatile": {"time_cap_hours": 30, "stop_margin_pct": 0.5}}}
+    hit = evaluate_short_cover(
+        _pos(opened=opened),
+        100.2,
+        now=opened + timedelta(hours=10),
+        config_raw=cfg,
+    )
+    assert hit is None
+    legacy = {"shorts": {"volatile": {"time_cap_hours": 4, "stop_margin_pct": 0.5}}}
+    capped = evaluate_short_cover(
+        _pos(opened=opened),
+        100.2,
+        now=opened + timedelta(hours=5),
+        config_raw=legacy,
+    )
+    assert capped["source"] == "time_cap"
+
+
+def test_ac2_hold_cap_bounds_and_overlays():
+    bare = resolve_short_params(config_raw={"shorts": {}})
+    assert bare["time_cap_hours"] == 4.0
+    default = resolve_sandbox_hold(config_raw=_on())
+    assert default.valid is True
+    assert default.hours == Decimal("4")
+    climax = _on()
+    climax["shorts"]["climax_fade"] = {"enabled": True, "time_cap_hours": 16}
+    assert resolve_sandbox_hold(config_raw=climax).hours == Decimal("4")
+
+    layered = _on(
+        stable={"time_cap_hours": 4},
+        coins={"AAA/USDT": {"time_cap_hours": 3}},
+    )
+    coin = resolve_sandbox_hold(symbol="AAA/USDT", tier="stable", config_raw=layered)
+    assert coin.hours == Decimal("3")
+    lot = resolve_sandbox_hold(
+        symbol="AAA/USDT",
+        tier="stable",
+        lot={"symbol": "AAA/USDT", "time_cap_hours": 2},
+        config_raw=layered,
+    )
+    assert lot.hours == Decimal("2")
+    assert resolve_sandbox_hold(
+        lot={"time_cap_hours": Decimal("4")},
+        config_raw=_on(),
+    ).valid is True
+    assert resolve_sandbox_hold(
+        lot={"time_cap_hours": Decimal("8")},
+        config_raw=_on(),
+    ).valid is False
+
+    for bad in (24, 72, 0, "24", Decimal("24"), float("inf"), None):
+        hold = resolve_sandbox_hold(
+            tier="volatile",
+            lot={"time_cap_hours": bad},
+            config_raw=_on(volatile={"time_cap_hours": 4}),
+        )
+        assert hold.valid is False
+        assert hold.hours is None
+    forced = evaluate_short_cover(
+        _pos(opened=datetime(2026, 11, 10, 12, tzinfo=timezone.utc)),
+        100.2,
+        now=datetime(2026, 11, 10, 13, tzinfo=timezone.utc),
+        config_raw=_on(volatile={"time_cap_hours": 24, "stop_margin_pct": 0.5}),
+    )
+    assert forced["state"] == "overdue"
+    assert forced["flat"] is False
+
+
+def test_ac3_session_due_and_budget():
+    opened = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    session_end = datetime(2026, 11, 10, 20, 0, tzinfo=_BERLIN)
+    now = opened
+    base = {
+        "session_required": True,
+        "session_end": session_end.isoformat(),
+        "execution_budget_seconds": 0,
+        "reconcile_budget_seconds": 0,
+    }
+    inclusive = schedule_allows_entry(
+        now=now,
+        opened=opened,
+        planned_exit=session_end,
+        config_raw=_on(),
+        schedule={**base, "session_boundary": "inclusive"},
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    )
+    assert inclusive.open is True
+    assert inclusive.reasons == ()
+    exclusive = schedule_allows_entry(
+        now=now,
+        opened=opened,
+        planned_exit=session_end,
+        config_raw=_on(),
+        schedule={**base, "session_boundary": "exclusive"},
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    )
+    assert exclusive.open is False
+    assert "outside_due" in exclusive.reasons
+    later = schedule_allows_entry(
+        now=now,
+        opened=opened,
+        planned_exit=session_end + timedelta(seconds=1),
+        config_raw=_on(),
+        schedule={**base, "session_boundary": "inclusive"},
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    )
+    assert later.open is False
+
+    early_end = datetime(2026, 11, 10, 18, 0, tzinfo=_BERLIN)
+    tight = {
+        "session_required": True,
+        "session_end": early_end.isoformat(),
+        "session_boundary": "exclusive",
+        "execution_budget_seconds": 300,
+        "reconcile_budget_seconds": 300,
+    }
+    fits = datetime(2026, 11, 10, 17, 49, tzinfo=_BERLIN)
+    assert schedule_allows_entry(
+        now=fits,
+        opened=fits,
+        planned_exit=fits,
+        config_raw=_on(),
+        schedule=tight,
+        calendar=_calendar(fits),
+        mode_proof=_proof(fits),
+    ).open is True
+    misses = datetime(2026, 11, 10, 17, 50, tzinfo=_BERLIN)
+    missed = schedule_allows_entry(
+        now=misses,
+        opened=opened,
+        planned_exit=misses,
+        config_raw=_on(),
+        schedule=tight,
+        calendar=_calendar(misses),
+        mode_proof=_proof(misses),
+    )
+    assert missed.open is False
+    assert "outside_due" in missed.reasons
+
+    missing_budget = dict(tight)
+    del missing_budget["reconcile_budget_seconds"]
+    unknown = schedule_allows_entry(
+        now=fits,
+        opened=opened,
+        planned_exit=fits + timedelta(minutes=10),
+        config_raw=_on(),
+        schedule=missing_budget,
+        calendar=_calendar(fits),
+        mode_proof=_proof(fits),
+    )
+    assert unknown.open is False
+    assert "buffer_unknown" in unknown.reasons
+
+    later_session = {
+        "session_required": True,
+        "session_end": datetime(2026, 11, 10, 22, 0, tzinfo=_BERLIN).isoformat(),
+        "session_boundary": "inclusive",
+        "execution_budget_seconds": 0,
+        "reconcile_budget_seconds": 0,
+    }
+    loosened = schedule_allows_entry(
+        now=opened,
+        opened=opened,
+        planned_exit=datetime(2026, 11, 10, 20, 0, tzinfo=_BERLIN),
+        config_raw=_on(),
+        schedule=later_session,
+        calendar=_calendar(opened),
+        mode_proof=_proof(opened),
+    )
+    assert loosened.open is False
+    assert "cutoff_loosened" in loosened.reasons
+    past_cap = schedule_allows_entry(
+        now=opened,
+        opened=opened,
+        planned_exit=datetime(2026, 11, 10, 20, 0, 1, tzinfo=_BERLIN),
+        config_raw=_on(),
+        schedule=later_session,
+        calendar=_calendar(opened),
+        mode_proof=_proof(opened),
+    )
+    assert past_cap.open is False
+
+
+def test_ac4_timestamps_restart_and_unpriced():
+    # 2026-09-24 is a Thursday in CEST. 2026-09-27 is a Sunday, so the
+    # sandbox weekend rule would close that lot for a different reason.
+    now_cest = datetime(2026, 9, 24, 16, 1, 13, tzinfo=timezone.utc)
+    cfg = _on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.5})
+    naive_5h = datetime(2026, 9, 24, 13, 1, 13)
+    with _host_tz("Europe/Berlin"):
+        hit = evaluate_short_cover(
+            _pos(opened=naive_5h),
+            100.2,
+            now=now_cest,
+            config_raw=cfg,
+        )
+    assert hit["source"] == "time_cap"
+    assert hit["flat"] is False
+    assert hit["state"] == "overdue"
+    naive_3h = datetime(2026, 9, 24, 15, 1, 13)
+    with _host_tz("Europe/Berlin"):
+        quiet = evaluate_short_cover(
+            _pos(opened=naive_3h),
+            100.2,
+            now=now_cest,
+            config_raw=cfg,
+        )
+    assert quiet is None
+
+    opened = datetime(2026, 11, 10, 12, tzinfo=timezone.utc)
+    pos = _pos(opened=opened)
+    due_now = opened + timedelta(hours=5)
+    first = report_sandbox_exposure(pos, now=due_now, config_raw=cfg, mark=100.2, halted=False)
+    second = report_sandbox_exposure(pos, now=due_now, config_raw=cfg, mark=100.2, halted=False)
+    assert first.state == second.state == "overdue"
+    assert first.flat is False and second.flat is False
+    assert pos["amount"] == 1.0
+    flat = report_sandbox_exposure(
+        _pos(opened=opened, amount=0),
+        now=due_now,
+        config_raw=cfg,
+        mark=100.2,
+        halted=False,
+    )
+    assert flat.state == "flat" and flat.flat is True
+
+    fresh = opened + timedelta(hours=1)
+    for kwargs in (
+        {"price_stale": True, "halted": False},
+        {"halted": True},
+        {"timed_out": True, "halted": False},
+    ):
+        report = report_sandbox_exposure(
+            pos, now=fresh, config_raw=cfg, mark=100.2, **kwargs
+        )
+        assert report.state == "overdue" and report.flat is False
+    unknown_halt = report_sandbox_exposure(
+        pos, now=fresh, config_raw=cfg, mark=100.2, halted=None
+    )
+    assert unknown_halt.state == "overdue" and unknown_halt.flat is False
+    healthy = report_sandbox_exposure(
+        pos, now=fresh, config_raw=cfg, mark=100.2, halted=False
+    )
+    assert healthy.state == "open" and healthy.flat is False
+    stale_cover = evaluate_short_cover(
+        pos, 130.0, now=fresh, config_raw=cfg, price_stale=True
+    )
+    assert stale_cover["state"] == "overdue"
+    assert stale_cover["source"] != "trailing_stop"
+
+
+def test_ac5_weekend_calendar_and_funding():
+    saturday = datetime(2026, 11, 14, 12, 0, tzinfo=_BERLIN)
+    opened = saturday - timedelta(hours=1)
+    weekend = schedule_allows_entry(
+        now=saturday,
+        opened=opened,
+        planned_exit=opened + timedelta(hours=2),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(saturday),
+        mode_proof=_proof(saturday),
+    )
+    assert weekend.open is False
+    assert "weekend_denied" in weekend.reasons
+    opened_ok = schedule_allows_entry(
+        now=saturday,
+        opened=opened,
+        planned_exit=opened + timedelta(hours=2),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(saturday, weekend_admission=True),
+        mode_proof=_proof(saturday),
+    )
+    assert opened_ok.open is False
+    assert "weekend_denied" in opened_ok.reasons
+    assert protection_allowed(position_side="short", reduce_only=True) is True
+    stop_cfg = _on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.10})
+    stopped = evaluate_short_cover(
+        _pos(opened=opened), 105.0, now=saturday, config_raw=stop_cfg
+    )
+    assert stopped["source"] == "trailing_stop"
+
+    tuesday = datetime(2026, 11, 10, 12, 0, tzinfo=_BERLIN)
+    assert schedule_allows_entry(
+        now=tuesday,
+        opened=tuesday,
+        planned_exit=tuesday + timedelta(hours=2),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(tuesday),
+        mode_proof=_proof(tuesday),
+    ).open is True
+
+    stale_at = tuesday - timedelta(seconds=3601)
+    stale = _calendar(stale_at, max_age_seconds=3600)
+    aged = schedule_allows_entry(
+        now=tuesday,
+        opened=tuesday,
+        planned_exit=tuesday + timedelta(hours=2),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=stale,
+        mode_proof=_proof(tuesday),
+    )
+    assert aged.open is False and "calendar_stale" in aged.reasons
+    exact = _calendar(tuesday - timedelta(seconds=3600), max_age_seconds=3600)
+    assert schedule_allows_entry(
+        now=tuesday,
+        opened=tuesday,
+        planned_exit=tuesday + timedelta(hours=2),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=exact,
+        mode_proof=_proof(tuesday),
+    ).open is True
+    missing_windows = _calendar(tuesday)
+    del missing_windows["maintenance"]
+    assert "calendar_unknown" in schedule_allows_entry(
+        now=tuesday,
+        opened=tuesday,
+        planned_exit=tuesday + timedelta(hours=2),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=missing_windows,
+        mode_proof=_proof(tuesday),
+    ).reasons
+
+    start = datetime(2026, 11, 10, 12, 0, tzinfo=_BERLIN)
+    end = datetime(2026, 11, 10, 13, 0, tzinfo=_BERLIN)
+    window = {"start": start.isoformat(), "end": end.isoformat(), "boundary": "inclusive"}
+    assert schedule_allows_entry(
+        now=start,
+        opened=start,
+        planned_exit=start + timedelta(hours=1),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(start, maintenance=[window]),
+        mode_proof=_proof(start),
+    ).open is False
+    assert schedule_allows_entry(
+        now=end,
+        opened=start,
+        planned_exit=end,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(end, maintenance=[window]),
+        mode_proof=_proof(end),
+    ).open is False
+    after = end + timedelta(seconds=1)
+    assert schedule_allows_entry(
+        now=after,
+        opened=after,
+        planned_exit=after + timedelta(minutes=30),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(after, maintenance=[window]),
+        mode_proof=_proof(after),
+    ).open is True
+    exclusive_window = dict(window, boundary="exclusive")
+    assert schedule_allows_entry(
+        now=start,
+        opened=start,
+        planned_exit=start + timedelta(hours=1),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(start, maintenance=[exclusive_window]),
+        mode_proof=_proof(start),
+    ).open is True
+    inside = start + timedelta(seconds=1)
+    assert schedule_allows_entry(
+        now=inside,
+        opened=start,
+        planned_exit=inside + timedelta(minutes=30),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(inside, maintenance=[exclusive_window]),
+        mode_proof=_proof(inside),
+    ).open is False
+    assert schedule_allows_entry(
+        now=end,
+        opened=end,
+        planned_exit=end,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(end, maintenance=[exclusive_window]),
+        mode_proof=_proof(end),
+    ).open is True
+
+    entry = datetime(2026, 11, 10, 12, tzinfo=timezone.utc)
+    settlement = entry + timedelta(hours=1)
+    planned = entry + timedelta(hours=2)
+    due = entry + timedelta(hours=3)
+    ok = funding_acceptance(
+        entry_at=entry,
+        settlement_at=settlement,
+        planned_exit=planned,
+        due=due,
+        venue_interval_hours=None,
+    )
+    assert ok.accepted is True
+    assert ok.funding_amount is None
+    assert funding_acceptance(
+        entry_at=entry, settlement_at=entry, planned_exit=planned, due=due
+    ).accepted is False
+    assert funding_acceptance(
+        entry_at=entry, settlement_at=planned, planned_exit=planned, due=due
+    ).accepted is False
+    assert funding_acceptance(
+        entry_at=entry, settlement_at=settlement, planned_exit=due, due=due
+    ).accepted is True
+    moved = funding_acceptance(
+        entry_at=entry,
+        settlement_at=settlement,
+        planned_exit=due + timedelta(seconds=1),
+        due=due,
+        venue_interval_hours=8,
+    )
+    assert moved.accepted is False
+    assert moved.planned_exit == due + timedelta(seconds=1)
+    assert moved.funding_amount is None
+    missing = funding_acceptance(
+        entry_at=entry,
+        settlement_at=None,
+        planned_exit=planned,
+        due=due,
+        venue_interval_hours=8,
+    )
+    assert missing.accepted is False
+    assert missing.settlement_at is None
+    assert missing.funding_amount is None
+    source = Path(
+        __import__("strategies.short_expiry", fromlist=["x"]).__file__
+    ).read_text(encoding="utf-8")
+    assert "funding_cost_usdt" not in source
+
+
+def test_freeze_cutoff_same_day_and_no_buffer_default():
+    opened = datetime(2026, 11, 10, 18, 0, tzinfo=_BERLIN)
+    now = datetime(2026, 11, 10, 19, 0, tzinfo=_BERLIN)
+    planned = datetime(2026, 11, 10, 20, 0, tzinfo=_BERLIN)
+    assert schedule_allows_entry(
+        now=now,
+        opened=now,
+        planned_exit=planned,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    ).open is True
+    at_cutoff = datetime(2026, 11, 10, 20, 0, tzinfo=_BERLIN)
+    denied = schedule_allows_entry(
+        now=at_cutoff,
+        opened=opened,
+        planned_exit=planned,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(at_cutoff),
+        mode_proof=_proof(at_cutoff),
+    )
+    assert denied.open is False
+    assert "after_cutoff" in denied.reasons
+    next_day = schedule_allows_entry(
+        now=now,
+        opened=opened,
+        planned_exit=datetime(2026, 11, 11, 16, 0, tzinfo=_BERLIN),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    )
+    assert next_day.open is False
+    assert "same_calendar_day" in next_day.reasons
+    bare = schedule_allows_entry(
+        now=now,
+        opened=opened,
+        planned_exit=planned,
+        config_raw=_on(),
+        schedule=None,
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    )
+    assert bare.open is False
+    assert "buffer_unknown" in bare.reasons
+    pos = _pos(opened=opened)
+    report = report_sandbox_exposure(
+        pos,
+        now=at_cutoff,
+        config_raw=_on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.5}),
+        mark=100.2,
+        halted=False,
+    )
+    assert report.state == "overdue"
+    assert report.flat is False
+
+
+def test_missing_mode_proof_denies_entry():
+    now = datetime(2026, 11, 10, 12, tzinfo=_BERLIN)
+    decision = schedule_allows_entry(
+        now=now,
+        opened=now,
+        planned_exit=now + timedelta(hours=2),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=None,
+    )
+    assert decision.open is False
+    assert "mode_proof_missing" in decision.reasons
+
+
+def test_live_and_mainnet_deny_entry():
+    now = datetime(2026, 11, 10, 12, tzinfo=_BERLIN)
+    live = _on()
+    live["shorts"]["allow_live"] = True
+    denied = schedule_allows_entry(
+        now=now,
+        opened=now,
+        planned_exit=now + timedelta(hours=2),
+        config_raw=live,
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    )
+    assert denied.open is False
+    assert "live_denied" in denied.reasons
+    mainnet = schedule_allows_entry(
+        now=now,
+        opened=now,
+        planned_exit=now + timedelta(hours=2),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_proof(now, market="mainnet"),
+    )
+    assert "live_denied" in mainnet.reasons
+
+
+def test_cest_cutoff_uses_europe_berlin():
+    # 18:00 UTC on 2026-06-16 is 20:00 Europe/Berlin (CEST, UTC+2).
+    at_cutoff = datetime(2026, 6, 16, 18, 0, tzinfo=timezone.utc)
+    before = at_cutoff - timedelta(seconds=1)
+    opened = before
+    planned = datetime(2026, 6, 16, 20, 0, tzinfo=_BERLIN)
+    assert schedule_allows_entry(
+        now=before,
+        opened=opened,
+        planned_exit=planned,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(before.astimezone(_BERLIN)),
+        mode_proof=_proof(before),
+    ).open is True
+    denied = schedule_allows_entry(
+        now=at_cutoff,
+        opened=opened,
+        planned_exit=planned,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(at_cutoff.astimezone(_BERLIN)),
+        mode_proof=_proof(at_cutoff),
+    )
+    assert denied.open is False
+    assert "after_cutoff" in denied.reasons
+
+
+def test_cover_boundaries_halt_and_untagged_lots():
+    cfg = _on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.5})
+    opened = datetime(2026, 11, 10, 10, 0, tzinfo=_BERLIN)
+    exact = evaluate_short_cover(
+        _pos(opened=opened),
+        100.2,
+        now=opened + timedelta(hours=4),
+        config_raw=cfg,
+    )
+    assert exact is not None and exact["source"] == "time_cap"
+    earlier = evaluate_short_cover(
+        _pos(opened=opened),
+        100.2,
+        now=opened + timedelta(hours=4) - timedelta(seconds=1),
+        config_raw=cfg,
+    )
+    assert earlier is None
+    assert resolve_sandbox_hold(
+        lot={"time_cap_hours": Decimal("5"), "sandbox_path": "v220_paper"},
+        config_raw=cfg,
+    ).valid is False
+    late = schedule_allows_entry(
+        now=opened,
+        opened=opened,
+        planned_exit=datetime(2026, 11, 10, 21, 0, tzinfo=_BERLIN),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(opened),
+        mode_proof=_proof(opened),
+    )
+    assert late.open is False
+    night = datetime(2026, 11, 10, 23, 0, tzinfo=_BERLIN)
+    morning = datetime(2026, 11, 11, 1, 0, tzinfo=_BERLIN)
+    rolled = evaluate_short_cover(
+        _pos(opened=night),
+        100.2,
+        now=morning,
+        config_raw=cfg,
+    )
+    assert rolled["state"] == "overdue"
+    halted = evaluate_short_cover(
+        _pos(opened=opened),
+        100.2,
+        now=opened + timedelta(hours=1),
+        config_raw=cfg,
+        halted=True,
+    )
+    assert halted["state"] == "overdue"
+    untagged = _pos(opened=opened)
+    del untagged["sandbox_path"]
+    stable = {
+        "shorts": {
+            "sandbox_expiry_v220": {"enabled": True},
+            "allow_live": False,
+            "stable": {"time_cap_hours": 8, "stop_margin_pct": 0.5},
+        }
+    }
+    untagged["strategy_tier"] = "stable"
+    held = evaluate_short_cover(
+        untagged,
+        100.2,
+        now=opened + timedelta(hours=5),
+        config_raw=stable,
+    )
+    assert held is None
+    no_price = _pos(opened=opened, entry=0)
+    del no_price["sandbox_path"]
+    assert evaluate_short_cover(no_price, 0, now=opened, config_raw=cfg) is None
+    future = schedule_allows_entry(
+        now=opened,
+        opened=opened + timedelta(seconds=6),
+        planned_exit=opened + timedelta(hours=2),
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(opened),
+        mode_proof=_proof(opened),
+    )
+    assert future.open is False
+    assert "clock_skew" in future.reasons
+    completion = schedule_allows_entry(
+        now=datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN),
+        opened=datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN),
+        planned_exit=datetime(2026, 11, 10, 19, 30, tzinfo=_BERLIN),
+        config_raw=_on(),
+        schedule=_sched(reconcile_budget_seconds=3600),
+        calendar=_calendar(datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)),
+        mode_proof=_proof(datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)),
+    )
+    assert completion.open is False
+    assert "outside_due" in completion.reasons
+
+
+def test_default_schedule_cutoff_is_20_00():
+    now = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    common = dict(
+        now=now,
+        opened=now,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    )
+    assert schedule_allows_entry(
+        planned_exit=datetime(2026, 11, 10, 20, 0, tzinfo=_BERLIN),
+        **common,
+    ).open is True
+    later = schedule_allows_entry(
+        planned_exit=datetime(2026, 11, 10, 20, 0, 1, tzinfo=_BERLIN),
+        **common,
+    )
+    assert later.open is False
+    assert "outside_due" in later.reasons
+    evening = datetime(2026, 11, 10, 21, 0, tzinfo=_BERLIN)
+    at_21 = schedule_allows_entry(
+        now=evening,
+        opened=evening,
+        planned_exit=evening,
+        config_raw=_on(),
+        schedule=_sched(),
+        calendar=_calendar(evening),
+        mode_proof=_proof(evening),
+    )
+    assert at_21.open is False
+    assert "after_cutoff" in at_21.reasons
+
+
+def test_untagged_lot_guards_do_not_force_cover():
+    opened = datetime(2026, 11, 10, 12, 0, tzinfo=_BERLIN)
+    cfg = _on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.5})
+    untagged = _pos(opened=opened)
+    del untagged["sandbox_path"]
+    report = report_sandbox_exposure(
+        untagged, now=opened + timedelta(hours=5), config_raw=cfg, mark=100.2, halted=False
+    )
+    assert report.state == "inactive"
+    assert report.reason == "untagged"
+    assert report.flat is False
+    assert cover_time_decision(untagged, now=opened + timedelta(hours=5), config_raw=cfg) is None
+    tagged_flag_off = _pos(opened=opened)
+    assert cover_time_decision(
+        tagged_flag_off,
+        now=opened + timedelta(hours=5),
+        config_raw={"shorts": {"allow_live": False, "volatile": {"time_cap_hours": 4}}},
+    ) is None
+
+
+def test_plan_start_outside_5s_window_denies():
+    now = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    planned = now + timedelta(hours=1)
+
+    def gate(opened):
+        return schedule_allows_entry(
+            now=now,
+            opened=opened,
+            planned_exit=planned,
+            config_raw=_on(),
+            schedule=_sched(),
+            calendar=_calendar(now),
+            mode_proof=_proof(now),
+        )
+
+    assert gate(now - timedelta(seconds=5)).open is True
+    assert gate(now + timedelta(seconds=5)).open is True
+    past = gate(now - timedelta(seconds=6))
+    future = gate(now + timedelta(seconds=6))
+    assert past.open is False and "clock_skew" in past.reasons
+    assert future.open is False and "clock_skew" in future.reasons
+
+
+def test_protection_requires_reduce_only_short():
+    assert protection_allowed(position_side="short", reduce_only=True) is True
+    assert protection_allowed(position_side="SHORT", reduce_only=True) is True
+    assert protection_allowed(position_side="short", reduce_only=False) is False
+    assert protection_allowed(position_side=None, reduce_only=True) is False
+    assert protection_allowed(position_side="long", reduce_only=True) is False
+
+
+def test_schedule_with_one_budget_key_stays_unknown():
+    opened = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    cfg = _on()
+    pos = _pos(opened=opened)
+    hit = evaluate_short_cover(
+        pos,
+        100.2,
+        now=opened,
+        config_raw=cfg,
+        sandbox_schedule={"execution_budget_seconds": 0},
+    )
+    assert hit is not None and hit["state"] == "overdue"
+
+
+def test_missing_paper_start_denies_entry():
+    now = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    cfg = {"shorts": {"sandbox_expiry_v220": {"enabled": True}, "allow_live": False}}
+    decision = schedule_allows_entry(
+        now=now,
+        opened=now,
+        planned_exit=now + timedelta(hours=1),
+        config_raw=cfg,
+        schedule=_sched(),
+        calendar=_calendar(now),
+        mode_proof=_proof(now),
+    )
+    assert decision.open is False
+    assert decision.reasons == ("paper_start_missing",)
+
+
+def test_runtime_due_reserves_budget_before_cutoff():
+    opened = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    cfg = _on(volatile={"time_cap_hours": 4, "stop_margin_pct": 0.5})
+    pos = _pos(opened=opened)
+    pos["execution_budget_seconds"] = 600
+    pos["reconcile_budget_seconds"] = 0
+    due = opened + timedelta(hours=4) - timedelta(seconds=600)
+    assert evaluate_short_cover(pos, 100.2, now=due - timedelta(seconds=1), config_raw=cfg) is None
+    hit = evaluate_short_cover(pos, 100.2, now=due, config_raw=cfg)
+    assert hit is not None and hit["source"] == "time_cap" and hit["flat"] is False
+    later = evaluate_short_cover(pos, 100.2, now=due + timedelta(seconds=1), config_raw=cfg)
+    assert later is not None and later["source"] == "time_cap"
+    unknown = _pos(opened=opened)
+    del unknown["execution_budget_seconds"]
+    del unknown["reconcile_budget_seconds"]
+    assert evaluate_short_cover(
+        unknown, 100.2, now=opened + timedelta(minutes=1), config_raw=cfg
+    )["state"] == "overdue"
+
+
+def test_zero_mark_does_not_emit_cover_order():
+    opened = datetime(2026, 11, 10, 16, 0, tzinfo=_BERLIN)
+    cfg = _on()
+    pos = _pos(opened=opened)
+    pos["side"] = "short"
+    pos["amount"] = 1
+    assert evaluate_short_cover(pos, 0, now=opened, config_raw=cfg) is None
+    report = report_sandbox_exposure(pos, now=opened, config_raw=cfg, mark=0, halted=False)
+    assert report.state == "overdue" and report.flat is False
+
+    from services.signal_orchestrator import SignalOrchestrator
+
+    calls = []
+
+    class _Trading:
+        def execute_order(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return {"executed": True}
+
+    orch = SignalOrchestrator.__new__(SignalOrchestrator)
+    orch.config = type("Cfg", (), {"raw": cfg})()
+    orch.trading = _Trading()
+    analysis = type("Analysis", (), {"symbol": "AAA/USDT", "timeframe": "1h"})()
+    handled, result = orch._cycle_short_cover(pos, analysis, 0)
+    assert handled is True
+    assert result is None
+    assert calls == []
