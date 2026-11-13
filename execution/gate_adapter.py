@@ -326,6 +326,32 @@ def _clamp_gate_client_order_id(key: str) -> str:
     return legal
 
 
+def _legacy_gate_client_order_id(key: str) -> str:
+    """Pre-#753 Gate payload: legal text, cut at 26 bytes.
+
+    Hyphens were removed only when the legal text was longer than 26 bytes.
+    A short key such as ``abc-key`` was sent with the hyphen still in it.
+    Structured keys such as ``autoshort|SYM|tf|source|price`` lost the tail,
+    so two different intents could share one id. Recovery looks that cut up
+    only for rows that are not already stored in the current ``head.digest``
+    form. Short keys and pure-hex tokens match the current clamp.
+    """
+    raw = (key or "").strip()
+    if not raw:
+        return ""
+    legal = "".join(ch for ch in raw if ch in _GATE_TEXT_ALLOWED)
+    if not legal:
+        return ""
+    encoded = legal.encode("utf-8")
+    if len(encoded) <= _GATE_TEXT_PAYLOAD_MAX_BYTES:
+        return legal
+    compact = legal.replace("-", "")
+    encoded = compact.encode("utf-8")
+    if len(encoded) <= _GATE_TEXT_PAYLOAD_MAX_BYTES:
+        return compact
+    return encoded[:_GATE_TEXT_PAYLOAD_MAX_BYTES].decode("ascii")
+
+
 _CANCEL_STATUS = frozenset({"canceled", "cancelled"})
 _CANCEL_FINISH_AS = frozenset({"cancelled", "canceled"})
 # Zero-fill only. Not part of ``_CANCEL_FINISH_AS``: ``ioc`` with filled > 0

@@ -36,3 +36,12 @@ Positions at −20% or worse should not exist; entry quality has to improve. Tha
 `main` `config.json` has a `risk` object and, as of 2026-11-10, no `fail_closed_guards` key. Since #754 a missing or malformed key is `deny` in code, so shipping that code to live without an explicit key changes live from the old implicit `log` to `deny`. Explicit `"log"` still selects the old behavior.
 
 The prepared recommendation is an explicit `"deny"` on main. Jens selects the value. The proposed diff is in `docs/evidence/764.md` and `tests/fixtures/fail_closed_guards_764/proposal.json`. It is not applied to `config.json` or to a running tenant. #764 stays open.
+
+## Gate clientOrderId
+
+Gate `text` / ccxt `clientOrderId` is `t-` plus a payload of at most 26 bytes. Charset is `[0-9A-Za-z_.-]`. Two payload formats exist for the same persisted key:
+
+- **Current** (`execution/gate_adapter.py` `_clamp_gate_client_order_id`, #753). An over-long structured key (for example `autoshort|SYM|tf|source|price`) becomes `<11-character head>.<14-hex sha256 of the raw key>`. A pure-hex token (uuid4) stays a 26-character cut so an in-flight id still matches.
+- **Legacy** (before #753, `_legacy_gate_client_order_id`). Legal text, then the first 26 bytes. Hyphens are removed only when that text is longer than 26 bytes, which is what the pre-#753 clamp did. A short key, including `abc-key`, is the same string in both formats. The source tail and the price were dropped on long keys, so two different structured keys could share one legacy id.
+
+Startup recovery (`execution/recovery.py` `_order_ids`) adds the legacy cut only when the stored `client_order_id` is not already the current `head.digest` form. A row written after #753 is not looked up by the legacy cut. A legacy hit is kept only when the side matches, the size matches in the venue's unit, and the exchange timestamp is not earlier than the record. Spot market buys compare quote `cost`/`amount` with `request.usdt` (or base `filled` with qty). Swap rows (side `short` or `cover`) compare `amount * contractSize` with base qty. Spot rows never apply `contractSize`, even when that coin also has a perp. A different older order that only shares the 26-character cut is left unmatched, and the row stays ACTIVE.

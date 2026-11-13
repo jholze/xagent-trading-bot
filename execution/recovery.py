@@ -10,6 +10,7 @@ Called once per tenant before its first trading cycle (hook:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -19,10 +20,13 @@ from core.operator_notify import notify_operator
 from core.stablecoins import STABLECOIN_BASES
 from core.tenant_context import tenant_context
 from execution.gate_adapter import (
+    _GATE_CLIENT_ID_DIGEST_CHARS,
+    _GATE_CLIENT_ID_HEAD_CHARS,
     _GATE_TEXT_ALLOWED,
     _canceled_or_rejected_status,
     _ccxt_status_token,
     _clamp_gate_client_order_id,
+    _legacy_gate_client_order_id,
     _finish_as_from_raw,
     _partial_remainder_cancel,
     _zero_fill_cancel_status,
@@ -525,11 +529,222 @@ def _needs_order_reconcile(order: dict) -> bool:
 
 
 def _clamped_client_lookup(token: str) -> str:
-    """Gate payload for a stored client/idempotency key, or '' if we would mint."""
+    """Current Gate payload for a stored key, or '' if we would mint a new id."""
     raw = str(token or "").strip()
     if not raw or not any(ch in _GATE_TEXT_ALLOWED for ch in raw):
         return ""
     return _clamp_gate_client_order_id(raw)
+
+
+def _legacy_client_lookup(token: str) -> str:
+    """Pre-#753 26-character cut for the same stored key, or ''."""
+    raw = str(token or "").strip()
+    if not raw or not any(ch in _GATE_TEXT_ALLOWED for ch in raw):
+        return ""
+    return _legacy_gate_client_order_id(raw)
+
+
+def _is_head_digest_client_id(token: str) -> bool:
+    """True for the post-#753 ``<11-char head>.<14-hex sha256>`` payload.
+
+    The head may itself contain ``.`` (the Gate charset allows it), so the
+    split is the last dot. The digest is exactly 14 hex characters.
+    """
+    text = str(token or "").strip()
+    head, dot, digest = text.rpartition(".")
+    if not dot:
+        return False
+    if len(head) != _GATE_CLIENT_ID_HEAD_CHARS or len(digest) != _GATE_CLIENT_ID_DIGEST_CHARS:
+        return False
+    return set(digest) <= set("0123456789abcdef")
+
+
+def _row_may_use_legacy_client_id(order: dict) -> bool:
+    """Legacy cut is only for rows that are not already stored as head.digest.
+
+    A post-#753 row persists the current clamp in ``client_order_id``. Looking
+    that row up by the shared 26-character cut can finalize a different older
+    order (#753).
+    """
+    stored = str(order.get("client_order_id") or "").strip()
+    return not _is_head_digest_client_id(stored)
+
+
+def _legacy_only_ids(order: dict) -> set[str]:
+    """Legacy cuts that differ from the current clamp. Empty for post-#753 rows."""
+    if not _row_may_use_legacy_client_id(order):
+        return set()
+    out: set[str] = set()
+    for raw in (order.get("client_order_id"), order.get("idempotency_key")):
+        legacy = _legacy_client_lookup(raw)
+        current = _clamped_client_lookup(raw)
+        if legacy and legacy != current:
+            out.add(legacy)
+    return out
+
+
+_LEGACY_QTY_ABS_TOL = 1e-8
+_LEGACY_QTY_REL_TOL = 1e-6
+
+
+def _norm_recovery_side(value: object) -> str:
+    side = str(value or "").strip().lower()
+    if side in ("buy", "cover"):
+        return "buy"
+    if side in ("sell", "short"):
+        return "sell"
+    return ""
+
+
+def _as_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _epoch_ms(value: object) -> float | None:
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        num = float(value)
+        if num > 1e12:
+            return num
+        if num > 1e9:
+            return num * 1000.0
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return _epoch_ms(float(text))
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.timestamp() * 1000.0
+
+
+def _record_created_ms(order: dict) -> float | None:
+    stamps = order.get("timestamps") if isinstance(order.get("timestamps"), dict) else {}
+    for value in (stamps.get("created"), order.get("created_at"), order.get("timestamp")):
+        ms = _epoch_ms(value)
+        if ms is not None:
+            return ms
+    return None
+
+
+def _quote_usdt(order: dict) -> float | None:
+    req = order.get("request") if isinstance(order.get("request"), dict) else {}
+    execution = order.get("execution") if isinstance(order.get("execution"), dict) else {}
+    for value in (
+        req.get("usdt"),
+        order.get("usdt_amount"),
+        execution.get("usdt"),
+        order.get("usdt"),
+    ):
+        num = _as_float(value)
+        if num is not None and num > 0:
+            return num
+    return None
+
+
+def _record_base_qty(order: dict) -> float | None:
+    req = order.get("request") if isinstance(order.get("request"), dict) else {}
+    for value in (order.get("qty"), req.get("amount")):
+        num = _as_float(value)
+        if num is not None:
+            return num
+    return None
+
+
+def _qty_close(left: float, right: float) -> bool:
+    tol = max(_LEGACY_QTY_ABS_TOL, abs(right) * _LEGACY_QTY_REL_TOL)
+    return abs(left - right) <= tol
+
+
+def _row_is_swap(order: dict) -> bool:
+    """Swap vs spot comes from the row, not from whether a perp market exists.
+
+    ``order.symbol`` stays the spot pair for both. A short or cover is a swap
+    row. A symbol that already names the swap market is one too.
+    """
+    side = str(order.get("side") or "").strip().lower()
+    if side in ("short", "cover"):
+        return True
+    symbol = str(order.get("symbol") or "")
+    return ":" in symbol
+
+
+def _swap_contract_size(exchange, order: dict) -> float | None:
+    """ccxt ``contractSize`` for a swap row. Spot rows are never looked up."""
+    if not _row_is_swap(order):
+        return None
+    market_fn = getattr(exchange, "market", None) if exchange is not None else None
+    if not callable(market_fn):
+        return None
+    swap_symbol = _as_swap_symbol(str(order.get("symbol") or ""))
+    try:
+        market = market_fn(swap_symbol)
+    except Exception:
+        return None
+    if not isinstance(market, dict):
+        return None
+    size = _as_float(market.get("contractSize"))
+    if size is None or size <= 0:
+        return None
+    return size
+
+
+def _legacy_size_matches(order: dict, raw: dict, exchange) -> bool:
+    """Compare the legacy hit in the unit the venue actually used.
+
+    Spot market buys store quote USDT in ``amount`` and ``cost``
+    (``create_market_buy_order_with_cost``). ``filled`` is base qty.
+    Only a swap row (side short/cover, or a swap symbol) uses
+    ``amount * contractSize``. A spot row never applies ``contractSize``,
+    even when that coin also has a perp.
+    """
+    rec_qty = _record_base_qty(order)
+    filled = _as_float(raw.get("filled"))
+    amount = _as_float(raw.get("amount"))
+    cost = _as_float(raw.get("cost"))
+    if _row_is_swap(order):
+        contract_size = _swap_contract_size(exchange, order)
+        if contract_size is None or amount is None or rec_qty is None:
+            return False
+        return _qty_close(amount * contract_size, rec_qty)
+    if filled is not None and rec_qty is not None and _qty_close(filled, rec_qty):
+        return True
+    if _norm_recovery_side(order.get("side")) == "buy":
+        quote = _quote_usdt(order)
+        if quote is not None:
+            if cost is not None and _qty_close(cost, quote):
+                return True
+            if amount is not None and _qty_close(amount, quote):
+                return True
+    if amount is not None and rec_qty is not None and _qty_close(amount, rec_qty):
+        return True
+    return False
+
+
+def _legacy_match_belongs(order: dict, raw: dict, exchange=None) -> bool:
+    """A legacy-cut hit must be this row, not an older order that shares the cut."""
+    if _norm_recovery_side(raw.get("side")) != _norm_recovery_side(order.get("side")):
+        return False
+    if not _legacy_size_matches(order, raw, exchange):
+        return False
+    rec_ms = _record_created_ms(order)
+    if rec_ms is None:
+        return True
+    raw_ms = _epoch_ms(raw.get("timestamp"))
+    if raw_ms is None:
+        raw_ms = _epoch_ms(raw.get("datetime"))
+    if raw_ms is None:
+        return False
+    return raw_ms + 1.0 >= rec_ms
 
 
 def _order_ids(order: dict) -> list[str]:
@@ -547,18 +762,24 @@ def _order_ids(order: dict) -> list[str]:
         if token and token not in seen:
             seen.add(token)
             out.append(token)
-    # Historical rows stored the unclamped uuid4; also try the Gate payload.
+    # Historical rows stored the unclamped key. Try the current clamp, and the
+    # pre-#753 26-character cut only when this row is not already head.digest.
+    allow_legacy = _row_may_use_legacy_client_id(order)
     for raw in (order.get("client_order_id"), order.get("idempotency_key")):
-        clamped = _clamped_client_lookup(raw)
-        if clamped and clamped not in seen:
-            seen.add(clamped)
-            out.append(clamped)
+        candidates = [_clamped_client_lookup(raw)]
+        if allow_legacy:
+            candidates.append(_legacy_client_lookup(raw))
+        for candidate in candidates:
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                out.append(candidate)
     return out
 
 
 def _fetch_order_raw(exchange, order: dict):
     symbol = str(order.get("symbol") or "")
     last_err: Exception | None = None
+    legacy_only = _legacy_only_ids(order)
     for ident in _order_ids(order):
         fn = getattr(exchange, "fetch_order", None)
         if not callable(fn):
@@ -586,6 +807,13 @@ def _fetch_order_raw(exchange, order: dict):
                 last_err = e
                 continue
             if isinstance(raw, dict) and raw:
+                if ident in legacy_only and not _legacy_match_belongs(order, raw, exchange):
+                    log(
+                        f"legacy clientOrderId {ident!r} for {symbol} "
+                        "does not match this row; not adopted",
+                        "WARNING",
+                    )
+                    continue
                 return raw
     if last_err is not None and _is_unreachable(last_err):
         raise last_err
