@@ -1,6 +1,6 @@
 # Requirements Engineering Guide
 
-Version: 1.1 · Date: 2026-10-23 · Status: approved for use · Owner: Jens Holze
+Version: 1.3 · Date: 2026-11-08 · Status: approved for use · Owner: Jens Holze
 
 This guide covers how to go from an idea to tested, agent-ready tickets in this repo.
 It is generic. One short section at the end covers trading-specific prompts.
@@ -26,12 +26,21 @@ Assistants and coding agents follow it. Humans may follow it.
 
 These adaptations are binding for this repo. Where they differ from the generic text below, this section wins. Coding-agent operating rules are [AGENTS.md](../AGENTS.md). If this section and `AGENTS.md` disagree, `AGENTS.md` wins.
 
-1. **Paper only.** Pull requests target `staging`. Never `main`, never live trading, no API keys. Agents open the pull request and do not merge it.
+1. **Paper only.** Pull requests target `staging`. Never push `staging` or `main`. Never live trading, no API keys. Who may merge is `AGENTS.md` rule 6 (Kay only for a proven paper-only `staging` merge when every condition there holds; Jens for every `main` merge, live paths, and any deploy other than the `staging` auto-deploy). A documentation pull request that must not deploy stays open, because the merge itself deploys paper.
 2. **Retired review chain (2026-10-31).** Kay, Marcus, Lena, Viktor, and the Omnigent labels (`omnigent:ready`, `review:lena`, `review:viktor`, `veto:*`) are retired. Do not set those labels and do not wait on those people. Their checks are `docs/domain/` and the required `unit` job. The generic "two independent reviews" and "owner OK to continue" in the sections below are not a ping to Jens for routine work.
 3. **Spec.** Numbered acceptance criteria and acceptance tests, frozen before the build. A revision is `Rev N`. Large work still uses the `specs/<feature>/` files in this guide. Money-path merges need the owner's `owner-approved` label (`AGENTS.md`).
 4. **Bundles.** Bugs with the same cause may ship in one PR. Each bug still needs its own test that is red without the fix, and one mutant per bug.
 5. **Measurement.** A behavior change needs a before/after metric. Strategy or logic changes need a backtest or shadow run against the current logic, with costs and walk-forward, judged by `tools/hypothesis_protocol.py`. Repair existing functions instead of building parallel paths. No hardcoded coin names.
 6. **Recorded exclusions, still open against R4.** This guide (2026-10-23) says the project deliberately has **no daily-loss cap**, **no emergency brake / kill switch**, and **no fixed max-open-positions number**. The risk handover names a kill switch and a per-trade max loss and does not give numbers (`docs/domain/risk-execution.md`). Do not add either until the owner decides.
+7. **Intake before build-ready (8 November 2026).** A raw request is not a build-ready ticket. That includes a request from Jens. Quote it under Context. The ticket stays **not Ready** until the checklist below is complete. Owner authorship is not build approval. The manual dry run of this rule is [`docs/releases/2026-11-08-intake-tabletop.md`](releases/2026-11-08-intake-tabletop.md). It is not an automated test and not a testnet run.
+
+   Before asking Jens, and before any build, gather: the relevant code and docs; open and closed issues; Hindsight refs or the literal line `RECALL_FAILED`; dependencies; the user goal; measurable outcomes; cost, risk, and test evidence; and non-goals. Ask Jens only the load-bearing unknowns that remain after that research.
+
+   **Ready** (allowed to implement) means the existing bar, not a new permission layer: English title; **Existing in code**; **Existing in memory** or `RECALL_FAILED`; dependencies named; goal and measurable outcome; scope and non-goals; numbered observable ACs with test names, frozen (`docs/domain/spec-writing.md`, §4 and §5); safety limits from `AGENTS.md` stated when the work can touch orders, keys, or live state. A new feature labeled as a hotfix or patch is not Ready. A negative strategy result is not Ready for activation. A board column is not Ready.
+
+   **Not Ready:** the raw sentence alone; a missing material field; a duplicate that should extend an existing issue; a post-freeze scope change that has no dated `Rev N`; a missing Hindsight line; an open issue whose board card says Done.
+
+   **Definition of done** stays §4's checklist plus §6 for the merge. Ready is before build. Done is before merge. Critical review before build stays the frozen spec; review before merge stays `AGENTS.md` rule 1 (DeepSeek on every PR, Claude Opus on a high-risk path). This item does not add a Jens gate for a routine paper analysis that does not ask for a code change. That analysis still uses `docs/domain/hypothesis-protocol.md` and the evidence rules, and it still cannot promote a strategy.
 
 ---
 
@@ -47,6 +56,8 @@ These adaptations are binding for this repo. Where they differ from the generic 
 | 5 Design | `05-design.md`, `adr/NNNN-*.md` | Architecture, data, interfaces, ADRs | Each significant decision has an ADR |
 | 6 Review | `06-review.md` | Quality review with findings | Verdict Approve / Approve with minor fixes |
 | 7 Tasks | `07-tasks.md` | Waves of small, agent-ready tasks | Every Must FR/AC covered; owner OK before creating issues |
+
+For this repository, §1a item 7 is the stage-0 exit for anything that would be built. "Owner OK" in the table is not a substitute for that checklist, and it is not a new gate on a routine paper analysis.
 
 **Quick path for small features:** 0 → 4 → 6 → 7.
 Use it when there is one role, no non-trivial domain rules and no architecture decision.
@@ -380,7 +391,9 @@ A PR merges only when **all** of these hold on the **final head SHA**:
 - [ ] Branch up to date with base, and generated artifacts (lockfiles, schemas) regenerated.
 - [ ] Human test instructions included in the PR.
 - [ ] Merges to the default branch happen only with the owner's explicit yes. Never push to the default branch directly.
-- [ ] Merges to `staging` follow section 1a: Kay merges after Lena + Viktor PASS and green CI. Merges to `main` need Jens' explicit yes.
+- [ ] Merges follow `AGENTS.md` rule 6. Every merge to `main` is Jens only. The first five `staging` → `main` releases after 8 November 2026 are with Jens (`docs/release-framework.md`).
+
+Historical line, retired, do not follow: "Merges to `staging` follow section 1a: Kay merges after Lena + Viktor PASS and green CI." Section 1a item 2 retired that chain on 31 October 2026. The sentence remained in this checklist until 8 November 2026.
 
 ---
 
@@ -421,3 +434,5 @@ Make sure every trading spec contains `If…then` requirements for at least thes
 |---|---|---|
 | 1.0 | 2026-10-22 | Initial guide distilled from internal spec workflow skills and agent dev standard |
 | 1.1 | 2026-10-23 | Repo adaptations (section 1a), staging base |
+| 1.2 | 2026-11-08 | §6 merge line aligned with `AGENTS.md` rule 6. Old Lena + Viktor merge sentence kept above the changelog as history. |
+| 1.3 | 2026-11-08 | §1a item 7: raw requests, including from the owner, stay not Ready until the existing checklist is complete. No second ticket template. |

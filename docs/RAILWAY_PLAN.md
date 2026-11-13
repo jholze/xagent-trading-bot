@@ -4,6 +4,8 @@
 **Last updated:** 2026-09-16
 **Branch baseline:** `staging` → Railway test instance; `main` → production (later)
 
+> **Retired as an operating instruction (8 November 2026).** `feature/*`, `bash scripts/deploy_staging.sh`, and a direct push of `staging` in this file are the 16 September 2026 record. Do not run them. Current rules: [`AGENTS.md`](../AGENTS.md), [`docs/workflow.md`](workflow.md), [`docs/release-framework.md`](release-framework.md). The tables below stay so the old plan can be audited.
+
 ---
 
 ## Staging workflow (Git + Railway)

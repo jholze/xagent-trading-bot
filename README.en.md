@@ -2,6 +2,8 @@
 
 **Language:** [Deutsch](README.md) · English
 
+> **Version note, 8 November 2026, 14:24 MEZ.** "Version 2.0.0" in the title is the June 2026 product-doc label, not a running version. The maintenance line is unnumbered. The existing board option `845f1cf9` reads `v2.2.0 Short + real Gate futures testnet PLANNED` ([view 10](https://github.com/users/jholze/projects/1/views/10)). That is not a tag and not a runtime. Milestone `v2.1.0` stays Klein-Live. The rules in [docs/release-framework.md](docs/release-framework.md) are unmerged. Plan: [docs/releases/2026-11-plan.md](docs/releases/2026-11-plan.md).
+
 **Autonomous crypto agent:** Technical analysis (RSI, Bollinger, volume) + X/Twitter signals + CMC sentiment → trading decisions with risk limits, cooldowns, and Telegram control.
 
 **Beginner-friendly:** Every important Telegram message explains **why** the bot did something — in plain language, no trading background required.
@@ -160,7 +162,7 @@ execution/               # Paper + Gate.io adapter
 notifications/           # Telegram commands + user_explain.py
 hermes/                  # Self-improvement agent
 config.json              # Strategies, limits, modes
-DOCUMENTATION.en.md      # Full docs (incl. §17 feature-branch workflow, §19 Grok MCP)
+DOCUMENTATION.en.md      # Full docs (§17 branch checklist is retired; release policy is docs/release-framework.md)
 docs/hermes/HERMES_DOCUMENTATION.md  # Hermes for beginners (EN)
 docs/hermes/HERMES_DOKUMENTATION.md  # Hermes für Einsteiger (DE)
 plans/mcp-xagent.md      # Grok MCP sidecar (paper, Railway test)

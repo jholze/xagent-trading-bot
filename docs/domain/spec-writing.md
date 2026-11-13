@@ -4,6 +4,8 @@ Every behavior change starts as a spec. The spec is frozen before implementation
 
 The generic stage files (`specs/<feature>/`, quick path, IDs) are `docs/requirements-engineering-guide.md`. The review chain in that guide's older section 1a (Kay, Lena, Viktor, Omnigent labels) is retired. `AGENTS.md` is the operating rule.
 
+Repeatable steps, with stop conditions, are `docs/skills/ticket-spec/SKILL.md`. That skill does not replace this file. A raw request, including from the owner, is not a frozen spec. Intake is `docs/requirements-engineering-guide.md` §1a item 7.
+
 ## Required shape
 
 1. One behavior change per spec.

@@ -59,11 +59,23 @@ in `config.json`, plus the patterns `aria_bot.py` and `*.live.json`).
    PRs touching `aria_bot.py`, `execution/`, `risk/`, `*.live.json`, or anything with real money: Kay opens the PR and
    stops; Jens merges. Merging to `staging` deploys the paper bot (`xagent-test`, Railway environment `test`); Kay
    verifies the deployment read-only (status SUCCESS, no new tracebacks) and logs it.
-7. **Release** — `staging` → `main` PR (`gh pr create --base main --head staging`, see `DOCUMENTATION.en.md` §17),
-   opened and merged by Jens only.
+7. **Release** — a `staging` → `main` pull request, opened and merged by Jens only.
+   The first five such releases after 8 November 2026 are with Jens. Naming, the blocked version gate, and the
+   board views are [`docs/release-framework.md`](release-framework.md) and [`docs/releases/2026-11-plan.md`](releases/2026-11-plan.md).
+   `DOCUMENTATION.en.md` §17 is a retired checklist. Do not run it. At the SHAs recorded on 8 November 2026, `main` is
+   963 commits behind `staging`; acceptance reviews that whole range. Nothing merges it automatically.
+   A documentation-only pull request may be merged after the review gate under the rule above, and that merge
+   auto-deploys paper. When the owner forbids the deploy, the pull request stays open. This release-policy change
+   stays open.
 
 How code reaches `main`: only through the `staging` → `main` release PR, opened and merged by Jens. No topic branch
 targets `main`.
+
+## Where a procedure lives
+
+Rules: [`AGENTS.md`](../AGENTS.md). Release decisions: [`docs/release-framework.md`](release-framework.md). Tickets and the board hold scope and status; this file does not write them. Skills [`docs/skills/release-planning/SKILL.md`](skills/release-planning/SKILL.md) and [`docs/skills/ticket-spec/SKILL.md`](skills/ticket-spec/SKILL.md) point at those rules and do not replace them. The scheduler that fires a job is the trigger; [`docs/operations/routines.md`](operations/routines.md) only maps it. Ticket shape: [`docs/domain/spec-writing.md`](domain/spec-writing.md) and [`docs/requirements-engineering-guide.md`](requirements-engineering-guide.md) §1a item 7, §4, and §5. A raw request is not Ready. Manual dry run: [`docs/releases/2026-11-08-intake-tabletop.md`](releases/2026-11-08-intake-tabletop.md).
+
+`scripts/kanban_status.py` still moves Status when it sees `omnigent:ready`, `review:lena`, and `review:viktor`. Those labels are retired for humans. The script is unchanged. It does not set Done, it retains a Done it already finds, a freeze comment can move Backlog to Spec/Acceptance, and a merged staging soak pull request can move a card to Shadow before the parked check. Views on the board do not clear that debt. CI `unit` does not use those labels. Intake is not enforced by CI.
 
 Back channel: the lead reports to Jens' assistant in a session of the Omnigent project above.
 

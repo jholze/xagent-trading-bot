@@ -9,6 +9,13 @@ This file is an agent index (llms.txt). Prefer linked Markdown over guessing.
 - [AGENTS.md](../AGENTS.md): mandatory operating rules, merge/review, Omnigent + Hindsight
 - [docs/workflow.md](workflow.md): roles, branch flow, evidence
 - [docs/agent-onboarding.md](agent-onboarding.md): project facts questionnaire
+- [docs/release-framework.md](release-framework.md): version gate (blocked), slices, no strategy GO
+- [docs/releases/2026-11-plan.md](releases/2026-11-plan.md): 8–22 November decision slots and board views 9, 10, 11
+- [docs/releases/RELEASE_NOTES_TEMPLATE.md](releases/RELEASE_NOTES_TEMPLATE.md): planned / tested / staging / testnet / main
+- [docs/operations/routines.md](operations/routines.md): routine ownership map, not a scheduler
+- [docs/skills/release-planning/SKILL.md](skills/release-planning/SKILL.md): release procedure; repo file, not a global install
+- [docs/skills/ticket-spec/SKILL.md](skills/ticket-spec/SKILL.md): ticket procedure; rules stay in spec-writing and the requirements guide §1a item 7
+- [docs/releases/2026-11-08-intake-tabletop.md](releases/2026-11-08-intake-tabletop.md): manual dry run of intake, eight scenarios, not a runtime test
 
 ## Reference
 

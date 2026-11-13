@@ -1,6 +1,8 @@
 # Umbau-Konzept — Kasse, Kassenbuch, Wetterdienst, Gegenrichtung, Kontext, Muster, Autonomie
 
-**Stand:** 5. September 2026 · **Basis:** `staging` @ `1b40c69` (PR #297) · **Integrationsbranch:** `rebuild/phase1` · **Tracking:** Epic #309 · Phase 1: #317
+> **Nicht die Betriebsanweisung (8. November 2026).** `AGENTS.md` gilt. `rebuild/phase1` ist kein Integrationsbranch mehr. Dieses Verzeichnis ist der Designstand vom 5. September 2026, keine Freigabekette und keine Release-Version. Short-Plan: [`docs/release-framework.md`](../release-framework.md).
+
+**Stand:** 5. September 2026 · **Basis:** `staging` @ `1b40c69` (PR #297) · **Historischer Integrationsvermerk:** `rebuild/phase1` · **Tracking:** Epic #309 · Phase 1: #317
 
 Dieses Verzeichnis ist die Quelle der Wahrheit für den Umbau. Es ersetzt `ARCHITECTURE_PLAN.md` (Juni 2026, Redis-3+1-Split) — der liegt archiviert unter `archive/superseded/`.
 
