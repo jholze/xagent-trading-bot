@@ -801,6 +801,15 @@ class PortfolioService:
         return result
 
     def execute_order(self, order: TradeOrder, timeframe: str = "4h") -> TradeResult:
+        from strategies.ctx_axes import entry_blocked_by_oracle_timeout
+
+        if entry_blocked_by_oracle_timeout(order):
+            return TradeResult(
+                executed=False,
+                order_type=order.type,
+                symbol=order.symbol,
+                message="oracle redis timeout; fail closed, no order",
+            )
         source = order.source or "auto"
         oid = order.order_id or None
         ctx = trade_ctx_fields(order)
