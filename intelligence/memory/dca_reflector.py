@@ -79,6 +79,22 @@ def _lesson_id(key: str) -> str:
     return "les_dca_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
+def _event_weight(meta: dict) -> int:
+    """How many decisions one event row stands for.
+
+    #822 coalesces identical skips into a ``first`` row (count 1) and a
+    ``latest`` row whose ``count`` is the run total, first row included.
+    Legacy and non-skip rows count once.
+    """
+    try:
+        count = int(meta.get("count") or 1)
+    except (TypeError, ValueError):
+        return 1
+    if meta.get("slot") == "latest":
+        return max(1, count - 1)
+    return max(1, count)
+
+
 def derive_dca_lesson_specs(
     events: list[Any],
     sells: list[TradeMemory],
@@ -113,28 +129,29 @@ def derive_dca_lesson_specs(
 
     for e in dca_evs:
         meta = getattr(e, "metadata", None) or {}
+        w = _event_weight(meta)
         codes = meta.get("reason_codes") or []
         if isinstance(codes, str):
             codes = [codes]
         for c in codes:
-            reason_counter[str(c)] += 1
+            reason_counter[str(c)] += w
         mode = str(meta.get("cash_mode") or "")
         if mode:
-            mode_counter[mode] += 1
+            mode_counter[mode] += w
         syms = list(getattr(e, "symbols", None) or [])
         sym = syms[0] if syms else ""
         is_skip = bool(meta.get("skip"))
         if is_skip:
-            skip_n += 1
+            skip_n += w
             if sym:
-                by_sym_skip[sym] += 1
+                by_sym_skip[sym] += w
         else:
             allow_n += 1
             if sym:
                 by_sym_allow[sym] += 1
             allow_events.append(e)
 
-    n = len(dca_evs)
+    n = sum(_event_weight(getattr(e, "metadata", None) or {}) for e in dca_evs)
     if reason_counter.get("harvest_skip", 0) >= min_events:
         hs = reason_counter["harvest_skip"]
         specs.append(
@@ -423,6 +440,9 @@ def reflect_dca_policy(
                                     "symbol": (lesson.symbols[0] if lesson.symbols else ""),
                                     "source": "dca_reflector",
                                     "source_id": lid,
+                                    # #822: one live chunk per lesson id; a new
+                                    # count (5/6/7/...) replaces it.
+                                    "chunk_key": lid,
                                 },
                             )
                     except Exception:

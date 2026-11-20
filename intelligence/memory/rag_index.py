@@ -108,6 +108,9 @@ def index_store_into_rag(
                 "symbol": symbols[0] if symbols else "",
                 "source": "reflector",
             }
+            # #822: DCA reflector lessons are updated in place (count in the text).
+            if (getattr(les, "source", "") or "") == "dca_reflector" and meta["source_id"]:
+                meta["chunk_key"] = meta["source_id"]
             if rag.add_to_memory(text, meta):
                 out["lessons"] += 1
     except Exception as e:
@@ -163,6 +166,10 @@ def index_store_into_rag(
                 "symbol": symbols[0] if symbols else "",
                 "source": getattr(ev, "source", "") or "event",
             }
+            # #822: coalesced DCA skip events change count/last_ts in place.
+            ev_meta = getattr(ev, "metadata", None) or {}
+            if isinstance(ev_meta, dict) and ev_meta.get("coalesce_key") and meta["source_id"]:
+                meta["chunk_key"] = meta["source_id"]
             if rag.add_to_memory(text, meta):
                 out["events"] += 1
     except Exception as e:
