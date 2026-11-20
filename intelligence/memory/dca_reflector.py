@@ -79,6 +79,50 @@ def _lesson_id(key: str) -> str:
     return "les_dca_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
+def _family_rows(dca_evs: list[Any]) -> list[tuple[Any, int, dict[str, int]]]:
+    """(event, weight, reason counts) per decision row.
+
+    #822 coalesces one lot's skips into a ``first`` row and a ``latest`` row.
+    ``latest`` carries the family total (``count``, ``reason_counts``), so the
+    ``first`` row of a family whose ``latest`` is present counts zero. Legacy
+    and non-skip rows count once with their own reason codes.
+    """
+    with_latest = {
+        (getattr(e, "metadata", None) or {}).get("coalesce_key")
+        for e in dca_evs
+        if (getattr(e, "metadata", None) or {}).get("slot") == "latest"
+    }
+    out: list[tuple[Any, int, dict[str, int]]] = []
+    for e in dca_evs:
+        meta = getattr(e, "metadata", None) or {}
+        slot = meta.get("slot")
+        if slot == "first" and meta.get("coalesce_key") in with_latest:
+            continue
+        codes = meta.get("reason_codes") or []
+        if isinstance(codes, str):
+            codes = [codes]
+        if slot in ("first", "latest"):
+            try:
+                weight = max(1, int(meta.get("count") or 1))
+            except (TypeError, ValueError):
+                weight = 1
+            raw = meta.get("reason_counts")
+            if isinstance(raw, dict) and raw:
+                reasons = {}
+                for k, v in raw.items():
+                    try:
+                        reasons[str(k)] = int(v)
+                    except (TypeError, ValueError):
+                        continue
+            else:
+                reasons = {str(c): weight for c in codes}
+        else:
+            weight = 1
+            reasons = {str(c): 1 for c in codes}
+        out.append((e, weight, reasons))
+    return out
+
+
 def derive_dca_lesson_specs(
     events: list[Any],
     sells: list[TradeMemory],
@@ -111,30 +155,28 @@ def derive_dca_lesson_specs(
     by_sym_allow: dict[str, int] = defaultdict(int)
     allow_events: list[Any] = []
 
-    for e in dca_evs:
+    rows = _family_rows(dca_evs)
+    for e, w, reasons in rows:
         meta = getattr(e, "metadata", None) or {}
-        codes = meta.get("reason_codes") or []
-        if isinstance(codes, str):
-            codes = [codes]
-        for c in codes:
-            reason_counter[str(c)] += 1
+        for c, k in reasons.items():
+            reason_counter[c] += k
         mode = str(meta.get("cash_mode") or "")
         if mode:
-            mode_counter[mode] += 1
+            mode_counter[mode] += w
         syms = list(getattr(e, "symbols", None) or [])
         sym = syms[0] if syms else ""
         is_skip = bool(meta.get("skip"))
         if is_skip:
-            skip_n += 1
+            skip_n += w
             if sym:
-                by_sym_skip[sym] += 1
+                by_sym_skip[sym] += w
         else:
             allow_n += 1
             if sym:
                 by_sym_allow[sym] += 1
             allow_events.append(e)
 
-    n = len(dca_evs)
+    n = sum(w for _e, w, _r in rows)
     if reason_counter.get("harvest_skip", 0) >= min_events:
         hs = reason_counter["harvest_skip"]
         specs.append(
@@ -423,6 +465,9 @@ def reflect_dca_policy(
                                     "symbol": (lesson.symbols[0] if lesson.symbols else ""),
                                     "source": "dca_reflector",
                                     "source_id": lid,
+                                    # #822: one live chunk per lesson id; a new
+                                    # count (5/6/7/...) replaces it.
+                                    "chunk_key": lid,
                                 },
                             )
                     except Exception:

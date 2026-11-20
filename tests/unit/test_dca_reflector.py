@@ -222,5 +222,127 @@ class TestOptionalGrokSummaryLocalLlm(unittest.TestCase):
         mock_grok.assert_not_called()
 
 
+# --- #822 AC-3: one live "skipped add-ons often" lesson per symbol ---------
+
+_AC3_SYM = "LABX/USDT"
+_AC3_CFG = {
+    "memory": {
+        "rag": {"enabled": True, "embedding_backend": "hash", "use_weaviate_rag": False},
+        "dca_reflect": {"enabled": True, "min_events": 5, "index_rag": True},
+    }
+}
+
+
+def _ac3_skip_family_lessons(store, rag):
+    lessons = [
+        lesson
+        for lesson in store.list_lessons(symbol=_AC3_SYM)
+        if "skipped add-ons often" in lesson.text
+    ]
+    chunks = [
+        c
+        for c in rag._store.list_chunks(limit=500)
+        if "skipped add-ons often" in c.text and _AC3_SYM in c.text
+    ]
+    return lessons, chunks
+
+
+def test_ac3_reflector_after_each_skip_keeps_one_live_lesson_and_one_rag_chunk():
+    from datetime import datetime, timedelta, timezone
+
+    from core.tenant_context import tenant_context
+    from hermes.memory.rag_retriever import RagRetriever
+    from intelligence.memory.rag_index import index_store_into_rag
+    from strategies.dca_decision_event import persist_dca_decision_event
+    from strategies.dca_policy import DcaPolicyResult
+
+    store = InMemoryMemoryStore()
+    rag = RagRetriever.in_memory(config=_AC3_CFG)
+    t0 = datetime(2026, 11, 12, 8, 0, 0, tzinfo=timezone.utc)
+    now = {"ts": ""}
+    skip = DcaPolicyResult(size_mult=1.0, skip=True, reason_codes=("dca_guard_below_avg",))
+    with (
+        patch("strategies.dca_decision_event._utc_now_iso", lambda: now["ts"]),
+        patch("intelligence.memory.store.memory_enabled", return_value=True),
+        patch("hermes.memory.rag_retriever.RagRetriever", lambda *a, **k: rag),
+    ):
+        for i in range(12):
+            now["ts"] = (t0 + timedelta(minutes=4 * i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            with tenant_context("henry", scope="paper"):
+                persist_dca_decision_event(
+                    symbol=_AC3_SYM,
+                    result=skip,
+                    applied="dca_guard",
+                    policy_cfg={"persist_events": True, "index_rag": False},
+                    store=store,
+                    index_rag=False,
+                )
+            reflect_dca_policy(store, config_raw=_AC3_CFG, tenant_id="henry")
+            index_store_into_rag(store, rag, config=_AC3_CFG)
+
+    lessons, chunks = _ac3_skip_family_lessons(store, rag)
+    assert len(lessons) == 1, [lesson.text for lesson in lessons]
+    # The lesson still reflects all 12 skips, not the 2 stored rows.
+    assert "(12 recent decisions)" in lessons[0].text
+    assert lessons[0].sample_n == 12
+    assert len(chunks) == 1, [c.text for c in chunks]
+    assert "(12 recent decisions)" in chunks[0].text
+
+
+def test_ac3_coalesced_rows_weight_skip_count_without_double_counting():
+    events = [
+        SimpleNamespace(
+            event_id="f",
+            event_type="dca_decision",
+            timestamp="2026-11-12T08:00:00Z",
+            symbols=[_AC3_SYM],
+            metadata={"kind": "dca_decision", "skip": True, "slot": "first", "count": 1,
+                      "reason_codes": ["dca_guard_below_avg"]},
+            description="x",
+        ),
+        SimpleNamespace(
+            event_id="l",
+            event_type="dca_decision",
+            timestamp="2026-11-12T09:00:00Z",
+            symbols=[_AC3_SYM],
+            metadata={"kind": "dca_decision", "skip": True, "slot": "latest", "count": 7,
+                      "reason_codes": ["dca_guard_below_avg"]},
+            description="x",
+        ),
+    ]
+    specs = derive_dca_lesson_specs(events, [], min_events=5)
+    heavy = [s for s in specs if s["key"] == f"{_AC3_SYM}|skip_heavy"]
+    assert len(heavy) == 1
+    assert heavy[0]["sample_n"] == 7
+
+
+def test_ac3_reason_counter_uses_reason_counts_of_latest_row():
+    """Review item 2: the lot family mixes reasons; reason_counts keeps them apart."""
+    meta = {
+        "kind": "dca_decision",
+        "skip": True,
+        "coalesce_key": "k",
+        "reason_codes": ["dca_guard_below_avg"],
+        "cash_mode": "HARVEST",
+    }
+    events = [
+        SimpleNamespace(
+            event_id="f", event_type="dca_decision", timestamp="2026-11-12T08:00:00Z",
+            symbols=[_AC3_SYM], description="x",
+            metadata={**meta, "slot": "first", "count": 1, "reason_codes": ["harvest_skip"],
+                      "reason_counts": {"harvest_skip": 1}},
+        ),
+        SimpleNamespace(
+            event_id="l", event_type="dca_decision", timestamp="2026-11-12T09:00:00Z",
+            symbols=[_AC3_SYM], description="x",
+            metadata={**meta, "slot": "latest", "count": 8,
+                      "reason_counts": {"harvest_skip": 6, "dca_guard_below_avg": 2}},
+        ),
+    ]
+    specs = {s["key"]: s for s in derive_dca_lesson_specs(events, [], min_events=5)}
+    assert specs["global|harvest_skip"]["sample_n"] == 6
+    assert specs[f"{_AC3_SYM}|skip_heavy"]["sample_n"] == 8
+
+
 if __name__ == "__main__":
     unittest.main()

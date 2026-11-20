@@ -11,6 +11,16 @@ from typing import Any
 
 from strategies.dca_policy import DcaContext, DcaPolicyResult
 
+# #822: skip decisions for one lot (tenant + symbol; positions carry no lot id)
+# take at most this many rows in memory_market_events: row "first" keeps the
+# first skip of the family, row "latest" is incremented atomically with count,
+# last_ts, the latest reason codes / applied path and a reason_counts map.
+# Kay decided N = 2. This is a code default, not a config knob.
+SKIP_EVENTS_PER_LOT = 2
+# Family restarts when its newest row is older than memory.coin_facts.lookback_hours
+# (read from config; code default 72 h in intelligence/memory/coin_facts.py).
+_DEFAULT_RESET_HOURS = 72.0
+
 
 def _utc_now_iso() -> str:
     from datetime import datetime, timezone
@@ -45,6 +55,60 @@ def build_dca_decision_text(
     )
 
 
+def skip_coalesce_key(tenant_id: str, symbol: str) -> str:
+    """Stable key for one lot's skip family. Tenant is part of it (#721)."""
+    raw = f"{tenant_id}|{symbol}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def skip_family_reset_hours() -> float:
+    """``memory.coin_facts.lookback_hours`` (existing setting), 72 h fallback."""
+    try:
+        from intelligence.memory.coin_facts import coin_facts_config
+
+        hours = float(coin_facts_config().get("lookback_hours") or _DEFAULT_RESET_HOURS)
+        return hours if hours > 0 else _DEFAULT_RESET_HOURS
+    except Exception:
+        return _DEFAULT_RESET_HOURS
+
+
+def _persist_coalesced_skip(
+    *,
+    ms: Any,
+    tid: str,
+    sym: str,
+    ts: str,
+    text: str,
+    meta: dict,
+) -> str:
+    """Count a skip into its lot family via the store's atomic write.
+
+    Raises on store errors; the caller turns that into a no-write.
+    """
+    from intelligence.memory.models import MarketEvent, memory_timestamp_unix
+
+    key = skip_coalesce_key(tid, sym)
+    template = MarketEvent(
+        event_id=f"dca_skip_{key}",
+        timestamp=ts,
+        event_type="dca_decision",
+        symbols=[sym],
+        impact_score=-0.1,
+        description=text[:1800],
+        source="dca_policy",
+        metadata={**meta, "coalesce_key": key, "coalesce_limit": SKIP_EVENTS_PER_LOT},
+        tenant_id=tid,
+    )
+    reset_before = memory_timestamp_unix(ts) - skip_family_reset_hours() * 3600.0
+    event_id, _created = ms.record_coalesced_skip(
+        template,
+        first_id=f"dca_skip_{key}_first",
+        latest_id=f"dca_skip_{key}_latest",
+        reset_before_unix=reset_before,
+    )
+    return event_id
+
+
 def persist_dca_decision_event(
     *,
     symbol: str,
@@ -58,7 +122,14 @@ def persist_dca_decision_event(
     store: Any = None,
     index_rag: bool = True,
 ) -> str:
-    """Write MarketEvent + optional RAG chunk. Returns event_id or '' on fail/disabled."""
+    """Write MarketEvent + optional RAG chunk. Returns event_id or '' on fail/disabled.
+
+    Skip decisions are coalesced (#822): at most ``SKIP_EVENTS_PER_LOT`` rows per
+    tenant and symbol (lot). Their RAG chunk is written by the cycle indexer
+    (``index_store_into_rag``), not here, so each row has one live chunk.
+    Non-skip decisions keep one row each. This only changes what is stored;
+    the caller has already decided.
+    """
     cfg = policy_cfg or {}
     if not cfg.get("persist_events", True):
         return ""
@@ -125,6 +196,15 @@ def persist_dca_decision_event(
         if not memory_enabled():
             return ""
         ms = store if store is not None else MemoryStore()
+        if result.skip:
+            try:
+                return _persist_coalesced_skip(
+                    ms=ms, tid=tid, sym=sym, ts=ts, text=text, meta=meta
+                )
+            except Exception as e:
+                # Never fall back to a per-timestamp row: that is the flood.
+                log(f"DCA skip event coalesce failed (not written): {e}", "WARNING")
+                return ""
         ev = MarketEvent(
             event_id=event_id,
             timestamp=ts,

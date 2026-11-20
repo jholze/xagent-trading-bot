@@ -33,6 +33,13 @@ def utc_now_iso() -> str:
 
 def chunk_id_for(text: str, metadata: dict | None = None) -> str:
     meta = metadata or {}
+    # #822: a caller that updates one record in place (coalesced DCA skip event,
+    # DCA reflector lesson) passes chunk_key so a changed text replaces the
+    # chunk instead of adding a near-duplicate.
+    chunk_key = str(meta.get("chunk_key") or "").strip()
+    if chunk_key:
+        key = f"{meta.get('type')}|key:{chunk_key}"
+        return "rag_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
     key = f"{meta.get('type')}|{meta.get('source_id') or meta.get('symbol')}|{text[:120]}"
     return "rag_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
 
