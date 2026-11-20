@@ -6,7 +6,9 @@ Never touches orders, positions, trade_history, or cash collections.
 
 from __future__ import annotations
 
+import copy
 import os
+import threading
 from typing import Any, Callable
 
 from intelligence.memory.models import (
@@ -101,6 +103,127 @@ def _assert_safe_collection(name: str) -> None:
         raise RuntimeError(f"memory store refused collection: {name}")
 
 
+# --- #822 coalesced DCA skip family (first / latest rows) -------------------
+
+
+def _skip_reason_key(code: Any) -> str:
+    """Mongo field-safe reason code for ``metadata.reason_counts``."""
+    return str(code).replace(".", "_").replace("$", "_") or "_"
+
+
+def _get_path(doc: dict, path: str) -> Any:
+    cur: Any = doc
+    for part in path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+def _set_path(doc: dict, path: str, value: Any) -> None:
+    parts = path.split(".")
+    cur = doc
+    for part in parts[:-1]:
+        nxt = cur.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[part] = nxt
+        cur = nxt
+    cur[parts[-1]] = value
+
+
+def _doc_matches(doc: dict, flt: dict) -> bool:
+    for key, cond in flt.items():
+        val = _get_path(doc, key)
+        if isinstance(cond, dict) and any(str(k).startswith("$") for k in cond):
+            for op, ref in cond.items():
+                if val is None:
+                    return False
+                if op == "$gte" and not val >= ref:
+                    return False
+                if op == "$lt" and not val < ref:
+                    return False
+        elif val != cond:
+            return False
+    return True
+
+
+class _DictEventCollection:
+    """The few Mongo collection calls ``record_coalesced_skip`` needs, over a dict.
+
+    Each call is atomic under one lock, like a single-document Mongo write.
+    """
+
+    def __init__(self, docs: dict[str, dict], lock):
+        self._docs = docs
+        self._lock = lock
+
+    def find_one(self, flt: dict) -> dict | None:
+        with self._lock:
+            doc = self._docs.get(flt.get("_id"))
+            if doc is None or not _doc_matches(doc, flt):
+                return None
+            return copy.deepcopy(doc)
+
+    def insert_one(self, doc: dict) -> None:
+        from pymongo.errors import DuplicateKeyError
+
+        with self._lock:
+            if doc["_id"] in self._docs:
+                raise DuplicateKeyError(f"duplicate _id {doc['_id']}")
+            self._docs[doc["_id"]] = copy.deepcopy(doc)
+
+    def replace_one(self, flt: dict, doc: dict):
+        with self._lock:
+            cur = self._docs.get(flt.get("_id"))
+            ok = cur is not None and _doc_matches(cur, flt)
+            if ok:
+                self._docs[flt["_id"]] = copy.deepcopy(doc)
+            return _Result(1 if ok else 0)
+
+    def delete_one(self, flt: dict):
+        with self._lock:
+            cur = self._docs.get(flt.get("_id"))
+            ok = cur is not None and _doc_matches(cur, flt)
+            if ok:
+                del self._docs[flt["_id"]]
+            return _Result(1 if ok else 0)
+
+    def update_one(self, flt: dict, update: dict):
+        with self._lock:
+            return _Result(1 if self._apply(flt, update) is not None else 0)
+
+    def find_one_and_update(self, flt: dict, update: dict, return_document=None):
+        del return_document  # always returns the document after the update
+        with self._lock:
+            doc = self._apply(flt, update)
+            return copy.deepcopy(doc) if doc is not None else None
+
+    def _apply(self, flt: dict, update: dict) -> dict | None:
+        doc = self._docs.get(flt.get("_id"))
+        if doc is None or not _doc_matches(doc, flt):
+            return None
+        for path, inc in (update.get("$inc") or {}).items():
+            _set_path(doc, path, (_get_path(doc, path) or 0) + inc)
+        for path, val in (update.get("$set") or {}).items():
+            _set_path(doc, path, val)
+        return doc
+
+
+class _Result:
+    def __init__(self, n: int):
+        self.matched_count = n
+        self.deleted_count = n
+        self.modified_count = n
+
+
+def _skip_family_description(text: str, meta: dict) -> str:
+    return (
+        f"{text} count={meta.get('count')} first_ts={meta.get('first_ts')} "
+        f"last_ts={meta.get('last_ts')}"
+    )[:2000]
+
+
 class MemoryStore:
     """CRUD for Trading Memory entities. Fail-open on missing Mongo in read paths."""
 
@@ -171,6 +294,134 @@ class MemoryStore:
         except Exception as e:
             log(f"memory upsert_event failed: {e}", "WARNING")
             return False
+
+    def _events_col(self):
+        return self._col(COL_EVENTS)
+
+    def record_coalesced_skip(
+        self,
+        event: MarketEvent,
+        *,
+        first_id: str,
+        latest_id: str,
+        reset_before_unix: float | None = None,
+    ) -> tuple[str, bool]:
+        """Count one DCA skip into its family's ``first`` / ``latest`` rows (#822).
+
+        ``event`` is the plain skip (description, metadata, tenant, timestamp).
+        Writes are single-document atomic: ``first`` is inserted once, ``latest``
+        is incremented with ``$inc``; no read-modify-write of the count. A family
+        whose newest row is older than ``reset_before_unix`` starts over.
+        Returns ``(event_id, row_created)``. Raises on any store error so the
+        caller can write nothing instead of overwriting audit fields.
+        """
+        from pymongo import ReturnDocument
+        from pymongo.errors import DuplicateKeyError
+
+        col = self._events_col()
+        base = event.to_doc()
+        tid = base.get("tenant_id")
+        ts = base["timestamp"]
+        ts_unix = base["ts_unix"]
+        text = str(base.get("description") or "")
+        meta = dict(base.get("metadata") or {})
+        codes = [str(c) for c in (meta.get("reason_codes") or [])]
+        inc_reasons = {f"metadata.reason_counts.{_skip_reason_key(c)}": 1 for c in codes}
+
+        def _first_doc() -> dict:
+            m = {
+                **meta,
+                "slot": "first",
+                "count": 1,
+                "first_ts": ts,
+                "last_ts": ts,
+                "reason_counts": {_skip_reason_key(c): 1 for c in codes},
+            }
+            return {
+                **base,
+                "_id": first_id,
+                "event_id": first_id,
+                "metadata": m,
+                "description": _skip_family_description(text, m),
+            }
+
+        fresh = {"ts_unix": {"$gte": reset_before_unix}} if reset_before_unix else {}
+        set_latest = {
+            "timestamp": ts,
+            "ts_unix": ts_unix,
+            "impact_score": base.get("impact_score"),
+            "metadata.last_ts": ts,
+        }
+        for k, v in meta.items():
+            if k not in ("reason_counts", "count", "first_ts", "last_ts", "slot"):
+                set_latest[f"metadata.{k}"] = v
+
+        for _attempt in range(4):
+            # 1) Fresh latest row: atomic increment.
+            doc = col.find_one_and_update(
+                {"_id": latest_id, "tenant_id": tid, **fresh},
+                {"$inc": {"metadata.count": 1, **inc_reasons}, "$set": set_latest},
+                return_document=ReturnDocument.AFTER,
+            )
+            if doc is not None:
+                n = (doc.get("metadata") or {}).get("count")
+                # Cosmetic text; only the writer whose count is still current wins.
+                col.update_one(
+                    {"_id": latest_id, "metadata.count": n},
+                    {"$set": {"description": _skip_family_description(text, doc["metadata"])}},
+                )
+                return latest_id, False
+            # 2) No family yet: insert the first row.
+            try:
+                col.insert_one(_first_doc())
+                return first_id, True
+            except DuplicateKeyError:
+                pass
+            first = col.find_one({"_id": first_id})
+            if first is None:
+                continue  # reset by another writer; retry
+            if first.get("tenant_id") != tid:
+                raise RuntimeError(f"skip family {first_id} belongs to another tenant")
+            latest = col.find_one({"_id": latest_id})
+            newest = latest if latest is not None else first
+            if reset_before_unix and float(newest.get("ts_unix") or 0) < reset_before_unix:
+                # 3) Stale family: start over. Guarded on the row we read.
+                res = col.replace_one(
+                    {"_id": first_id, "ts_unix": first.get("ts_unix")}, _first_doc()
+                )
+                if res.matched_count:
+                    col.delete_one({"_id": latest_id, "ts_unix": {"$lt": reset_before_unix}})
+                    return first_id, True
+                continue
+            if latest is not None:
+                continue  # latest appeared or was refreshed meanwhile; retry step 1
+            # 4) Second skip of the family: create latest from first.
+            fm = first.get("metadata") or {}
+            counts = dict(fm.get("reason_counts") or {})
+            for c in codes:
+                key = _skip_reason_key(c)
+                counts[key] = int(counts.get(key) or 0) + 1
+            lm = {
+                **meta,
+                "slot": "latest",
+                "count": int(fm.get("count") or 1) + 1,
+                "first_ts": fm.get("first_ts") or first.get("timestamp"),
+                "last_ts": ts,
+                "reason_counts": counts,
+            }
+            latest_doc = {
+                **base,
+                "_id": latest_id,
+                "event_id": latest_id,
+                "metadata": lm,
+                "description": _skip_family_description(text, lm),
+            }
+            try:
+                col.insert_one(latest_doc)
+                return latest_id, True
+            except DuplicateKeyError:
+                continue
+        raise RuntimeError(f"skip family {first_id}: too many concurrent retries")
 
     def get_event(self, event_id: str) -> MarketEvent | None:
         try:
@@ -401,6 +652,7 @@ class MemoryStore:
 class InMemoryMemoryStore(MemoryStore):
     def __init__(self):
         super().__init__(db=None)
+        self._events_lock = threading.Lock()
         self._docs: dict[str, dict[str, dict]] = {
             COL_PROFILES: {},
             COL_EVENTS: {},
@@ -427,6 +679,10 @@ class InMemoryMemoryStore(MemoryStore):
 
     def upsert_event(self, event: MarketEvent) -> bool:
         return self._put(COL_EVENTS, event.to_doc())
+
+    def _events_col(self):
+        # Same record_coalesced_skip code path as Mongo, over the dict store.
+        return _DictEventCollection(self._docs[COL_EVENTS], self._events_lock)
 
     def get_event(self, event_id: str):
         return MarketEvent.from_doc(self._docs[COL_EVENTS].get(event_id))

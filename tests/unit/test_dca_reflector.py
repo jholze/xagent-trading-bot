@@ -316,5 +316,33 @@ def test_ac3_coalesced_rows_weight_skip_count_without_double_counting():
     assert heavy[0]["sample_n"] == 7
 
 
+def test_ac3_reason_counter_uses_reason_counts_of_latest_row():
+    """Review item 2: the lot family mixes reasons; reason_counts keeps them apart."""
+    meta = {
+        "kind": "dca_decision",
+        "skip": True,
+        "coalesce_key": "k",
+        "reason_codes": ["dca_guard_below_avg"],
+        "cash_mode": "HARVEST",
+    }
+    events = [
+        SimpleNamespace(
+            event_id="f", event_type="dca_decision", timestamp="2026-11-12T08:00:00Z",
+            symbols=[_AC3_SYM], description="x",
+            metadata={**meta, "slot": "first", "count": 1, "reason_codes": ["harvest_skip"],
+                      "reason_counts": {"harvest_skip": 1}},
+        ),
+        SimpleNamespace(
+            event_id="l", event_type="dca_decision", timestamp="2026-11-12T09:00:00Z",
+            symbols=[_AC3_SYM], description="x",
+            metadata={**meta, "slot": "latest", "count": 8,
+                      "reason_counts": {"harvest_skip": 6, "dca_guard_below_avg": 2}},
+        ),
+    ]
+    specs = {s["key"]: s for s in derive_dca_lesson_specs(events, [], min_events=5)}
+    assert specs["global|harvest_skip"]["sample_n"] == 6
+    assert specs[f"{_AC3_SYM}|skip_heavy"]["sample_n"] == 8
+
+
 if __name__ == "__main__":
     unittest.main()

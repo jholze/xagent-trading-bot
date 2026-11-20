@@ -11,11 +11,15 @@ from typing import Any
 
 from strategies.dca_policy import DcaContext, DcaPolicyResult
 
-# #822: identical skip decisions (same tenant, symbol, applied path, reason set)
-# take at most this many rows in memory_market_events: slot "first" keeps the
-# first skip, slot "latest" is updated in place with count and last_ts. Kay
-# decided N = 2. This is a code default, not a config knob.
+# #822: skip decisions for one lot (tenant + symbol; positions carry no lot id)
+# take at most this many rows in memory_market_events: row "first" keeps the
+# first skip of the family, row "latest" is incremented atomically with count,
+# last_ts, the latest reason codes / applied path and a reason_counts map.
+# Kay decided N = 2. This is a code default, not a config knob.
 SKIP_EVENTS_PER_LOT = 2
+# Family restarts when its newest row is older than memory.coin_facts.lookback_hours
+# (read from config; code default 72 h in intelligence/memory/coin_facts.py).
+_DEFAULT_RESET_HOURS = 72.0
 
 
 def _utc_now_iso() -> str:
@@ -51,34 +55,21 @@ def build_dca_decision_text(
     )
 
 
-def skip_coalesce_key(
-    tenant_id: str, symbol: str, applied: str, reason_codes: tuple[str, ...] | list[str]
-) -> str:
-    """Stable key for one family of identical skips. Tenant is part of it (#721)."""
-    codes = ",".join(sorted(str(c) for c in (reason_codes or ())))
-    raw = f"{tenant_id}|{symbol}|{applied}|{codes}"
+def skip_coalesce_key(tenant_id: str, symbol: str) -> str:
+    """Stable key for one lot's skip family. Tenant is part of it (#721)."""
+    raw = f"{tenant_id}|{symbol}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
 
 
-def _index_rag(text: str, sym: str, event_id: str) -> None:
+def skip_family_reset_hours() -> float:
+    """``memory.coin_facts.lookback_hours`` (existing setting), 72 h fallback."""
     try:
-        from hermes.memory.rag_retriever import RagRetriever
-        from intelligence.memory.rag_config import rag_enabled
+        from intelligence.memory.coin_facts import coin_facts_config
 
-        if rag_enabled():
-            RagRetriever().add_to_memory(
-                text,
-                {
-                    "type": "dca_decision",
-                    "symbol": sym,
-                    "source": "dca_policy",
-                    "source_id": event_id,
-                    # #822: one chunk per event id, even when the text changes.
-                    "chunk_key": event_id,
-                },
-            )
+        hours = float(coin_facts_config().get("lookback_hours") or _DEFAULT_RESET_HOURS)
+        return hours if hours > 0 else _DEFAULT_RESET_HOURS
     except Exception:
-        pass  # fail-open: event already in Mongo
+        return _DEFAULT_RESET_HOURS
 
 
 def _persist_coalesced_skip(
@@ -89,60 +80,33 @@ def _persist_coalesced_skip(
     ts: str,
     text: str,
     meta: dict,
-    applied: str,
-    result: DcaPolicyResult,
-) -> tuple[str, bool]:
-    """Write a skip into its first/latest slot. Returns (event_id, slot_created).
+) -> str:
+    """Count a skip into its lot family via the store's atomic write.
 
     Raises on store errors; the caller turns that into a no-write.
     """
-    from intelligence.memory.models import MarketEvent
+    from intelligence.memory.models import MarketEvent, memory_timestamp_unix
 
-    key = skip_coalesce_key(tid, sym, applied, result.reason_codes)
-    first_id = f"dca_skip_{key}_first"
-    latest_id = f"dca_skip_{key}_latest"
-
-    def _own(ev: Any) -> Any:
-        # Ids already carry the tenant; this is a second check.
-        return ev if ev is not None and ev.tenant_id == tid else None
-
-    first = _own(ms.get_event(first_id))
-    meta = {**meta, "coalesce_key": key, "coalesce_limit": SKIP_EVENTS_PER_LOT}
-    if first is None:
-        event_id, created = first_id, True
-        meta.update({"slot": "first", "count": 1, "first_ts": ts, "last_ts": ts})
-    else:
-        latest = _own(ms.get_event(latest_id))
-        prev = latest if latest is not None else first
-        try:
-            prev_count = int((prev.metadata or {}).get("count") or 1)
-        except (TypeError, ValueError):
-            prev_count = 1
-        first_ts = str((first.metadata or {}).get("first_ts") or first.timestamp)
-        event_id, created = latest_id, latest is None
-        meta.update(
-            {
-                "slot": "latest",
-                "count": prev_count + 1,
-                "first_ts": first_ts,
-                "last_ts": ts,
-            }
-        )
-    desc = f"{text} count={meta['count']} first_ts={meta['first_ts']} last_ts={ts}"
-    ev = MarketEvent(
-        event_id=event_id,
+    key = skip_coalesce_key(tid, sym)
+    template = MarketEvent(
+        event_id=f"dca_skip_{key}",
         timestamp=ts,
         event_type="dca_decision",
         symbols=[sym],
         impact_score=-0.1,
-        description=desc[:2000],
+        description=text[:1800],
         source="dca_policy",
-        metadata=meta,
+        metadata={**meta, "coalesce_key": key, "coalesce_limit": SKIP_EVENTS_PER_LOT},
         tenant_id=tid,
     )
-    if not ms.upsert_event(ev):
-        return "", False
-    return event_id, created
+    reset_before = memory_timestamp_unix(ts) - skip_family_reset_hours() * 3600.0
+    event_id, _created = ms.record_coalesced_skip(
+        template,
+        first_id=f"dca_skip_{key}_first",
+        latest_id=f"dca_skip_{key}_latest",
+        reset_before_unix=reset_before,
+    )
+    return event_id
 
 
 def persist_dca_decision_event(
@@ -161,8 +125,10 @@ def persist_dca_decision_event(
     """Write MarketEvent + optional RAG chunk. Returns event_id or '' on fail/disabled.
 
     Skip decisions are coalesced (#822): at most ``SKIP_EVENTS_PER_LOT`` rows per
-    tenant, symbol, applied path and reason set. Non-skip decisions keep one row
-    each. This only changes what is stored; the caller has already decided.
+    tenant and symbol (lot). Their RAG chunk is written by the cycle indexer
+    (``index_store_into_rag``), not here, so each row has one live chunk.
+    Non-skip decisions keep one row each. This only changes what is stored;
+    the caller has already decided.
     """
     cfg = policy_cfg or {}
     if not cfg.get("persist_events", True):
@@ -223,7 +189,6 @@ def persist_dca_decision_event(
         "dca_lesson_summary": (ctx.dca_lesson_summary if ctx else "") or "",
     }
 
-    want_rag = bool(index_rag and cfg.get("index_rag", True))
     try:
         from intelligence.memory.models import MarketEvent
         from intelligence.memory.store import MemoryStore, memory_enabled
@@ -233,24 +198,13 @@ def persist_dca_decision_event(
         ms = store if store is not None else MemoryStore()
         if result.skip:
             try:
-                event_id, created = _persist_coalesced_skip(
-                    ms=ms,
-                    tid=tid,
-                    sym=sym,
-                    ts=ts,
-                    text=text,
-                    meta=meta,
-                    applied=applied,
-                    result=result,
+                return _persist_coalesced_skip(
+                    ms=ms, tid=tid, sym=sym, ts=ts, text=text, meta=meta
                 )
             except Exception as e:
                 # Never fall back to a per-timestamp row: that is the flood.
                 log(f"DCA skip event coalesce failed (not written): {e}", "WARNING")
                 return ""
-            # RAG only when a slot is new; the cycle indexer refreshes it in place.
-            if event_id and created and want_rag:
-                _index_rag(text, sym, event_id)
-            return event_id
         ev = MarketEvent(
             event_id=event_id,
             timestamp=ts,
@@ -267,7 +221,7 @@ def persist_dca_decision_event(
     except Exception:
         return ""
 
-    if want_rag:
+    if index_rag and cfg.get("index_rag", True):
         try:
             from hermes.memory.rag_retriever import RagRetriever
             from intelligence.memory.rag_config import rag_enabled
