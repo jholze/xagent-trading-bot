@@ -722,5 +722,223 @@ class EntryLineageWiringTest(unittest.TestCase):
         self.assertEqual(pos["entry_source"], "auto")
 
 
+def _relvol_trade_config() -> dict:
+    return {
+        "gainer_relvol_shadow": {
+            "enabled": True,
+            "mode": "trade",
+            "max_open": 4,
+            "max_buys_per_day": 8,
+            "max_ticket_usdt": 500,
+            "min_ticket_usdt": 50,
+            "participation": 0.02,
+            "require_de_confirm": False,
+            "max_pct_24h": 40,
+            "max_pct_of_vol_24h": 0.02,
+        },
+        "gainer_entry": {"enabled": False},
+        "max_usdt_per_trade": 4500,
+    }
+
+
+class GainerRelvolLineageTest(unittest.TestCase):
+    """#819: gainer_relvol fills keep the decision-time values gainer_meta already has.
+
+    Drives process_gainer_signal through its default execute_buy. TradingService is
+    replaced by a fake that persists the stamped order the way the real path does
+    (order row, then first fill by order_id). No network, no orders.
+    """
+
+    def setUp(self):
+        clear_positions_memory()
+
+    def tearDown(self):
+        clear_positions_memory()
+
+    def _signal(self, symbol, **over):
+        data = {
+            "symbol": symbol,
+            "last": 1.0,
+            "quote_vol": 1_000_000,
+            "qvol_1h": 50_000,
+            "pct_24h": 12,
+            "source": "gainer_relvol",
+            "trigger": "relvol_ws",
+            "factor": 11.0,
+            "atr_pct": 6.25,
+        }
+        data.update(over)
+        return data
+
+    def _run(self, data):
+        from core.models import TradeResult
+        from services.gainer_signal.bot_http import process_gainer_signal
+
+        captured = []
+
+        class FakeTradingService:
+            def __init__(self, *_a, **_k):
+                return None
+
+            def execute_order(self, order, timeframe, **kwargs):
+                captured.append(order)
+                token = f"rv819-{len(captured)}"
+                # Same as TradingService after risk approval: size fields only.
+                stamp_size_from_decision(
+                    order, RiskDecision(approved=True, order=order, details={}),
+                )
+                OrderService().create_from_request(
+                    order, timeframe=timeframe, status="executing", telegram_token=token,
+                )
+                return PortfolioService().execute_buy(
+                    order.symbol,
+                    timeframe,
+                    order.price,
+                    order.usdt_amount,
+                    source=order.source,
+                    order_id=token,
+                    sync_virtual_ledger=False,
+                ) or TradeResult(False, "BUY", order.symbol)
+
+        with patch("services.trading_service.TradingService", FakeTradingService), \
+             patch("strategies.entry_tier.resolve_entry_tier_live", return_value=None):
+            body, status = process_gainer_signal(
+                data,
+                config=_relvol_trade_config(),
+                positions=[],
+                gainer_buys_today=0,
+            )
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["executed"], body)
+        self.assertEqual(len(captured), 1)
+        return captured[0], body
+
+    def _lineage(self, symbol, timeframe="1h"):
+        pos = get_position(symbol, timeframe)
+        self.assertIsNotNone(pos)
+        return pos, pos["entry_lineage"]
+
+    def test_ac1_relvol_factor_and_atr_pct_persist_on_first_fill(self):
+        order, body = self._run(self._signal("RVA/USDT"))
+        meta = body["meta"]
+        pos, lin = self._lineage("RVA/USDT")
+        self.assertEqual(lin["schema"], SCHEMA)
+        self.assertEqual(lin["source"], "gainer_relvol")
+        self.assertEqual(lin["volume_factor"], meta["relvol_factor"])
+        self.assertEqual(lin["volume_factor"], 11.0)
+        self.assertEqual(lin["extended"]["atr_pct"], meta["atr_pct"])
+        self.assertEqual(lin["extended"]["atr_pct"], 6.25)
+        self.assertNotIn("volume_factor", lin["missing"])
+        # atr_pct is extended-only (not tracked in missing); its decision-time presence is
+        # proven by extended.atr_pct == 6.25 and missing.atr == "atr_pct_not_atr" below.
+        self.assertEqual(pos["entry_snapshot"]["volume_factor"], 11.0)
+        # atr_pct is percent; it must not be written as absolute ATR.
+        self.assertIsNone(lin["atr"])
+        self.assertIsNone(order.decision_atr)
+        self.assertEqual(lin["missing"]["atr"], "atr_pct_not_atr")
+        # Observe-only: order economics unchanged.
+        self.assertEqual(order.type, "BUY")
+        self.assertEqual(order.usdt_amount, body["usdt"])
+        self.assertEqual(order.price, 1.0)
+        self.assertEqual(order.entry_15m_vol_ratio, 11.0)
+
+    def test_ac2_rsi_not_computed_stays_not_supplied(self):
+        self._run(self._signal("RVB/USDT"))
+        _pos, lin = self._lineage("RVB/USDT")
+        self.assertIsNone(lin["rsi"])
+        self.assertEqual(lin["missing"]["rsi"], "not_supplied")
+        self.assertIsNone(lin["rationale"])
+        self.assertEqual(lin["missing"]["rationale"], "not_supplied")
+        self.assertNotIn("oracle_state", lin["extended"])
+
+    def test_absent_meta_values_stay_not_supplied(self):
+        data = self._signal("RVC/USDT")
+        data.pop("atr_pct")
+        data.pop("factor")
+        self._run(data)
+        _pos, lin = self._lineage("RVC/USDT")
+        self.assertIsNone(lin["volume_factor"])
+        self.assertEqual(lin["missing"]["volume_factor"], "not_supplied")
+        self.assertNotIn("atr_pct", lin["extended"])
+        self.assertEqual(lin["missing"]["atr"], "not_supplied")
+        self.assertEqual(lin["missing"]["rsi"], "not_supplied")
+
+    def test_non_finite_meta_values_stay_not_supplied(self):
+        for i, (factor, atr_pct) in enumerate((
+            (float("nan"), float("inf")),
+            ("abc", "n/a"),
+            (True, 0),
+        )):
+            clear_positions_memory()
+            symbol = f"RVN{i}/USDT"
+            order, _body = self._run(self._signal(symbol, factor=factor, atr_pct=atr_pct))
+            self.assertIsNone(order.decision_volume_factor, (factor, atr_pct))
+            self.assertIsNone(order.decision_atr_pct, (factor, atr_pct))
+            _pos, lin = self._lineage(symbol)
+            self.assertIsNone(lin["volume_factor"], (factor, atr_pct))
+            self.assertEqual(lin["missing"]["volume_factor"], "not_supplied")
+            self.assertNotIn("atr_pct", lin["extended"])
+
+    def test_non_positive_relvol_factor_is_not_supplied(self):
+        for i, factor in enumerate((0, -2.0)):
+            clear_positions_memory()
+            symbol = f"RVZ{i}/USDT"
+            order, _body = self._run(self._signal(symbol, factor=factor))
+            self.assertIsNone(order.decision_volume_factor, factor)
+            _pos, lin = self._lineage(symbol)
+            self.assertIsNone(lin["volume_factor"], factor)
+            self.assertEqual(lin["missing"]["volume_factor"], "not_supplied")
+            self.assertEqual(lin["extended"]["atr_pct"], 6.25)
+
+    def test_stamp_failure_does_not_block_or_alter_order(self):
+        with patch(
+            "services.entry_lineage.stamp_decision_on_order",
+            side_effect=RuntimeError("boom"),
+        ):
+            order, body = self._run(self._signal("RVF/USDT"))
+        self.assertTrue(body["executed"])
+        self.assertEqual(order.usdt_amount, body["usdt"])
+        self.assertEqual(order.source, "gainer_relvol")
+        self.assertIsNone(order.decision_volume_factor)
+
+    def test_ac3_entry_sensor_15m_still_supplied(self):
+        from core.models import SignalAnalysis
+
+        analysis = SignalAnalysis(
+            action="BUY",
+            symbol="SEN/USDT",
+            timeframe="15m",
+            rsi=58,
+            lower_bb=1.0,
+            vol_multiplier=2.4,
+            ampel_emoji="g",
+            ampel_text="go",
+            sources=["entry_sensor_15m"],
+            normalized_action="BUY",
+            atr_pct=3.1,
+            rationale="sensor spike",
+        )
+        order = TradeOrder(
+            "BUY", "SEN/USDT", 1.0, 0, usdt_amount=50, source="entry_sensor_15m",
+        )
+        stamp_decision_on_order(order, analysis, timeframe="15m", source="entry_sensor_15m")
+        OrderService().create_from_request(
+            order, timeframe="15m", status="executing", telegram_token="sen819",
+        )
+        result = PortfolioService().execute_buy(
+            "SEN/USDT", "15m", 1.0, 50, source="entry_sensor_15m",
+            order_id="sen819", sync_virtual_ledger=False,
+        )
+        self.assertTrue(result.executed)
+        lin = get_position("SEN/USDT", "15m")["entry_lineage"]
+        self.assertEqual(lin["source"], "entry_sensor_15m")
+        self.assertEqual(lin["rsi"], 58)
+        self.assertEqual(lin["volume_factor"], 2.4)
+        self.assertEqual(lin["extended"]["atr_pct"], 3.1)
+        self.assertEqual(lin["rationale"], "sensor spike")
+        for name in ("rsi", "volume_factor", "rationale"):
+            self.assertNotIn(name, lin["missing"])
+
+
 if __name__ == "__main__":
     unittest.main()
