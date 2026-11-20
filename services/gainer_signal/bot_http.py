@@ -261,6 +261,41 @@ def _default_de_allows_buy(symbol: str, price: float, timeframe: str, data: dict
     return True, f"de_buy:{action}", sources
 
 
+def _stamp_gainer_lineage(
+    order: Any,
+    gainer_meta: Any,
+    *,
+    timeframe: str | None,
+    source: str,
+) -> None:
+    """#819: copy the decision-time measurements gainer_meta already has onto the order.
+
+    Observe-only (entry_lineage d-lin-1). ``relvol_factor`` is the volume factor and
+    ``atr_pct`` is ATR in percent (same ``fetch_indicators`` field as the sensor path),
+    so it goes to ``decision_atr_pct``, never to absolute ``decision_atr``. Only finite
+    values are copied; RSI and anything else the gainer path did not compute is not set
+    and stays ``not_supplied``. Never fetches data. A failure never blocks the order.
+    """
+    try:
+        from types import SimpleNamespace
+
+        from services.entry_lineage import _finite, stamp_decision_on_order
+
+        meta = gainer_meta if isinstance(gainer_meta, dict) else {}
+        observed: dict[str, float] = {}
+        volume, reason = _finite(meta.get("relvol_factor"))
+        if reason is None and volume is not None:
+            observed["volume_factor"] = volume
+        atr_pct, reason = _finite(meta.get("atr_pct"))
+        if reason is None and atr_pct is not None:
+            observed["atr_pct"] = atr_pct
+        stamp_decision_on_order(
+            order, SimpleNamespace(**observed), timeframe=timeframe, source=source,
+        )
+    except Exception as exc:
+        log(f"gainer_relvol lineage stamp skipped: {exc}", "WARNING")
+
+
 def process_gainer_signal(
     data: dict[str, Any],
     *,
@@ -615,8 +650,15 @@ def process_gainer_signal(
                 )
             except Exception:
                 order.strategy_tier = None
-            # Reuse spike channel so slot-eviction can score RelVol demand (factor≥5 → +2)
             if src == "gainer_relvol":
+                # #819: decision-time lineage from gainer_meta (observe-only).
+                _stamp_gainer_lineage(
+                    order,
+                    (kwargs.get("request_extra") or {}).get("gainer_meta"),
+                    timeframe=kwargs.get("timeframe") or "1h",
+                    source=src,
+                )
+                # Reuse spike channel so slot-eviction can score RelVol demand (factor≥5 → +2)
                 try:
                     meta = (kwargs.get("request_extra") or {}).get("gainer_meta") or {}
                     factor = float(meta.get("relvol_factor") or meta.get("factor") or 0)
