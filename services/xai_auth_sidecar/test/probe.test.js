@@ -191,7 +191,10 @@ test("callWithResponse with the real SDK: Bearer token sent, status + rate-limit
 
   assert.equal(fetchImpl.seen.length, 3, "maxRetries=0: the 429 was not retried");
   for (const { url, init } of fetchImpl.seen) {
-    assert.ok(url.startsWith("https://api.x.ai/v1/"), url);
+    assert.ok(url.startsWith("https://cli-chat-proxy.grok.com/v1/"), url);
+    const sent = new Headers(init.headers);
+    assert.equal(sent.get("x-xai-token-auth"), "xai-grok-cli");
+    assert.equal(sent.get("x-grok-client-version"), "1.0.77");
     const auth = new Headers(init.headers).get("authorization");
     assert.equal(auth, `Bearer ${ACCESS}`);
   }
