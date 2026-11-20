@@ -829,7 +829,8 @@ class GainerRelvolLineageTest(unittest.TestCase):
         self.assertEqual(lin["extended"]["atr_pct"], meta["atr_pct"])
         self.assertEqual(lin["extended"]["atr_pct"], 6.25)
         self.assertNotIn("volume_factor", lin["missing"])
-        self.assertNotIn("atr_pct", lin["missing"])
+        # atr_pct is extended-only (not tracked in missing); its decision-time presence is
+        # proven by extended.atr_pct == 6.25 and missing.atr == "atr_pct_not_atr" below.
         self.assertEqual(pos["entry_snapshot"]["volume_factor"], 11.0)
         # atr_pct is percent; it must not be written as absolute ATR.
         self.assertIsNone(lin["atr"])
@@ -877,6 +878,17 @@ class GainerRelvolLineageTest(unittest.TestCase):
             self.assertIsNone(lin["volume_factor"], (factor, atr_pct))
             self.assertEqual(lin["missing"]["volume_factor"], "not_supplied")
             self.assertNotIn("atr_pct", lin["extended"])
+
+    def test_non_positive_relvol_factor_is_not_supplied(self):
+        for i, factor in enumerate((0, -2.0)):
+            clear_positions_memory()
+            symbol = f"RVZ{i}/USDT"
+            order, _body = self._run(self._signal(symbol, factor=factor))
+            self.assertIsNone(order.decision_volume_factor, factor)
+            _pos, lin = self._lineage(symbol)
+            self.assertIsNone(lin["volume_factor"], factor)
+            self.assertEqual(lin["missing"]["volume_factor"], "not_supplied")
+            self.assertEqual(lin["extended"]["atr_pct"], 6.25)
 
     def test_stamp_failure_does_not_block_or_alter_order(self):
         with patch(

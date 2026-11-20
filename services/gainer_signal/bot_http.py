@@ -284,7 +284,8 @@ def _stamp_gainer_lineage(
         meta = gainer_meta if isinstance(gainer_meta, dict) else {}
         observed: dict[str, float] = {}
         volume, reason = _finite(meta.get("relvol_factor"))
-        if reason is None and volume is not None:
+        # <= 0 is not a measurement (same rule as entry_15m_vol_ratio below).
+        if reason is None and volume is not None and volume > 0:
             observed["volume_factor"] = volume
         atr_pct, reason = _finite(meta.get("atr_pct"))
         if reason is None and atr_pct is not None:
