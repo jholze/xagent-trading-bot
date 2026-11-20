@@ -44,6 +44,17 @@ process falls back to `127.0.0.1:27017` and spams `Mongo orders load failed`.
 | `dca_sniper.in_process_tick=false` | **must be false** (standalone) |
 | `DCA_SNIPER_TOKEN` / `EXIT_WS_INTERNAL_TOKEN` | auth for execute |
 
+## Deploy / watch patterns
+
+Railway rebuilds this service only when a changed path matches its watch patterns
+(`deploy/railway/watch-patterns.json`, entry `xagent-dca-sniper`). The sniper does not
+only run `services/dca_sniper/**`: `deep_analysis.py` calls
+`strategies.dca_policy.emit_dca_policy_audit` → `strategies.dca_decision_event`, and it
+imports `intelligence.memory.*`. The spec therefore also lists `strategies/dca_*.py` and
+`intelligence/memory/**` (#822 follow-up). Railway only picks up the new patterns after
+the owner runs `scripts/deploy/sync_railway_watch.py --apply`; until then only
+`services/dca_sniper/**` triggers a rebuild.
+
 ## Redis keys / channels
 
 | Key / channel | Use |
