@@ -933,7 +933,10 @@ def _run_tenant_price_cycle(
     )
     # Queue-off fallback (#657 R13). Same Gate ``last`` batch as
     # eval_queue_runtime.process_eval_job; that worker is the live path.
-    price_map = get_prices_batch([coin["symbol"] for coin in scan_coins])
+    # #832: with return_sources the queue-off loop sees the same source
+    # labels as process_eval_job (``stale`` = last-good fallback quote).
+    fetched = get_prices_batch([coin["symbol"] for coin in scan_coins], return_sources=True)
+    price_map, price_sources = fetched if isinstance(fetched, tuple) else (fetched, {})
 
     try:
         from data_manager import resolve_ledger_scope
@@ -980,8 +983,14 @@ def _run_tenant_price_cycle(
 
             price = float(price_map.get(symbol, 0) or 0)
             if orchestrator:
+                # #832: same as process_eval_job (#826). The source label is
+                # passed only when present; ``stale`` reaches the tagged-short
+                # cover as price_stale (#809 unpriced cover).
+                source = price_sources.get(symbol) if isinstance(price_sources, dict) else None
+                source_kw = {"price_source": source} if isinstance(source, str) else {}
                 result = orchestrator.process_coin(
-                    coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard
+                    coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard,
+                    **source_kw,
                 )
                 coin_results.append(result)
             else:

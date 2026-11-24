@@ -53,6 +53,10 @@ class RecoveryFailed(RuntimeError):
     """Exchange unreachable or swap margin is not isolated. Do not run the cycle."""
 
 
+class RecoveryRouteDenied(RecoveryFailed):
+    """#831: ``authorize_route`` denied a startup read. The read was not sent."""
+
+
 @dataclass
 class RecoveryReport:
     skipped: bool = False
@@ -105,6 +109,7 @@ def _reconcile_live(
     exchange = _ccxt_client(adapter)
     if exchange is None:
         _abort(tid, sc, "exchange client unavailable")
+    exchange = _route_guarded(exchange, adapter=adapter, config=config, mode=mode, tid=tid, sc=sc)
 
     try:
         balance = _require_fetch(exchange, "fetch_balance", tid, sc)
@@ -206,7 +211,65 @@ def _ccxt_client(adapter):
     return None
 
 
+class _RouteGuardedClient:
+    """Testnet + ``strict_route`` only (#831): ``authorize_route`` per read.
+
+    Every ``fetch*`` attribute of the wrapped ccxt client is replaced by a
+    call that asks the adapter's ``_read_route_denial`` first. A denial
+    aborts recovery for this tenant/scope with ``RecoveryRouteDenied``; the
+    read is not sent. Other attributes (``market``, ``urls``, ...) pass
+    through unchanged. After one denial every later read is denied too.
+    """
+
+    def __init__(self, exchange, check, tenant_id: str, scope: str) -> None:
+        self._exchange = exchange
+        self._check = check
+        self._tenant_id = tenant_id
+        self._scope = scope
+        self._denied: str | None = None
+
+    def __getattr__(self, name: str):
+        target = getattr(self._exchange, name)
+        if not name.startswith("fetch") or not callable(target):
+            return target
+
+        def _guarded(*args, **kwargs):
+            reason = self._denied
+            if reason is None:
+                try:
+                    reason = self._check(self._exchange, name)
+                except Exception as e:
+                    reason = f"route_check_error: {str(e)[:120] or e.__class__.__name__}"
+            if reason:
+                self._denied = reason
+                _abort(
+                    self._tenant_id,
+                    self._scope,
+                    f"futures testnet route denied read {name}: {reason}",
+                    RecoveryRouteDenied,
+                )
+            return target(*args, **kwargs)
+
+        return _guarded
+
+
+def _route_guarded(exchange, *, adapter, config, mode: str, tid: str, sc: str):
+    """The ccxt client as is, unless testnet mode with ``strict_route`` true."""
+    from execution.futures_testnet_route import strict_route_enabled
+
+    if mode != "testnet" or not strict_route_enabled(_raw_config(config)):
+        return exchange
+    check = getattr(adapter, "_read_route_denial", None)
+    if not callable(check):
+        def check(_exchange, _method):
+            return "read_route_unavailable"
+    return _RouteGuardedClient(exchange, check, tid, sc)
+
+
 def _is_unreachable(exc: BaseException) -> bool:
+    if isinstance(exc, RecoveryRouteDenied):
+        # #831: helpers that re-raise "unreachable" must not swallow a denial.
+        return True
     try:
         import ccxt
     except ImportError:
@@ -253,7 +316,12 @@ def _is_not_supported(exc: BaseException) -> bool:
     return "not supported" in str(exc).lower()
 
 
-def _abort(tenant_id: str, scope: str, message: str) -> None:
+def _abort(
+    tenant_id: str,
+    scope: str,
+    message: str,
+    error: type[RecoveryFailed] = RecoveryFailed,
+) -> None:
     text = str(message)
     log(f"RecoveryFailed tenant={tenant_id} scope={scope}: {text}", "ERROR")
     try:
@@ -263,7 +331,7 @@ def _abort(tenant_id: str, scope: str, message: str) -> None:
         )
     except Exception as e:
         log(f"operator notify failed during RecoveryFailed: {e}", "WARNING")
-    raise RecoveryFailed(text)
+    raise error(text)
 
 
 def _require_fetch(exchange, method: str, tenant_id: str, scope: str, *args, **kwargs):
@@ -272,6 +340,8 @@ def _require_fetch(exchange, method: str, tenant_id: str, scope: str, *args, **k
         _abort(tenant_id, scope, f"exchange.{method} is not available")
     try:
         return fn(*args, **kwargs)
+    except RecoveryRouteDenied:
+        raise
     except TypeError:
         try:
             return fn(*args)
@@ -291,6 +361,8 @@ def _fetch_positions(exchange, tenant_id: str, scope: str) -> list[dict]:
         return []
     try:
         raw = fn()
+    except RecoveryRouteDenied:
+        raise
     except TypeError:
         try:
             raw = fn(None)
@@ -397,23 +469,60 @@ def _margin_mode_of(payload: Any) -> str:
     return ""
 
 
+def _fetch_position_raw(exchange, ident: str):
+    """One ``fetch_position`` call. Unreachable re-raises; other errors are None."""
+    fn = getattr(exchange, "fetch_position", None)
+    if not callable(fn):
+        return None
+    try:
+        return fn(ident)
+    except TypeError:
+        try:
+            return fn(ident, {})
+        except Exception:
+            return None
+    except Exception as e:
+        if _is_unreachable(e):
+            raise
+        return None
+
+
+def swap_mode_record(payload: Any) -> dict | None:
+    """Margin mode, position mode and leverage of a Gate swap position (#830).
+
+    Accepts the ccxt ``fetch_position`` result and the raw Gate position that
+    ``set_leverage`` returns. Margin mode comes from ``_margin_mode_of``
+    (leverage ``0`` is cross). Position mode is Gate's ``mode`` (``single`` is
+    one-way); ``hedged`` True is dual. Missing fields stay empty, so the #804
+    ``prove_mode`` check denies them.
+    """
+    if not isinstance(payload, dict) or not payload:
+        return None
+    info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+    position_mode = payload.get("mode", info.get("mode"))
+    if position_mode is None and payload.get("hedged") is True:
+        position_mode = "dual"
+    leverage = payload.get("leverage")
+    if leverage is None or str(leverage).strip() == "":
+        leverage = info.get("leverage")
+    return {
+        "margin_mode": _margin_mode_of(payload),
+        "position_mode": "" if position_mode is None else str(position_mode),
+        "leverage": leverage,
+    }
+
+
+def read_swap_mode_record(exchange, symbol: str) -> dict | None:
+    """Fresh ``fetch_position`` readback for the #830 ModeProof."""
+    return swap_mode_record(_fetch_position_raw(exchange, _as_swap_symbol(symbol)))
+
+
 def _read_margin_mode(exchange, symbol: str) -> str:
     """Prefer fetch_position (Gate swap). Fall back to list / fetch_margin_mode."""
     swap_sym = _as_swap_symbol(symbol)
     for ident in (swap_sym, symbol):
-        fn = getattr(exchange, "fetch_position", None)
-        if callable(fn):
-            try:
-                raw = fn(ident)
-            except TypeError:
-                try:
-                    raw = fn(ident, {})
-                except Exception:
-                    raw = None
-            except Exception as e:
-                if _is_unreachable(e):
-                    raise
-                raw = None
+        if callable(getattr(exchange, "fetch_position", None)):
+            raw = _fetch_position_raw(exchange, ident)
             mode = _margin_mode_of(raw)
             if mode:
                 return mode
@@ -472,6 +581,8 @@ def _assert_isolated_margin(
         if not mode:
             try:
                 mode = _read_margin_mode(exchange, symbol)
+            except RecoveryRouteDenied:
+                raise
             except Exception as e:
                 if _is_unreachable(e):
                     _abort(tenant_id, scope, f"exchange unreachable (margin mode): {e}")
@@ -911,6 +1022,8 @@ def _resolve_in_flight_orders(
         symbol = str(rec.get("symbol") or "")
         try:
             raw = _fetch_order_raw(exchange, rec)
+        except RecoveryRouteDenied:
+            raise
         except Exception as e:
             if _is_unreachable(e):
                 _abort(

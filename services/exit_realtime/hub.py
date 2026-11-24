@@ -1348,22 +1348,16 @@ class ExitRealtimeHub:
         It does not change the #710 skip. Any error counts as False.
         """
         try:
-            from strategies.climax_fade import is_climax_lot
             from strategies.positions import get_position
-            from strategies.short_expiry import lot_uses_sandbox_expiry, sandbox_expiry_enabled
-            from strategies.short_math import is_short
+            from strategies.short_cover_wiring import stale_defers_tagged_short
+            from strategies.short_expiry import sandbox_expiry_enabled
 
             raw = self._raw if isinstance(self._raw, dict) else None
             if not sandbox_expiry_enabled(raw):
                 return False  # flag off: no ledger lookup on the stale path
             tf = str(snapshot.get("timeframe") or "1h")
             lot = get_position(sym, tf) or dict(snapshot.get("position") or {})
-            return bool(
-                is_short(lot)
-                and float(lot.get("amount") or 0) > 0
-                and not is_climax_lot(lot)
-                and lot_uses_sandbox_expiry(lot, raw)
-            )
+            return stale_defers_tagged_short(lot, raw)
         except Exception:
             return False
 

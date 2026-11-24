@@ -104,3 +104,26 @@ def wiring_log_line(
         f"short_cover tagged {symbol or '?'} halt={halted} stale={stale} "
         f"timeout={timeout} sched={sched} -> {source} ({why}) executed={executed}"
     )
+
+
+def stale_defers_tagged_short(
+    pos: Mapping[str, Any] | None, config_raw: Mapping[str, Any] | None
+) -> bool:
+    """True for an open sandbox-tagged, non-climax short. Any error is False.
+
+    Used by the hub stale-tick guard (``stale_tagged_short_deferred``).
+    """
+    try:
+        from strategies.climax_fade import is_climax_lot
+        from strategies.short_expiry import lot_uses_sandbox_expiry
+        from strategies.short_math import is_short
+
+        lot = dict(pos or {})
+        return bool(
+            is_short(lot)
+            and float(lot.get("amount") or 0) > 0
+            and not is_climax_lot(lot)
+            and lot_uses_sandbox_expiry(lot, config_raw)
+        )
+    except Exception:
+        return False
