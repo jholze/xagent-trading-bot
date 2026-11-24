@@ -4,7 +4,13 @@
 testnet SHORT/COVER. Missing ``shorts.testnet_futures.strict_route`` is off.
 Off denies this route (``strict_route_off``) without inhibiting the existing
 adapter, and never falls back to mainnet or to the legacy testnet host.
-Startup reads in ``execution/recovery.py`` are not routed through this guard.
+
+With ``strict_route`` true, production denies every testnet SHORT/COVER at
+``mode_proof_missing`` / ``testnet_env_aliases_live`` until a production
+ModeProof producer and a separate testnet key env name exist (follow-up, to be
+filed by Kay). A testnet-mode ccxt client always uses ``NoRedirectSession``,
+including the startup reads in ``execution/recovery.py``. Those reads are not
+route-checked (follow-up, to be filed by Kay).
 
 Pinned origin, checked against Gate API v4.106.180 and ccxt 4.5.88
 ``urls['test']['private']['futures']``:

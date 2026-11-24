@@ -317,3 +317,65 @@ def test_route_check_error_with_strict_route_off_keeps_existing_path(monkeypatch
         result = adapter.execute(_order(), "4h")
     assert result.executed is True
     assert events == ["order"]
+
+
+def test_transport_independent_denial_leaves_ccxt_session_untouched(monkeypatch):
+    """Item 3: production defaults deny before the probe transport is built."""
+    events: list[str] = []
+    adapter = _adapter(monkeypatch, _cfg(), _Session(), events, proof_ok=False, distinct_env=False)
+    plain = requests.Session()
+    adapter._exchange.session = plain
+    with tenant_context(TENANT):
+        result = adapter.execute(_order(), "4h")
+    assert "mode_proof_missing" in result.message
+    assert adapter._exchange.session is plain
+    assert events == []
+
+
+# --- item 4: every testnet-mode ccxt client gets the no-redirect session ----
+
+
+class _FakeGate:
+    """Stands in for ccxt.gate: no network, keeps the params it was built with."""
+
+    def __init__(self, params):
+        self.params = params
+        self.session = requests.Session()
+        self.urls = {"api": {"private": {"futures": "https://api.gateio.ws/api/v4"}}}
+        self.sandbox = False
+
+    def set_sandbox_mode(self, enabled):
+        self.sandbox = enabled
+
+
+@pytest.mark.parametrize(
+    "mode, no_redirect",
+    [("testnet", True), ("real", False), ("shadow", False)],
+)
+def test_get_exchange_installs_no_redirect_session_only_in_testnet(monkeypatch, mode, no_redirect):
+    from execution.futures_testnet_route import NoRedirectSession
+
+    # Dummy placeholders so _get_exchange builds a client; not credentials.
+    monkeypatch.setenv("GATE_API_KEY", "dummy-not-a-key")
+    monkeypatch.setenv("GATE_API_SECRET", "dummy-not-a-secret")
+    monkeypatch.setattr("execution.gate_adapter.ccxt.gate", _FakeGate)
+    adapter = GateExecutionAdapter(_cfg(strict_route=_MISSING), MagicMock(name="portfolio"), mode=mode)
+    exchange = adapter._get_exchange()
+    assert isinstance(exchange, _FakeGate)
+    assert isinstance(exchange.session, NoRedirectSession) is no_redirect
+    if not no_redirect:
+        assert type(exchange.session) is requests.Session
+    assert exchange.sandbox is (mode == "testnet")
+
+
+def test_recovery_client_in_testnet_uses_no_redirect_session(monkeypatch):
+    """execution/recovery.py takes its client from adapter._get_exchange."""
+    from execution import recovery
+    from execution.futures_testnet_route import NoRedirectSession
+
+    monkeypatch.setenv("GATE_API_KEY", "dummy-not-a-key")
+    monkeypatch.setenv("GATE_API_SECRET", "dummy-not-a-secret")
+    monkeypatch.setattr("execution.gate_adapter.ccxt.gate", _FakeGate)
+    adapter = GateExecutionAdapter(_cfg(strict_route=_MISSING), MagicMock(name="portfolio"), mode="testnet")
+    client = recovery._ccxt_client(adapter)
+    assert isinstance(client.session, NoRedirectSession)

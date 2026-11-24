@@ -9,14 +9,15 @@ caller makes exactly the pre-#826 call.
 Sources:
 
 - halt: the shorts kill switch, ``shorts.enabled`` (``shorts_enabled``).
-  Kill never blocks a cover; for a tagged lot it makes the lot overdue.
-- stale: what the caller already knows (hub: tick age above
-  ``exit_realtime.max_tick_age_sec``; cycle: the quote was served from the
-  last-good fallback because the fresh fetch failed).
+  Kill never blocks a cover; for a tagged lot it makes the lot overdue
+  (pending owner confirmation, spec Rev 2).
+- stale: cycle only. The source label ``get_prices_batch`` returned for this
+  cycle's quote is ``stale`` (last-good fallback after a failed fetch). The
+  hub never evaluates a stale tick (#710 skip), so it passes False.
 - timeout: neither caller has a separate timeout signal today. A fetch
   timeout in ``price_fetcher`` is caught and surfaces as a stale quote or a
-  zero price. Callers pass False unless they know better.
-- schedule: ``sandbox_cover_schedule`` (budgets from the flag block).
+  zero price. Callers pass False.
+- schedule: ``sandbox_cover_schedule`` (both budgets from the flag block).
 
 A failure while resolving an input never raises. Halt falls back to None
 (not a halt), schedule to None (#809 fail-closed: ``buffer_unknown``).
@@ -76,20 +77,12 @@ def sandbox_cover_inputs(
     return inputs
 
 
-def cycle_quote_stale(symbol: str) -> bool:
-    """True when the cycle price for ``symbol`` came from the last-good fallback."""
-    try:
-        from price_fetcher import last_quote_source
-
-        return last_quote_source(symbol) == "stale"
-    except Exception:
-        return False
-
-
 def wiring_log_line(
     symbol: str | None,
     inputs: Mapping[str, Any] | None,
     hit: Mapping[str, Any] | None,
+    *,
+    executed: bool | None = None,
 ) -> str | None:
     """One compact line when halt/stale/timeout/schedule shaped a tagged decision.
 
@@ -109,5 +102,5 @@ def wiring_log_line(
     why = str(hit.get("rationale") or "")[:80] if isinstance(hit, Mapping) else ""
     return (
         f"short_cover tagged {symbol or '?'} halt={halted} stale={stale} "
-        f"timeout={timeout} sched={sched} -> {source} ({why})"
+        f"timeout={timeout} sched={sched} -> {source} ({why}) executed={executed}"
     )

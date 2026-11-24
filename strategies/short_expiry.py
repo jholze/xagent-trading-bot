@@ -86,15 +86,14 @@ def sandbox_cover_schedule(config_raw: Mapping[str, Any] | None) -> dict[str, An
     ``cover_time_decision`` reads them from ``tightened_cutoff`` and
     ``resolve_sandbox_hold``. Only the explicit execution and reconcile
     budgets are passed through, unvalidated, so ``_explicit_budgets`` keeps
-    judging them. None when neither key is set: the lot's own budgets apply,
-    otherwise ``buffer_unknown`` makes the lot overdue (item 6, no invented
-    minute value).
+    judging them. Both keys must be present. With one or none, None is
+    returned and the lot's own stamped budgets apply as before; without those
+    ``buffer_unknown`` makes the lot overdue (item 6, no invented minute value).
     """
     block = shorts_config(config_raw).get(FLAG_KEY)
-    if not isinstance(block, dict):
+    if not isinstance(block, dict) or not all(key in block for key in _BUDGET_KEYS):
         return None
-    picked = {key: block[key] for key in _BUDGET_KEYS if key in block}
-    return picked or None
+    return {key: block[key] for key in _BUDGET_KEYS}
 
 
 def protection_allowed(*, position_side: str | None, reduce_only: bool) -> bool:

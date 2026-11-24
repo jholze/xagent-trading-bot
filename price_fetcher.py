@@ -13,9 +13,6 @@ _price_cache = {}
 # Last successful quote: {symbol: (price, monotonic_ts)}. Bare floats = age 0.
 _last_good_cache = {}
 _stale_warned: set[str] = set()
-# Source of the last quote get_prices_batch returned per symbol (live, stale,
-# redis, ...). Read-only for callers that must know a fallback was served (#826).
-_last_quote_source: dict[str, str] = {}
 _CACHE_TTL_SECONDS = 30
 _STALE_PRICE_MAX_AGE_DEFAULT = 300.0
 _GATE_TICKERS_URL = "https://api.gateio.ws/api/v4/spot/tickers"
@@ -88,11 +85,6 @@ def peek_cached_price(symbol: str) -> float | None:
     except Exception:
         return None
     return None
-
-
-def last_quote_source(symbol: str) -> str | None:
-    """Source label of the last get_prices_batch quote for ``symbol``, or None."""
-    return _last_quote_source.get(symbol)
 
 
 def _stale_price_max_age_sec() -> float:
@@ -522,7 +514,6 @@ def get_prices_batch(
             allow_entry_price_fallback=allow_entry_price_fallback,
         )
         sources.update(redis_sources)
-        _last_quote_source.update(sources)
         if return_sources:
             return result, sources
         return result
@@ -581,7 +572,6 @@ def get_prices_batch(
         allow_entry_price_fallback=allow_entry_price_fallback,
     )
     sources.update(redis_sources)
-    _last_quote_source.update(sources)
     if return_sources:
         return result, sources
     return result

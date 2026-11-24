@@ -6,7 +6,19 @@ Local draft id: T220-05 (not a GitHub issue). Hindsight: RECALL_FAILED.
 
 ## Rev 2 — 2026-11-24 Europe/Berlin (#826)
 
-The "wiring them from the live callers is deferred" line in Rev 1 is superseded. `SignalOrchestrator._cycle_short_cover` and the exit-realtime hub now pass halt (shorts kill), stale (cycle: last-good fallback quote; hub: tick age above `exit_realtime.max_tick_age_sec`), timeout (False; neither caller has its own signal), and `sandbox_schedule`. The schedule holds the two budgets, optional in `shorts.sandbox_expiry_v220`. These inputs are passed for tagged lots only. Untagged and climax lots keep the previous call. Evidence: `docs/evidence/826.md`.
+This revision supersedes the Rev 1 line "wiring them from the live callers is deferred".
+
+- `SignalOrchestrator._cycle_short_cover` passes halt, stale, timeout and `sandbox_schedule`.
+  - Stale comes from the source label `get_prices_batch` returned for this cycle's own quote (`stale` = last-good fallback). It reaches the cycle through `process_eval_job` → `process_coin(price_source=...)`.
+  - Timeout is False; no caller has its own signal.
+- The exit-realtime hub passes halt and `sandbox_schedule`.
+  - It never evaluates a stale tick. #710 stays in force for every lot, sandbox-tagged shorts included.
+  - A stale tick on a tagged short only increments `stale_tagged_short_deferred`. The unpriced cover is left to the cycle backstop, whose last-good quote is capped by `stale_price_max_age_sec`.
+- `sandbox_schedule` is passed only when both `execution_budget_seconds` and `reconcile_budget_seconds` are set in `shorts.sandbox_expiry_v220`. Otherwise the lot's stamped budgets apply, as before.
+- Halt is the shorts kill switch (`shorts.enabled` false). **Pending owner confirmation (kill flattens tagged lots).**
+- Untagged and climax lots keep the previous call.
+
+Evidence: `docs/evidence/826.md`.
 
 ## Rev 1 — 2026-11-10 18:40 Europe/Berlin
 

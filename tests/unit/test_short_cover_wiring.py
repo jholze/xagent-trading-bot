@@ -80,13 +80,6 @@ def clock(monkeypatch):
     return state
 
 
-@pytest.fixture(autouse=True)
-def _no_stale_quote(monkeypatch):
-    import price_fetcher
-
-    monkeypatch.setattr(price_fetcher, "_last_quote_source", {}, raising=False)
-
-
 # --- orchestrator -----------------------------------------------------------
 
 
@@ -99,14 +92,15 @@ class _Trading:
         return {"executed": True}
 
 
-def _cycle(cfg, lot, price=MARK, monkeypatch=None):
+def _cycle(cfg, lot, price=MARK, price_source=None):
     from services.signal_orchestrator import SignalOrchestrator
 
     orch = SignalOrchestrator.__new__(SignalOrchestrator)
     orch.config = type("Cfg", (), {"raw": cfg})()
     orch.trading = _Trading()
     analysis = type("Analysis", (), {"symbol": SYM, "timeframe": "1h"})()
-    handled, _result = orch._cycle_short_cover(dict(lot), analysis, price)
+    kwargs = {} if price_source is None else {"price_source": price_source}
+    handled, _result = orch._cycle_short_cover(dict(lot), analysis, price, **kwargs)
     assert handled is True
     return orch.trading.orders
 
@@ -135,12 +129,9 @@ def test_cycle_halt_reaches_cover_tagged_lot(clock):
     assert orders[0].exit_rationale == "halted"
 
 
-def test_cycle_stale_quote_is_unpriced_cover_for_tagged_lot(clock, monkeypatch):
-    import price_fetcher
-
+def test_cycle_stale_quote_is_unpriced_cover_for_tagged_lot(clock):
     clock["now"] = INSIDE
-    monkeypatch.setattr(price_fetcher, "_last_quote_source", {SYM: "stale"}, raising=False)
-    orders = _cycle(_cfg(), _lot())
+    orders = _cycle(_cfg(), _lot(), price_source="stale")
     assert len(orders) == 1
     assert orders[0].exit_source == "time_cap"
     assert orders[0].exit_rationale.startswith("price stale")
@@ -156,17 +147,21 @@ def test_cycle_logs_one_wiring_line_for_tagged_lot(clock, monkeypatch):
     wiring = [line for line in lines if line.startswith("short_cover tagged")]
     assert wiring == [
         f"short_cover tagged {SYM} halt=True stale=False timeout=False sched=set "
-        "-> time_cap (halted)"
+        "-> time_cap (halted) executed=True"
     ]
+
+
+@pytest.mark.parametrize("source", ["live", "redis", None])
+def test_cycle_fresh_quote_does_not_unpriced_cover_tagged_lot(clock, source):
+    """M3: only the ``stale`` label marks a quote stale; a live quote holds."""
+    clock["now"] = INSIDE
+    assert _cycle(_cfg(), _lot(), price_source=source) == []
 
 
 @pytest.mark.parametrize("now", [INSIDE, datetime(2026, 11, 24, 21, 30, tzinfo=_BERLIN)])
 @pytest.mark.parametrize("shorts_enabled", [True, False])
 def test_cycle_untagged_lot_decision_identical_to_base_call(clock, monkeypatch, now, shorts_enabled):
     """Untagged: same decision as the pre-#826 call, whatever halt/stale/schedule say."""
-    import price_fetcher
-
-    monkeypatch.setattr(price_fetcher, "_last_quote_source", {SYM: "stale"}, raising=False)
     lines = []
     monkeypatch.setattr(
         "services.signal_orchestrator.log", lambda msg, level="INFO": lines.append(msg)
@@ -175,7 +170,7 @@ def test_cycle_untagged_lot_decision_identical_to_base_call(clock, monkeypatch, 
     cfg = _cfg(shorts_enabled=shorts_enabled)
     lot = _lot(tagged=False)
     expected = evaluate_short_cover(dict(lot), MARK, symbol=SYM, config_raw=cfg)
-    orders = _cycle(cfg, lot)
+    orders = _cycle(cfg, lot, price_source="stale")
     if expected is None:
         assert orders == []
     else:
@@ -208,7 +203,7 @@ def test_cycle_input_failure_keeps_untagged_path(clock, monkeypatch):
 # --- exit_realtime hub ------------------------------------------------------
 
 
-def _hub(cfg, lot, monkeypatch, *, stale_age=None):
+def _hub(cfg, lot, monkeypatch, *, stale_age=None, price=MARK, out=None):
     from services.exit_realtime.hub import ExitRealtimeHub
 
     hub = ExitRealtimeHub(cfg)
@@ -230,18 +225,56 @@ def _hub(cfg, lot, monkeypatch, *, stale_age=None):
     monkeypatch.setattr(hub, "_drop_book_row", lambda *a, **k: None)
     monkeypatch.setattr(hub, "_broadcast_gui", lambda *a, **k: None)
     snapshot = {"symbol": SYM, "timeframe": "1h", "position": dict(lot), "strategy_params": {}}
-    hub._eval_row_in_context(SYM, MARK, snapshot, row_tenant=None, time_ms=1)
+    hub._eval_row_in_context(SYM, price, snapshot, row_tenant=None, time_ms=1)
+    if out is not None:
+        out["hub"] = hub
     return executed
 
 
-def test_hub_stale_tick_is_unpriced_cover_for_tagged_lot(clock, monkeypatch):
-    """Base skipped every stale tick (#710). Tagged lots now get #809's unpriced cover."""
+def test_hub_stale_tick_never_fills_tagged_lot(clock, monkeypatch):
+    """#710 holds for tagged shorts too: no fill at a stale tick price.
+
+    The tick price is far below entry, so an evaluated tick would move
+    recent_low (M2) and, being past the cutoff, would cover.
+    """
+    clock["now"] = AFTER_CUTOFF
+    writes = []
+    monkeypatch.setattr(
+        "strategies.positions.set_position_field",
+        lambda *a, **k: writes.append(a),
+    )
+    out: dict = {}
+    executed = _hub(_cfg(), _lot(), monkeypatch, stale_age=120.0, price=50.0, out=out)
+    stats = out["hub"]._stats
+    assert executed == []
+    assert writes == []
+    assert stats.get("stale_tagged_short_deferred") == 1
+    assert stats.get("ws_stale_tick_skip") == 1
+
+
+def test_hub_stale_tick_untagged_lot_not_counted_as_deferred(clock, monkeypatch):
     clock["now"] = INSIDE
-    executed = _hub(_cfg(), _lot(), monkeypatch, stale_age=120.0)
-    assert len(executed) == 1
-    assert executed[0]["action"] == "COVER"
-    assert executed[0]["exit_source"] == "time_cap"
-    assert executed[0]["rationale"].startswith("price stale")
+    out: dict = {}
+    assert _hub(_cfg(), _lot(tagged=False), monkeypatch, stale_age=120.0, out=out) == []
+    assert "stale_tagged_short_deferred" not in out["hub"]._stats
+    assert out["hub"]._stats.get("ws_stale_tick_skip") == 1
+
+
+def test_hub_stale_tick_tagged_climax_lot_skips_climax_decision(clock, monkeypatch):
+    """M5: a lot that is both tagged and climax never runs climax_cover_decision on a stale tick."""
+    calls = []
+
+    def _climax(*a, **k):
+        calls.append(k)
+        return {"source": "climax_stop", "rationale": "x"}
+
+    monkeypatch.setattr("strategies.climax_fade.climax_cover_decision", _climax)
+    clock["now"] = INSIDE
+    out: dict = {}
+    lot = _lot(short_recipe="climax_fade")
+    assert _hub(_cfg(), lot, monkeypatch, stale_age=120.0, out=out) == []
+    assert calls == []
+    assert "stale_tagged_short_deferred" not in out["hub"]._stats
 
 
 def test_hub_schedule_reaches_cover_tagged_lot_holds(clock, monkeypatch):
@@ -263,19 +296,13 @@ def test_hub_halt_reaches_cover_tagged_lot(clock, monkeypatch):
     assert [e["rationale"] for e in executed] == ["halted"]
     assert [line for line in lines if line.startswith("short_cover tagged")] == [
         f"short_cover tagged {SYM} halt=True stale=False timeout=False sched=set "
-        "-> time_cap (halted)"
+        "-> time_cap (halted) executed=True"
     ]
 
 
 def test_hub_stale_tick_untagged_lot_still_skipped(clock, monkeypatch):
     clock["now"] = datetime(2026, 11, 24, 21, 30, tzinfo=_BERLIN)  # would time-cap if evaluated
     assert _hub(_cfg(), _lot(tagged=False), monkeypatch, stale_age=120.0) == []
-
-
-def test_hub_stale_tick_climax_lot_still_skipped(clock, monkeypatch):
-    clock["now"] = INSIDE
-    lot = _lot(short_recipe="climax_fade")
-    assert _hub(_cfg(), lot, monkeypatch, stale_age=120.0) == []
 
 
 @pytest.mark.parametrize("now", [INSIDE, datetime(2026, 11, 24, 21, 30, tzinfo=_BERLIN)])
@@ -296,15 +323,36 @@ def test_hub_untagged_lot_decision_identical_to_base_call(clock, monkeypatch, no
 # --- resolver units ---------------------------------------------------------
 
 
-def test_schedule_resolver_reads_only_budgets_from_flag_block():
+@pytest.mark.parametrize(
+    "keys, expected",
+    [
+        (("execution_budget_seconds", "reconcile_budget_seconds"), {"execution_budget_seconds": 0, "reconcile_budget_seconds": 0}),
+        (("execution_budget_seconds",), None),
+        (("reconcile_budget_seconds",), None),
+        ((), None),
+    ],
+    ids=["both", "only_execution", "only_reconcile", "none"],
+)
+def test_schedule_resolver_needs_both_budget_keys(keys, expected):
     from strategies.short_expiry import sandbox_cover_schedule
 
-    assert sandbox_cover_schedule(_cfg()) == {
-        "execution_budget_seconds": 0,
-        "reconcile_budget_seconds": 0,
-    }
-    assert sandbox_cover_schedule(_cfg(budgets=False)) is None
+    cfg = _cfg(budgets=False)
+    for key in keys:
+        cfg["shorts"]["sandbox_expiry_v220"][key] = 0
+    assert sandbox_cover_schedule(cfg) == expected
     assert sandbox_cover_schedule({"shorts": {}}) is None
+
+
+@pytest.mark.parametrize("missing", ["execution_budget_seconds", "reconcile_budget_seconds"])
+def test_one_budget_key_falls_back_to_lot_budgets(clock, missing):
+    """One key missing: no schedule, so the lot's stamped budgets decide (base behaviour)."""
+    clock["now"] = INSIDE
+    cfg = _cfg()
+    del cfg["shorts"]["sandbox_expiry_v220"][missing]
+    stamped = _lot(execution_budget_seconds=0, reconcile_budget_seconds=0)
+    assert _cycle(cfg, stamped) == []
+    unstamped = _cycle(cfg, _lot())
+    assert [o.exit_rationale for o in unstamped] == ["buffer_unknown"]
 
 
 def test_inputs_empty_for_untagged_and_flag_off():
@@ -319,3 +367,43 @@ def test_inputs_empty_for_untagged_and_flag_off():
         "halted": True,
         "sandbox_schedule": {"execution_budget_seconds": 0, "reconcile_budget_seconds": 0},
     }
+
+
+# --- eval-queue cycle passes its own quote source (item 7) -----------------
+
+
+@pytest.mark.parametrize("source", ["stale", "live"])
+def test_eval_job_hands_batch_source_to_process_coin(monkeypatch, source):
+    from unittest.mock import patch
+
+    from bus.eval_queue import PRIORITY_ENTRY_15M, EvalJob
+    from core.tenant_context import DEFAULT_TENANT
+    from services.eval_queue_runtime import process_eval_job
+
+    seen = {}
+
+    class _Orchestrator:
+        def begin_tenant_cycle(self):
+            return None
+
+        def process_coin(self, coin, price, *args, **kwargs):
+            seen.update(kwargs)
+            return {"action": "HOLD"}
+
+    job = EvalJob(
+        symbol=SYM,
+        timeframe="1h",
+        reason="stale_watchlist",
+        priority=PRIORITY_ENTRY_15M,
+        enqueued_at=0.0,
+        tenant_id=DEFAULT_TENANT,
+    )
+    with patch(
+        "storage.tenant_registry.get_tenant",
+        return_value={"defaults": {"ledger_scope": "demo"}, "telegram": {}},
+    ), patch(
+        "services.eval_queue_runtime.get_prices_batch",
+        lambda syms, *a, **k: ({SYM: MARK}, {SYM: source}) if k.get("return_sources") else {SYM: MARK},
+    ), patch("services.eval_queue_runtime.load_effective_watchlist", return_value=[]):
+        process_eval_job(_Orchestrator(), job)
+    assert seen.get("price_source") == source
