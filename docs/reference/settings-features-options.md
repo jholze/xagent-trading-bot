@@ -9,6 +9,16 @@ Diátaxis **reference** for coding/ops agents. Humans still use [README.md](../.
 3. Find behaviour in code (`core/config.py`, `notifications/telegram_commands/`, strategy modules).
 4. Before research, analysis, or filing a ticket: also follow the **Docs + Hindsight** rule in [AGENTS.md](../../AGENTS.md).
 
+## Shorts sandbox and testnet route keys (#826)
+
+These keys are not in committed `config.json`. The generated tables only list committed keys, so they are described here.
+
+| key | default | meaning |
+| --- | --- | --- |
+| `shorts.sandbox_expiry_v220.execution_budget_seconds` | absent | Non-negative int. Seconds reserved for executing a cover of a sandbox-tagged short (`sandbox_path = v220_paper`). Used only if `reconcile_budget_seconds` is also set. With both set, runtime cover is due at `min(entry + 4h, 20:00 Europe/Berlin) - (execution + reconcile)`. |
+| `shorts.sandbox_expiry_v220.reconcile_budget_seconds` | absent | Non-negative int. Seconds reserved for reconciling that cover. Used only together with the key above. If either key is absent, the lot's own stamped budgets apply. If the lot has none, it is `buffer_unknown` and is covered as overdue. |
+| `shorts.testnet_futures.strict_route` | absent (off) | Literal `true` only. Runs the #804 route guard before testnet SHORT/COVER. With it on, production denies every testnet SHORT/COVER until a ModeProof producer and a separate testnet key env exist. Off leaves the existing adapter path unchanged. |
+
 ## Regenerating
 
 ```bash

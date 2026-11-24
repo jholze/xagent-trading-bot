@@ -361,10 +361,14 @@ class SignalOrchestrator:
         )
         return self.trading.execute_order(order, lot_tf, source=source, idempotency_key=idem)
 
-    def _cycle_short_cover(self, pos: dict, analysis, current_price: float):
+    def _cycle_short_cover(
+        self, pos: dict, analysis, current_price: float, price_source: str | None = None
+    ):
         """Cycle fallback for paper shorts (WS is primary). Fail-closed on errors.
 
         Returns (handled, trade_result). handled=True means do not run long BUY/SELL.
+        ``price_source`` is the ``get_prices_batch`` source label of
+        ``current_price`` (#826); ``stale`` marks a last-good fallback quote.
         """
         try:
             from strategies.short_math import is_short
@@ -374,6 +378,7 @@ class SignalOrchestrator:
         except Exception as exc:
             log(f"cycle short side check fail {getattr(analysis, 'symbol', '?')}: {exc}", "ERROR")
             return True, None
+        cover_inputs: dict = {}
         try:
             from datetime import datetime, timezone
 
@@ -405,11 +410,21 @@ class SignalOrchestrator:
                     bar_open_ts_ms=bar_ts,
                 )
             else:
+                from strategies.short_cover_wiring import sandbox_cover_inputs
+
+                cover_raw = self.config.raw if hasattr(self.config, "raw") else None
+                # #826: empty for untagged lots, so their call is unchanged.
+                cover_inputs = sandbox_cover_inputs(
+                    pos,
+                    cover_raw,
+                    price_stale=price_source == "stale",
+                )
                 hit = evaluate_short_cover(
                     pos,
                     current_price,
                     symbol=analysis.symbol,
-                    config_raw=self.config.raw if hasattr(self.config, "raw") else None,
+                    config_raw=cover_raw,
+                    **cover_inputs,
                 )
             if not hit:
                 return True, None
@@ -428,7 +443,24 @@ class SignalOrchestrator:
                 ctx_volume_rel=getattr(analysis, "ctx_volume_rel", None),
                 ctx_volume_window_days=getattr(analysis, "ctx_volume_window_days", None),
             )
-            return True, self.trading.execute_order(order, lot_tf, source="auto")
+            result = self.trading.execute_order(order, lot_tf, source="auto")
+            if cover_inputs:
+                try:
+                    from strategies.short_cover_wiring import wiring_log_line
+
+                    done = (
+                        result.get("executed")
+                        if isinstance(result, dict)
+                        else getattr(result, "executed", None)
+                    )
+                    line = wiring_log_line(
+                        analysis.symbol, cover_inputs, hit, executed=bool(done)
+                    )
+                    if line:
+                        log(line, "INFO")
+                except Exception:
+                    pass
+            return True, result
         except Exception as exc:
             log(f"cycle short cover skip {analysis.symbol}: {exc}", "WARNING")
             return True, None
@@ -531,7 +563,7 @@ class SignalOrchestrator:
             out["shadow_signal_id"] = shadow_signal_id
         return out
 
-    def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, lc_signals=None, quiet: bool = False) -> dict:
+    def process_coin(self, coin: dict, current_price: float, x_signals=None, cmc_signals=None, lc_signals=None, quiet: bool = False, price_source: str | None = None) -> dict:
         if not current_price:
             return {"action": "HOLD", "symbol": coin.get("symbol", ""), "normalized_action": "HOLD"}
 
@@ -554,7 +586,9 @@ class SignalOrchestrator:
             set_position_field(symbol, str(pos.get("timeframe") or tf), "last_rsi", analysis.rsi)
         except Exception:
             pass
-        handled_short, trade_result = self._cycle_short_cover(pos, analysis, current_price)
+        handled_short, trade_result = self._cycle_short_cover(
+            pos, analysis, current_price, price_source=price_source
+        )
         if not handled_short:
             climax_res = None
             try:

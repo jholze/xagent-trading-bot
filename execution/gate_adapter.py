@@ -534,7 +534,41 @@ class GateExecutionAdapter(ExecutionAdapter):
         self._exchange = ccxt.gate(params)
         if self._adapter_mode == "testnet":
             self._apply_testnet(self._exchange)
+            self._install_no_redirect_session(self._exchange)
         return self._exchange
+
+    @staticmethod
+    def _install_no_redirect_session(exchange) -> None:
+        """Testnet only (#826): no signed request may follow a redirect.
+
+        Covers every call made with this client, including the startup reads
+        in ``execution/recovery.py`` and testnet spot orders (one ccxt client
+        serves both). ``authorize_route`` still runs only before testnet
+        SHORT/COVER; reads are not route-checked (follow-up, to be filed by
+        Kay). Real and shadow never reach this.
+        """
+        import requests
+
+        from execution.futures_testnet_route import NoRedirectSession
+
+        session = getattr(exchange, "session", None)
+        if isinstance(session, NoRedirectSession):
+            return
+        if session is None or isinstance(session, requests.Session):
+            replacement = NoRedirectSession()
+            # Keep what ccxt configured on its session: no env proxies or
+            # netrc unless ccxt asked for them, same TLS verify, proxies and
+            # default headers.
+            replacement.trust_env = bool(
+                getattr(session, "trust_env", None)
+                if session is not None
+                else getattr(exchange, "requests_trust_env", False)
+            )
+            if session is not None:
+                replacement.verify = session.verify
+                replacement.proxies = dict(session.proxies or {})
+                replacement.headers.update(session.headers or {})
+            exchange.session = replacement
 
     @staticmethod
     def _rewrite_api_leaves(node, replacement: str):
@@ -588,6 +622,117 @@ class GateExecutionAdapter(ExecutionAdapter):
                 f"tenant {tenant_id!r} not in shorts.testnet_futures.tenants"
             )
         return True, ""
+
+    def _futures_route_mode_proof(self, exchange, order: TradeOrder):
+        """#804 ModeProof for this route. Deliberately None: fail closed.
+
+        No production ModeProof producer exists. ``collect_mode_proof`` needs
+        a set record and a fresh readback, and both are transport calls. With
+        ``shorts.testnet_futures.strict_route`` true, every testnet SHORT/COVER
+        is therefore denied at ``mode_proof_missing`` (and then at
+        ``testnet_env_aliases_live``, see ``_futures_route_credentials``)
+        before any transport call. This stays so until a production ModeProof
+        producer and a separate testnet key env name exist (follow-up: to be
+        filed by Kay). Do not return a synthetic proof here.
+        """
+        return None
+
+    def _futures_route_credentials(self) -> tuple[str, str | None]:
+        """(live_env, testnet_env) as env *names*. No value is read.
+
+        Testnet mode signs with the same ``api_key_env`` as live today, so
+        ``select_credentials`` denies ``testnet_env_aliases_live`` until a
+        separate testnet key env name exists (follow-up: to be filed by Kay).
+        """
+        key_env = str(self.live_cfg.get("api_key_env", "GATE_API_KEY"))
+        return key_env, key_env
+
+    def _futures_route_transport(self, exchange):
+        """Probe transport over the ccxt session. A real requests session is
+        swapped for ``NoRedirectSession`` so the probe and the orders that
+        follow cannot follow a redirect. Anything else is used as is and
+        ``authorize_route`` judges its ``follows_redirects``.
+        """
+        import requests
+
+        from execution.futures_testnet_route import NoRedirectSession, RouteTransport
+
+        session = getattr(exchange, "session", None)
+        if isinstance(session, requests.Session) and not isinstance(
+            session, NoRedirectSession
+        ):
+            session = NoRedirectSession()
+            exchange.session = session
+        return RouteTransport(session)
+
+    def _futures_route_url(self, exchange, order: TradeOrder) -> str:
+        """Public contract URL on the host ccxt will sign for (#804 pin check)."""
+        from execution.futures_testnet_route import PINNED_BASE
+
+        base = PINNED_BASE
+        urls = getattr(exchange, "urls", None)
+        api = urls.get("api") if isinstance(urls, dict) else None
+        if isinstance(api, dict):
+            private = api.get("private")
+            candidate = private.get("futures") if isinstance(private, dict) else None
+            if isinstance(candidate, str) and candidate.strip():
+                base = candidate.strip().rstrip("/")
+        elif isinstance(api, str) and api.strip():
+            base = api.strip().rstrip("/")
+        contract = str(order.symbol or "").split(":")[0].replace("/", "_").upper()
+        return f"{base}/futures/usdt/contracts/{contract}"
+
+    def _futures_route_denial(self, exchange, order: TradeOrder) -> str | None:
+        """Run ``authorize_route`` before any testnet futures transport (#826).
+
+        Returns a denial reason or None. ``strict_route`` off returns
+        ``strict_route_off`` with ``inhibits_existing_adapter=False``: the
+        existing adapter path continues unchanged. With it on, the
+        transport-independent checks (tenant, origin, mode proof, credentials)
+        run first without a transport. The probe transport is built only when
+        they pass. Never raises.
+        """
+        from execution.futures_testnet_route import strict_route_enabled
+
+        strict = strict_route_enabled(self.config.raw)
+        try:
+            from core.tenant_context import resolve_tenant_id
+            from execution.futures_testnet_route import authorize_route
+
+            live_env, testnet_env = self._futures_route_credentials()
+            route_kwargs = dict(
+                tenant_id=resolve_tenant_id(),
+                mode=self._adapter_mode,
+                url=self._futures_route_url(exchange, order),
+                mode_proof=self._futures_route_mode_proof(exchange, order),
+                live_env=live_env,
+                testnet_env=testnet_env,
+                method="GET",
+            )
+            # Pass 1, no transport: strict_route_off or any transport-
+            # independent denial ends here and the ccxt session is untouched.
+            decision = authorize_route(self.config.raw, transport=None, **route_kwargs)
+            if strict and decision.allowed:
+                decision = authorize_route(
+                    self.config.raw,
+                    transport=self._futures_route_transport(exchange),
+                    **route_kwargs,
+                )
+        except Exception as e:
+            reason = f"route_check_error: {str(e)[:120] or e.__class__.__name__}"
+            log(f"futures testnet route {order.symbol}: {reason}", "WARNING")
+            # Off never inhibits the existing adapter, even on a check error.
+            return reason if strict else None
+        if decision.allowed:
+            return None
+        if decision.reason == "strict_route_off" and not decision.inhibits_existing_adapter:
+            return None
+        log(
+            f"futures testnet route denied {order.type} {order.symbol}: "
+            f"{decision.reason} calls={decision.transport_calls}",
+            "WARNING",
+        )
+        return decision.reason
 
     def _max_usdt(self) -> float:
         return float(
@@ -724,6 +869,11 @@ class GateExecutionAdapter(ExecutionAdapter):
                 if not allowed:
                     return self._rejected_result(
                         order, f"testnet futures disabled: {reason}"
+                    )
+                route_denied = self._futures_route_denial(exchange, order)
+                if route_denied:
+                    return self._rejected_result(
+                        order, f"futures testnet route denied: {route_denied}"
                     )
                 if order.type == "SHORT":
                     return self._execute_short(exchange, order, timeframe)

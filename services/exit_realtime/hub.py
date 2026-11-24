@@ -791,6 +791,13 @@ class ExitRealtimeHub:
         max_age = _cfg_float(cfg, "max_tick_age_sec", DEFAULT_MAX_TICK_AGE_SEC)
         age = self.stale_tick_age(time_ms)
         if max_age > 0 and age is not None and age > max_age:
+            # #826: no fill at a stale tick price for any lot, sandbox-tagged
+            # shorts included. Their unpriced cover is left to the cycle
+            # backstop (last-good quote capped by stale_price_max_age_sec).
+            if self._stale_tick_reaches_tagged_short(sym, snapshot):
+                self._stats["stale_tagged_short_deferred"] = (
+                    int(self._stats.get("stale_tagged_short_deferred") or 0) + 1
+                )
             self._stats["ws_stale_tick_skip"] = int(self._stats.get("ws_stale_tick_skip") or 0) + 1
             if self._debounce_ok(sym, "ws_stale_tick_skip", cooldown, tenant_id=row_tenant):
                 log(
@@ -882,6 +889,10 @@ class ExitRealtimeHub:
                     return
 
                 from strategies.short_cover import evaluate_short_cover
+                from strategies.short_cover_wiring import (
+                    sandbox_cover_inputs,
+                    wiring_log_line,
+                )
 
                 try:
                     rl = float(live_for_side.get("recent_low") or price)
@@ -894,11 +905,17 @@ class ExitRealtimeHub:
                         flush_positions(force=True)
                 except Exception:
                     pass
+                cover_raw = self._raw if isinstance(self._raw, dict) else None
+                # #826: empty for untagged lots, so their call is unchanged.
+                # Stale ticks never get here (#710 skip above), and the WS
+                # path has no fetch timeout of its own.
+                cover_inputs = sandbox_cover_inputs(live_for_side, cover_raw)
                 hit = evaluate_short_cover(
                     live_for_side,
                     price,
                     symbol=sym,
-                    config_raw=self._raw if isinstance(self._raw, dict) else None,
+                    config_raw=cover_raw,
+                    **cover_inputs,
                 )
                 if not hit:
                     return
@@ -914,6 +931,14 @@ class ExitRealtimeHub:
                     rationale=str(hit.get("rationale") or ""),
                     tenant_id=row_tenant,
                 )
+                try:
+                    line = wiring_log_line(
+                        sym, cover_inputs, hit, executed=bool(result.get("executed"))
+                    )
+                    if line:
+                        log(line, "INFO")
+                except Exception:
+                    pass
                 if result.get("executed"):
                     self._stats["executed"] += 1
                     self._drop_book_row(sym, row_tenant)
@@ -1316,6 +1341,31 @@ class ExitRealtimeHub:
             return 0.0
         now_m = time.monotonic() if now is None else float(now)
         return max(0.0, now_m - self._connected_since)
+
+    def _stale_tick_reaches_tagged_short(self, sym: str, snapshot: dict[str, Any]) -> bool:
+        """True for an open sandbox-tagged, non-climax short (#826 stat only).
+
+        It does not change the #710 skip. Any error counts as False.
+        """
+        try:
+            from strategies.climax_fade import is_climax_lot
+            from strategies.positions import get_position
+            from strategies.short_expiry import lot_uses_sandbox_expiry, sandbox_expiry_enabled
+            from strategies.short_math import is_short
+
+            raw = self._raw if isinstance(self._raw, dict) else None
+            if not sandbox_expiry_enabled(raw):
+                return False  # flag off: no ledger lookup on the stale path
+            tf = str(snapshot.get("timeframe") or "1h")
+            lot = get_position(sym, tf) or dict(snapshot.get("position") or {})
+            return bool(
+                is_short(lot)
+                and float(lot.get("amount") or 0) > 0
+                and not is_climax_lot(lot)
+                and lot_uses_sandbox_expiry(lot, raw)
+            )
+        except Exception:
+            return False
 
     def stale_tick_age(self, time_ms: Any, now: float | None = None) -> float | None:
         """Tick age above the connection's minimum observed lag (skew-corrected).

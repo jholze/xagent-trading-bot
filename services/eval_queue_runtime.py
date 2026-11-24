@@ -195,7 +195,9 @@ def process_eval_job(orchestrator, job: EvalJob) -> dict | None:
         # via get_prices_batch → _download_gate_ticker_snapshot. This is the
         # path while architecture.eval_queue_enabled is on. The non-Gate CCXT
         # branch in price_fetcher.get_ticker_price is not this call.
-        price = float(get_prices_batch([job.symbol]).get(job.symbol, 0) or 0)
+        fetched = get_prices_batch([job.symbol], return_sources=True)
+        prices, sources = fetched if isinstance(fetched, tuple) else (fetched, {})
+        price = float(prices.get(job.symbol, 0) or 0)
         if price <= 0:
             return None
 
@@ -203,6 +205,10 @@ def process_eval_job(orchestrator, job: EvalJob) -> dict | None:
         if reason.startswith("entry_15m") or reason == "15m_watch":
             return _process_entry_15m_job(orchestrator, job, price, coin)
 
+        # #826: lets a sandbox-tagged short see a last-good fallback quote.
+        # Passed only when the batch reported a source label.
+        source = sources.get(job.symbol) if isinstance(sources, dict) else None
+        source_kw = {"price_source": source} if isinstance(source, str) else {}
         return orchestrator.process_coin(
             coin,
             price,
@@ -210,6 +216,7 @@ def process_eval_job(orchestrator, job: EvalJob) -> dict | None:
             _latest_signals.get("cmc") or [],
             _latest_signals.get("lc") or [],
             quiet=True,
+            **source_kw,
         )
 
 
