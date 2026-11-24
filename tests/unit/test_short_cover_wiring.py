@@ -407,3 +407,51 @@ def test_eval_job_hands_batch_source_to_process_coin(monkeypatch, source):
     ), patch("services.eval_queue_runtime.load_effective_watchlist", return_value=[]):
         process_eval_job(_Orchestrator(), job)
     assert seen.get("price_source") == source
+
+
+class _StopAfterCover(Exception):
+    pass
+
+
+@pytest.mark.parametrize("source, covered", [("stale", True), ("live", False)])
+def test_process_coin_hands_price_source_to_cycle_cover(clock, monkeypatch, source, covered):
+    """process_coin(..., price_source=...) reaches _cycle_short_cover (kills price_source=None)."""
+    from services.signal_orchestrator import SignalOrchestrator
+
+    clock["now"] = INSIDE
+    lot = _lot()
+    monkeypatch.setattr(
+        "services.signal_orchestrator.find_open_position_for_symbol",
+        lambda symbol, preferred_timeframe=None: ("1h", dict(lot)),
+    )
+    monkeypatch.setattr("strategies.positions.set_position_field", lambda *a, **k: None)
+
+    class _Audit:
+        def record(self, *a, **k):
+            # The short-cover step has run; the rest of process_coin is reporting.
+            raise _StopAfterCover
+
+    orch = SignalOrchestrator.__new__(SignalOrchestrator)
+    orch.config = type("Cfg", (), {"raw": _cfg()})()
+    orch.trading = _Trading()
+    orch.audit = _Audit()
+    orch.analyze = lambda *a, **k: type(
+        "Analysis", (), {"symbol": SYM, "timeframe": "1h", "rsi": 50.0}
+    )()
+    with pytest.raises(_StopAfterCover):
+        orch.process_coin({"symbol": SYM, "timeframe": "1h"}, MARK, price_source=source)
+    if covered:
+        assert [o.exit_rationale[:11] for o in orch.trading.orders] == ["price stale"]
+    else:
+        assert orch.trading.orders == []
+
+
+def test_stale_path_skips_ledger_lookup_when_flag_off(clock, monkeypatch):
+    """NIT 5: with the sandbox flag off the stale-tick stat does no ledger read."""
+    from services.exit_realtime.hub import ExitRealtimeHub
+
+    hub = ExitRealtimeHub(_cfg(tagged_flag=False))
+    reads = []
+    monkeypatch.setattr("strategies.positions.get_position", lambda *a: reads.append(a))
+    assert hub._stale_tick_reaches_tagged_short(SYM, {"timeframe": "1h"}) is False
+    assert reads == []

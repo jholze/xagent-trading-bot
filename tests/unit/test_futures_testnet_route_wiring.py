@@ -379,3 +379,29 @@ def test_recovery_client_in_testnet_uses_no_redirect_session(monkeypatch):
     adapter = GateExecutionAdapter(_cfg(strict_route=_MISSING), MagicMock(name="portfolio"), mode="testnet")
     client = recovery._ccxt_client(adapter)
     assert isinstance(client.session, NoRedirectSession)
+
+
+def test_testnet_swap_keeps_ccxt_session_settings(monkeypatch):
+    """trust_env stays False (ccxt default); verify, proxies and headers carry over."""
+    from execution.futures_testnet_route import NoRedirectSession
+
+    class _Gate(_FakeGate):
+        requests_trust_env = False
+
+        def __init__(self, params):
+            super().__init__(params)
+            self.session.trust_env = False
+            self.session.verify = "/fixture/ca.pem"
+            self.session.proxies = {"https": "http://127.0.0.1:3128"}
+            self.session.headers["X-Fixture"] = "1"
+
+    monkeypatch.setenv("GATE_API_KEY", "dummy-not-a-key")
+    monkeypatch.setenv("GATE_API_SECRET", "dummy-not-a-secret")
+    monkeypatch.setattr("execution.gate_adapter.ccxt.gate", _Gate)
+    adapter = GateExecutionAdapter(_cfg(strict_route=_MISSING), MagicMock(name="portfolio"), mode="testnet")
+    session = adapter._get_exchange().session
+    assert isinstance(session, NoRedirectSession)
+    assert session.trust_env is False
+    assert session.verify == "/fixture/ca.pem"
+    assert session.proxies == {"https": "http://127.0.0.1:3128"}
+    assert session.headers["X-Fixture"] == "1"

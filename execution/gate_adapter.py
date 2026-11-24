@@ -555,7 +555,20 @@ class GateExecutionAdapter(ExecutionAdapter):
         if isinstance(session, NoRedirectSession):
             return
         if session is None or isinstance(session, requests.Session):
-            exchange.session = NoRedirectSession()
+            replacement = NoRedirectSession()
+            # Keep what ccxt configured on its session: no env proxies or
+            # netrc unless ccxt asked for them, same TLS verify, proxies and
+            # default headers.
+            replacement.trust_env = bool(
+                getattr(session, "trust_env", None)
+                if session is not None
+                else getattr(exchange, "requests_trust_env", False)
+            )
+            if session is not None:
+                replacement.verify = session.verify
+                replacement.proxies = dict(session.proxies or {})
+                replacement.headers.update(session.headers or {})
+            exchange.session = replacement
 
     @staticmethod
     def _rewrite_api_leaves(node, replacement: str):

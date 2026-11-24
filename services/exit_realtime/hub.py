@@ -1350,12 +1350,14 @@ class ExitRealtimeHub:
         try:
             from strategies.climax_fade import is_climax_lot
             from strategies.positions import get_position
-            from strategies.short_expiry import lot_uses_sandbox_expiry
+            from strategies.short_expiry import lot_uses_sandbox_expiry, sandbox_expiry_enabled
             from strategies.short_math import is_short
 
+            raw = self._raw if isinstance(self._raw, dict) else None
+            if not sandbox_expiry_enabled(raw):
+                return False  # flag off: no ledger lookup on the stale path
             tf = str(snapshot.get("timeframe") or "1h")
             lot = get_position(sym, tf) or dict(snapshot.get("position") or {})
-            raw = self._raw if isinstance(self._raw, dict) else None
             return bool(
                 is_short(lot)
                 and float(lot.get("amount") or 0) > 0
