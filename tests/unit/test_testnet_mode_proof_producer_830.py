@@ -441,3 +441,62 @@ def test_mode_proof_error_message_has_no_exception_text(env):
     result = _run(adapter, "SHORT")
     assert "mode_proof_error: RuntimeError" in result.message
     assert "secret-ish" not in result.message
+
+
+# --- fix round 1: the set step is gated by authorize_route itself -----------
+
+
+@pytest.mark.parametrize("kind", ["SHORT", "COVER"])
+def test_denied_route_never_calls_set_leverage(env, kind):
+    """Legacy testnet host: authorize_route denies before any exchange call."""
+    events: list = []
+    adapter = _adapter(env, _cfg(), events)
+    adapter._exchange.urls = {"api": {"private": {"futures": "https://fx-api-testnet.gateio.ws/api/v4"}}}
+    result = _run(adapter, kind)
+    assert result.executed is False
+    assert "futures testnet route denied: legacy_host_rejected" in result.message
+    assert events == []
+
+
+@pytest.mark.parametrize("kind", ["SHORT", "COVER"])
+def test_future_authorize_route_check_also_protects_the_set_call(env, kind):
+    """Any denial added to authorize_route later stops set_leverage too."""
+    import execution.futures_testnet_route as route
+
+    real = route.authorize_route
+    gate_calls: list = []
+
+    def _stricter(raw, **kw):
+        if kw.get("mode_proof") is not None and kw["mode_proof"].reason == "pre_set":
+            gate_calls.append(kw["method"])
+            return route.RouteDecision(False, "future_check_failed")
+        return real(raw, **kw)
+
+    env.setattr(route, "authorize_route", _stricter)
+    events: list = []
+    adapter = _adapter(env, _cfg(), events)
+    result = _run(adapter, kind)
+    assert gate_calls == ["POST"]
+    assert result.executed is False
+    assert "mode_proof_missing: future_check_failed" in result.message
+    assert events == []
+
+
+@pytest.mark.parametrize("leverage", [2.5, 0.5, "1.9"])
+def test_cover_denies_non_integral_position_leverage(env, leverage):
+    events: list = []
+    readback = {"symbol": SWAP, "marginMode": "isolated", "leverage": leverage, "info": {"mode": "single"}}
+    adapter = _adapter(env, _cfg(), events, readback=readback)
+    result = _run(adapter, "COVER")
+    assert result.executed is False
+    assert "set_skipped_leverage_not_integral" in result.message
+    assert [e for e in events if isinstance(e, tuple) and e[0] == "set_leverage"] == []
+    assert "probe" not in events and "order" not in events
+
+
+def test_cover_accepts_whole_number_float_leverage(env):
+    events: list = []
+    readback = {"symbol": SWAP, "marginMode": "isolated", "leverage": 2.0, "info": {"mode": "single"}}
+    adapter = _adapter(env, _cfg(), events, readback=readback)
+    assert _run(adapter, "COVER").executed is True
+    assert ("set_leverage", 2, SWAP, {"marginMode": "isolated"}) in events

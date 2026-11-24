@@ -983,17 +983,14 @@ def _run_tenant_price_cycle(
 
             price = float(price_map.get(symbol, 0) or 0)
             if orchestrator:
-                from strategies.short_cover_wiring import defer_stale_cycle_quote
-
-                # #832: a tagged short is not covered at a stale quote.
-                if defer_stale_cycle_quote(
-                    symbol,
-                    price_sources.get(symbol) if isinstance(price_sources, dict) else None,
-                    bot_config.raw,
-                ):
-                    continue
+                # #832: same as process_eval_job (#826). The source label is
+                # passed only when present; ``stale`` reaches the tagged-short
+                # cover as price_stale (#809 unpriced cover).
+                source = price_sources.get(symbol) if isinstance(price_sources, dict) else None
+                source_kw = {"price_source": source} if isinstance(source, str) else {}
                 result = orchestrator.process_coin(
-                    coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard
+                    coin, price, x_signals, cmc_signals, lc_signals, quiet=use_dashboard,
+                    **source_kw,
                 )
                 coin_results.append(result)
             else:

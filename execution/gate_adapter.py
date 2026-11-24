@@ -659,25 +659,35 @@ class GateExecutionAdapter(ExecutionAdapter):
 
         Built on the #804 ``collect_mode_proof`` contract:
 
-        1. Transport-free prechecks first (tenant, dedicated testnet key names,
-           pinned origin, a client that cannot follow redirects). A failure
-           returns ``mode_proof_missing: <reason>`` and makes no exchange call.
+        1. Pre-set gate: the real ``authorize_route`` (no transport) with a
+           ``ModeProof(True, "pre_set")`` placeholder, so every route check
+           (tenant, pinned origin, dedicated testnet key names, and any check
+           added later) runs before the first signed call. The placeholder
+           only opens the set/readback step; it is never the route's proof.
+           Then the client must sign with the approved testnet key and its
+           session must not follow redirects. A failure returns
+           ``mode_proof_missing: <reason>`` and makes no exchange call.
         2. Set proof: the adapter's own isolated ``set_leverage`` result (Gate
            returns the position, with ``mode`` and ``leverage``). SHORT sets
            the clamped order leverage. COVER first reads the open position
-           and re-sets its own leverage, so the cover never changes margin.
+           and re-sets its own leverage (whole number >= 1 only), so the
+           cover never changes margin.
         3. Readback: a fresh ``fetch_position`` through the recovery helpers.
         4. ``collect_mode_proof`` with ``mode_proof_max_age_seconds`` (60 s
            ceiling, ``paper_start`` may only tighten it).
 
+        Freshness is a local-stamp check: set and readback are stamped with
+        this host's clock when each response arrives, and ``observed_at`` is
+        taken after both. The Gate position payload has no server time, so no
+        server-time skew is measured or applied.
+
         Any missing piece, mismatch, stale record or exception is a denied
-        ModeProof. No synthetic proof is built.
+        ModeProof. The proof handed to ``authorize_route`` is never synthetic.
         """
         from execution.futures_testnet_route import (
             ModeProof,
-            check_futures_url,
+            authorize_route,
             collect_mode_proof,
-            select_credentials,
         )
 
         try:
@@ -686,20 +696,21 @@ class GateExecutionAdapter(ExecutionAdapter):
             from strategies.short_mode_proof import mode_proof_max_age_seconds
 
             live_env, testnet_env = self._futures_route_credentials()
-            creds = select_credentials(
+            gate = authorize_route(
                 self.config.raw,
-                resolve_tenant_id(),
+                tenant_id=resolve_tenant_id(),
                 mode=self._adapter_mode,
+                url=self._futures_route_url(exchange, order),
+                mode_proof=ModeProof(True, "pre_set"),
                 live_env=live_env,
                 testnet_env=testnet_env,
+                transport=None,
+                method="POST",
             )
-            if not creds.allowed:
-                return ModeProof(False, f"mode_proof_missing: {creds.reason}")
-            if not self._client_signs_with(exchange, creds.credential_env):
+            if not gate.allowed:
+                return ModeProof(False, f"mode_proof_missing: {gate.reason}")
+            if not self._client_signs_with(exchange, gate.credential_env):
                 return ModeProof(False, "mode_proof_missing: client_not_testnet_signed")
-            checked = check_futures_url(self._futures_route_url(exchange, order))
-            if not checked.allowed:
-                return ModeProof(False, f"mode_proof_missing: {checked.reason}")
             session = getattr(exchange, "session", None)
             if getattr(session, "follows_redirects", None) is not False:
                 return ModeProof(False, "mode_proof_missing: redirects_not_disabled")
@@ -720,6 +731,9 @@ class GateExecutionAdapter(ExecutionAdapter):
                     lev = 0.0
                 if current.get("margin_mode") != "isolated" or lev <= 0:
                     return ModeProof(False, "set_skipped_position_not_isolated")
+                if lev < 1 or lev != int(lev):
+                    # int() would change the open position's leverage.
+                    return ModeProof(False, "set_skipped_leverage_not_integral")
 
             response = exchange.set_leverage(
                 int(lev), swap_symbol, {"marginMode": "isolated"}

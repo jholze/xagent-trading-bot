@@ -1,33 +1,43 @@
-"""#832: aria_bot queue-off loop defers a tagged short at a stale quote.
+"""#832: the aria_bot queue-off loop carries the stale-price flag (#826 / #809).
 
 Drives the production caller ``aria_bot._run_tenant_price_cycle`` with
-``architecture.eval_queue_enabled`` off, a fake orchestrator and a fake
-quote batch. The cycle is stopped right after the scan loop (the first
-``get_config().get("update_interval")`` read) so no post-cycle digest runs.
-Synthetic symbol, no network, no ledger writes.
+``architecture.eval_queue_enabled`` off and a real
+``SignalOrchestrator.process_coin`` (analysis stubbed, order sink faked).
+``audit.record`` runs right after the short-cover step and stops the cycle,
+so nothing after the cover decision runs. Synthetic symbol, no network, no
+ledger writes.
+
+Contract (frozen #826 behaviour table, #809): a sandbox-tagged short at a
+``stale`` cycle quote gets the #809 unpriced cover, the same decision as the
+queue-on path (``process_eval_job``). The "deferred" wording of the #832
+issue text is superseded by that contract.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from strategies.short_cover import evaluate_short_cover
+
 SYM = "AAA/USDT"
-OTHER = "BBB/USDT"
 _BERLIN = ZoneInfo("Europe/Berlin")
 OPENED = datetime(2026, 11, 24, 17, 0, tzinfo=_BERLIN)
+INSIDE = datetime(2026, 11, 24, 18, 0, tzinfo=_BERLIN)
+MARK = 100.2  # inside the hold: no stop, no trail, no RSI cover
+STOP_PX = 110.0  # above the short stop: an untagged lot covers on price
 
 
-class _StopAfterScan(Exception):
+class _StopAfterCover(Exception):
     pass
 
 
 class _Config(dict):
     def get(self, key, default=None):
         if key == "update_interval":
-            raise _StopAfterScan()
+            raise AssertionError("cycle must stop at the short-cover step")
         return super().get(key, default)
 
 
@@ -41,19 +51,18 @@ class _BotConfig:
         return None
 
 
-class _Orchestrator:
+class _Trading:
     def __init__(self):
-        self.calls: list[tuple] = []
+        self.orders = []
 
-    def begin_tenant_cycle(self):
-        return None
+    def execute_order(self, order, tf, source="auto"):
+        self.orders.append(order)
+        return {"executed": True}
 
-    def run_portfolio_dca_pass(self, *a, **k):
-        return None
 
-    def process_coin(self, *args, **kwargs):
-        self.calls.append((args, kwargs))
-        return {"action": "HOLD", "symbol": args[0]["symbol"]}
+class _Audit:
+    def record(self, *a, **k):
+        raise _StopAfterCover
 
 
 def _raw(*, flag=True):
@@ -63,7 +72,11 @@ def _raw(*, flag=True):
         "shorts": {
             "enabled": True,
             "allow_live": False,
-            "sandbox_expiry_v220": {"enabled": flag},
+            "sandbox_expiry_v220": {
+                "enabled": flag,
+                "execution_budget_seconds": 0,
+                "reconcile_budget_seconds": 0,
+            },
             "testnet_futures": {"paper_start": {}},
         },
     }
@@ -79,6 +92,7 @@ def _lot(*, tagged=True, **extra):
         "entry_at": OPENED.isoformat(),
         "symbol": SYM,
         "timeframe": "1h",
+        "recent_low": MARK,
     }
     if tagged:
         lot["sandbox_path"] = "v220_paper"
@@ -86,32 +100,49 @@ def _lot(*, tagged=True, **extra):
     return lot
 
 
-def _reset():
-    # New in #832; imported lazily so the file collects (and fails) on base.
-    try:
-        from strategies.short_cover_wiring import reset_cycle_stale_stats_for_tests
-    except ImportError:
-        return
-    reset_cycle_stale_stats_for_tests()
+@pytest.fixture
+def clock(monkeypatch):
+    class _Fixed(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            moment = INSIDE.astimezone(timezone.utc)
+            return moment.astimezone(tz) if tz else moment.replace(tzinfo=None)
+
+    monkeypatch.setattr("strategies.short_cover.datetime", _Fixed)
 
 
-@pytest.fixture(autouse=True)
-def _reset_stats():
-    _reset()
-    yield
-    _reset()
+def _orchestrator(raw):
+    from services.signal_orchestrator import SignalOrchestrator
+
+    orch = SignalOrchestrator.__new__(SignalOrchestrator)
+    orch.config = type("Cfg", (), {"raw": raw})()
+    orch.trading = _Trading()
+    orch.audit = _Audit()
+    orch.analyze = lambda *a, **k: type(
+        "Analysis", (), {"symbol": SYM, "timeframe": "1h", "rsi": 50.0}
+    )()
+    return orch
 
 
-def _cycle(monkeypatch, *, lots_by_symbol, sources, raw=None, prices=None):
+def _cycle(monkeypatch, *, lot, source, price=MARK, raw=None):
+    """Run one queue-off cycle; return (orders, process_coin kwargs)."""
     import aria_bot
 
     raw = raw or _raw()
-    prices = prices or {SYM: 90.0, OTHER: 10.0}
-    coins = [{"symbol": s, "active": True} for s in prices]
-    orch = _Orchestrator()
+    coins = [{"symbol": SYM, "timeframe": "1h", "active": True}]
+    orch = _orchestrator(raw)
+    seen: list[dict] = []
+    real_process_coin = orch.process_coin
+
+    def _spy(*args, **kwargs):
+        seen.append(dict(kwargs))
+        return real_process_coin(*args, **kwargs)
+
+    orch.process_coin = _spy
     monkeypatch.setattr("services.architecture_runtime.ensure_started", lambda *a, **k: None)
     monkeypatch.setattr("strategies.positions.is_positions_state_unknown", lambda *a, **k: False)
     monkeypatch.setattr("strategies.positions.list_active_positions", lambda *a, **k: [])
+    monkeypatch.setattr("strategies.positions.set_position_field", lambda *a, **k: None)
     monkeypatch.setattr("core.tenant_context.multi_tenant_enabled", lambda: False)
     monkeypatch.setattr("services.universe.source_tags.publish_cycle_tags", lambda *a, **k: None)
     monkeypatch.setattr("services.ledger_sync.reconcile_recent_highs", lambda *a, **k: None)
@@ -119,6 +150,11 @@ def _cycle(monkeypatch, *, lots_by_symbol, sources, raw=None, prices=None):
         "services.gainer_universe.runtime.maybe_refresh_gainer_universe", lambda *a, **k: None
     )
     monkeypatch.setattr("bus.eval_queue.eval_queue_enabled", lambda raw: False)
+    monkeypatch.setattr(
+        "services.signal_orchestrator.find_open_position_for_symbol",
+        lambda symbol, preferred_timeframe=None: ("1h", dict(lot)),
+    )
+    monkeypatch.setattr("strategies.climax_fade.last_closed_4h_bar", lambda *a, **k: None)
     monkeypatch.setattr(aria_bot, "get_bot_config", lambda: _BotConfig(raw))
     monkeypatch.setattr(aria_bot, "get_config", lambda: _Config(raw))
     monkeypatch.setattr(aria_bot, "load_effective_watchlist", lambda *a, **k: list(coins))
@@ -126,105 +162,88 @@ def _cycle(monkeypatch, *, lots_by_symbol, sources, raw=None, prices=None):
     monkeypatch.setattr(aria_bot, "log", lambda *a, **k: None)
 
     def _batch(symbols, fallbacks=None, *, return_sources=False, **k):
-        got = {s: prices[s] for s in symbols if s in prices}
+        prices = {SYM: price}
         if return_sources:
-            return got, {s: sources[s] for s in symbols if s in sources}
-        return got
+            return prices, ({SYM: source} if source is not None else {})
+        return prices
 
     monkeypatch.setattr(aria_bot, "get_prices_batch", _batch)
-
-    def _lots(symbol, **k):
-        value = lots_by_symbol.get(symbol, [])
-        if isinstance(value, Exception):
-            raise value
-        return [(lot.get("timeframe", "1h"), lot) for lot in value]
-
-    monkeypatch.setattr("strategies.positions.find_open_positions_for_symbol", _lots)
-    with pytest.raises(_StopAfterScan):
+    with pytest.raises(_StopAfterCover):
         aria_bot._run_tenant_price_cycle(
             cycle_started=0.0, use_dashboard=False,
             analyzer=None, orchestrator=orch, social_pipeline=None, sandbox=None, trend_engine=None,
         )
-    return orch
+    return orch.trading.orders, seen
 
 
-def _symbols(orch):
-    return [args[0]["symbol"] for args, _ in orch.calls]
+def test_tagged_short_at_stale_quote_gets_the_809_unpriced_cover(clock, monkeypatch):
+    orders, seen = _cycle(monkeypatch, lot=_lot(), source="stale")
+    assert seen == [{"quiet": False, "price_source": "stale"}]
+    assert len(orders) == 1
+    assert orders[0].type == "COVER"
+    assert orders[0].exit_source == "time_cap"
+    assert orders[0].exit_rationale.startswith("price stale")
 
 
-def _deferred():
-    try:
-        from strategies.short_cover_wiring import cycle_stale_stats
-    except ImportError:
-        return None
-    return cycle_stale_stats().get("stale_tagged_short_deferred")
+def test_queue_off_decision_equals_the_queue_on_decision(clock, monkeypatch):
+    """Same decision as process_eval_job's path: evaluate_short_cover(price_stale=True)."""
+    from strategies.short_cover_wiring import sandbox_cover_inputs
 
-
-def test_tagged_short_at_stale_quote_is_deferred_and_counted(monkeypatch):
-    orch = _cycle(
-        monkeypatch,
-        lots_by_symbol={SYM: [_lot()]},
-        sources={SYM: "stale", OTHER: "live"},
+    raw = _raw()
+    expected = evaluate_short_cover(
+        _lot(), MARK, symbol=SYM, config_raw=raw,
+        **sandbox_cover_inputs(_lot(), raw, price_stale=True),
     )
-    assert _symbols(orch) == [OTHER]  # no cover evaluation for SYM at the stale price
-    assert _deferred() == 1
+    orders, _ = _cycle(monkeypatch, lot=_lot(), source="stale", raw=raw)
+    assert expected is not None
+    assert [(o.exit_source, o.exit_rationale) for o in orders] == [
+        (str(expected["source"]), str(expected["rationale"])[:240])
+    ]
 
 
-def test_counter_accumulates_per_stale_cycle(monkeypatch):
-    for _ in range(2):
-        _cycle(monkeypatch, lots_by_symbol={SYM: [_lot()]}, sources={SYM: "stale"})
-    assert _deferred() == 2
+@pytest.mark.parametrize("source", ["live", "redis", None])
+def test_tagged_short_at_fresh_quote_holds_inside_the_window(clock, monkeypatch, source):
+    orders, seen = _cycle(monkeypatch, lot=_lot(), source=source)
+    assert orders == []
+    expected_kw = {"quiet": False} if source is None else {"quiet": False, "price_source": source}
+    assert seen == [expected_kw]
 
 
+@pytest.mark.parametrize("price", [MARK, STOP_PX], ids=["hold_price", "stop_price"])
+@pytest.mark.parametrize("source", ["stale", "live", None])
 @pytest.mark.parametrize(
-    "lots, source",
+    "lot",
     [
-        ([_lot(tagged=False)], "stale"),
-        ([_lot(short_recipe="climax_fade")], "stale"),
-        ([{"side": "long", "amount": 1.0, "average_entry": 100.0, "symbol": SYM, "timeframe": "1h"}], "stale"),
-        ([], "stale"),
-        ([_lot()], "live"),
-        ([_lot()], "redis"),
-        ([_lot()], None),
+        _lot(tagged=False),
+        _lot(tagged=False, short_recipe="climax_fade"),
+        _lot(short_recipe="climax_fade"),
     ],
-    ids=["untagged", "climax", "long", "no_lot", "tagged_live", "tagged_redis", "tagged_no_label"],
+    ids=["untagged", "climax_untagged", "climax_tagged"],
 )
-def test_other_lots_and_fresh_quotes_keep_the_base_call(monkeypatch, lots, source):
-    orch = _cycle(
-        monkeypatch,
-        lots_by_symbol={SYM: lots},
-        sources={SYM: source} if source else {},
-    )
-    assert _symbols(orch) == [SYM, OTHER]
-    args, kwargs = orch.calls[0]
-    # Identical to the base call: positional (coin, price, x, cmc, lc), quiet only.
-    assert args[0]["symbol"] == SYM and args[1] == 90.0
-    assert kwargs == {"quiet": False}
-    assert _deferred() == 0
+def test_untagged_and_climax_lot_decision_identical_to_base(clock, monkeypatch, lot, source, price):
+    """Base: the queue-off loop passed no price_source. These lots ignore it."""
+    from services.signal_orchestrator import SignalOrchestrator
+
+    monkeypatch.setattr("strategies.climax_fade.last_closed_4h_bar", lambda *a, **k: None)
+    base_orch = _orchestrator(_raw())
+    analysis = type("Analysis", (), {"symbol": SYM, "timeframe": "1h"})()
+    SignalOrchestrator._cycle_short_cover(base_orch, dict(lot), analysis, price)
+    orders, _ = _cycle(monkeypatch, lot=lot, source=source, price=price)
+    assert [(o.type, o.exit_source, o.exit_rationale) for o in orders] == [
+        (o.type, o.exit_source, o.exit_rationale) for o in base_orch.trading.orders
+    ]
 
 
-def test_flag_off_keeps_the_base_call(monkeypatch):
-    orch = _cycle(
-        monkeypatch,
-        lots_by_symbol={SYM: [_lot()]},
-        sources={SYM: "stale"},
-        raw=_raw(flag=False),
-    )
-    assert _symbols(orch) == [SYM, OTHER]
-    assert _deferred() == 0
+def test_flag_off_tagged_lot_identical_to_base(clock, monkeypatch):
+    raw = _raw(flag=False)
+    expected = evaluate_short_cover(_lot(), MARK, symbol=SYM, config_raw=raw)
+    orders, _ = _cycle(monkeypatch, lot=_lot(), source="stale", raw=raw)
+    assert expected is None
+    assert orders == []
 
 
-def test_lookup_error_never_crashes_or_suppresses_the_call(monkeypatch):
-    orch = _cycle(
-        monkeypatch,
-        lots_by_symbol={SYM: RuntimeError("ledger down")},
-        sources={SYM: "stale"},
-    )
-    assert _symbols(orch) == [SYM, OTHER]
-    assert _deferred() == 0
-
-
-def test_hub_and_cycle_share_the_tagged_short_predicate():
+def test_hub_stale_predicate_unchanged():
+    """The hub's stale_tagged_short_deferred predicate (#826) stays as is."""
     from strategies.short_cover_wiring import stale_defers_tagged_short
 
     raw = _raw()
@@ -232,16 +251,3 @@ def test_hub_and_cycle_share_the_tagged_short_predicate():
     assert stale_defers_tagged_short(_lot(tagged=False), raw) is False
     assert stale_defers_tagged_short(_lot(short_recipe="climax_fade"), raw) is False
     assert stale_defers_tagged_short(_lot(amount=0), raw) is False
-    assert stale_defers_tagged_short(None, raw) is False
-
-
-def test_mixed_lots_on_one_symbol_keep_the_base_call(monkeypatch):
-    """A tagged short plus an untagged lot on another timeframe: no deferral."""
-    orch = _cycle(
-        monkeypatch,
-        lots_by_symbol={SYM: [_lot(timeframe="4h"), _lot(tagged=False)]},
-        sources={SYM: "stale"},
-    )
-    assert _symbols(orch) == [SYM, OTHER]
-    assert orch.calls[0][1] == {"quiet": False}
-    assert _deferred() == 0
