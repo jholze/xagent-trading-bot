@@ -76,6 +76,27 @@ def lot_uses_sandbox_expiry(pos: Mapping[str, Any] | None, config_raw: Mapping[s
     return pos.get("sandbox_path") == SANDBOX_PATH
 
 
+_BUDGET_KEYS = ("execution_budget_seconds", "reconcile_budget_seconds")
+
+
+def sandbox_cover_schedule(config_raw: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Runtime cover schedule for tagged lots, read from the flag block (#826).
+
+    The 20:00 Europe/Berlin cutoff and the 4h cap are not part of this dict:
+    ``cover_time_decision`` reads them from ``tightened_cutoff`` and
+    ``resolve_sandbox_hold``. Only the explicit execution and reconcile
+    budgets are passed through, unvalidated, so ``_explicit_budgets`` keeps
+    judging them. None when neither key is set: the lot's own budgets apply,
+    otherwise ``buffer_unknown`` makes the lot overdue (item 6, no invented
+    minute value).
+    """
+    block = shorts_config(config_raw).get(FLAG_KEY)
+    if not isinstance(block, dict):
+        return None
+    picked = {key: block[key] for key in _BUDGET_KEYS if key in block}
+    return picked or None
+
+
 def protection_allowed(*, position_side: str | None, reduce_only: bool) -> bool:
     """Weekend and entry denial do not turn off reduce-only protection."""
     if reduce_only is not True or not isinstance(position_side, str):

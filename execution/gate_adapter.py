@@ -589,6 +589,104 @@ class GateExecutionAdapter(ExecutionAdapter):
             )
         return True, ""
 
+    def _futures_route_mode_proof(self, exchange, order: TradeOrder):
+        """#804 ModeProof for this route. No production producer exists yet.
+
+        ``collect_mode_proof`` needs a set record and a fresh readback, and
+        both are transport calls. Until a reviewed follow-up supplies one,
+        None denies with ``mode_proof_missing`` when strict_route is on.
+        """
+        return None
+
+    def _futures_route_credentials(self) -> tuple[str, str | None]:
+        """(live_env, testnet_env) as env *names*. No value is read.
+
+        Testnet mode signs with the same ``api_key_env`` as live today, so
+        ``select_credentials`` denies ``testnet_env_aliases_live``.
+        """
+        key_env = str(self.live_cfg.get("api_key_env", "GATE_API_KEY"))
+        return key_env, key_env
+
+    def _futures_route_transport(self, exchange):
+        """Probe transport over the ccxt session. A real requests session is
+        swapped for ``NoRedirectSession`` so the probe and the orders that
+        follow cannot follow a redirect. Anything else is used as is and
+        ``authorize_route`` judges its ``follows_redirects``.
+        """
+        import requests
+
+        from execution.futures_testnet_route import NoRedirectSession, RouteTransport
+
+        session = getattr(exchange, "session", None)
+        if isinstance(session, requests.Session) and not isinstance(
+            session, NoRedirectSession
+        ):
+            session = NoRedirectSession()
+            exchange.session = session
+        return RouteTransport(session)
+
+    def _futures_route_url(self, exchange, order: TradeOrder) -> str:
+        """Public contract URL on the host ccxt will sign for (#804 pin check)."""
+        from execution.futures_testnet_route import PINNED_BASE
+
+        base = PINNED_BASE
+        urls = getattr(exchange, "urls", None)
+        api = urls.get("api") if isinstance(urls, dict) else None
+        if isinstance(api, dict):
+            private = api.get("private")
+            candidate = private.get("futures") if isinstance(private, dict) else None
+            if isinstance(candidate, str) and candidate.strip():
+                base = candidate.strip().rstrip("/")
+        elif isinstance(api, str) and api.strip():
+            base = api.strip().rstrip("/")
+        contract = str(order.symbol or "").split(":")[0].replace("/", "_").upper()
+        return f"{base}/futures/usdt/contracts/{contract}"
+
+    def _futures_route_denial(self, exchange, order: TradeOrder) -> str | None:
+        """Run ``authorize_route`` before any testnet futures transport (#826).
+
+        Returns a denial reason or None. ``strict_route`` off returns
+        ``strict_route_off`` with ``inhibits_existing_adapter=False``: the
+        existing adapter path continues unchanged. Never raises.
+        """
+        from execution.futures_testnet_route import strict_route_enabled
+
+        strict = strict_route_enabled(self.config.raw)
+        try:
+            from core.tenant_context import resolve_tenant_id
+            from execution.futures_testnet_route import authorize_route
+
+            live_env, testnet_env = self._futures_route_credentials()
+            # Off: authorize_route answers strict_route_off before any
+            # transport use, and the ccxt session is left as it is.
+            transport = self._futures_route_transport(exchange) if strict else None
+            decision = authorize_route(
+                self.config.raw,
+                tenant_id=resolve_tenant_id(),
+                mode=self._adapter_mode,
+                url=self._futures_route_url(exchange, order),
+                mode_proof=self._futures_route_mode_proof(exchange, order),
+                live_env=live_env,
+                testnet_env=testnet_env,
+                transport=transport,
+                method="GET",
+            )
+        except Exception as e:
+            reason = f"route_check_error: {str(e)[:120] or e.__class__.__name__}"
+            log(f"futures testnet route {order.symbol}: {reason}", "WARNING")
+            # Off never inhibits the existing adapter, even on a check error.
+            return reason if strict else None
+        if decision.allowed:
+            return None
+        if decision.reason == "strict_route_off" and not decision.inhibits_existing_adapter:
+            return None
+        log(
+            f"futures testnet route denied {order.type} {order.symbol}: "
+            f"{decision.reason} calls={decision.transport_calls}",
+            "WARNING",
+        )
+        return decision.reason
+
     def _max_usdt(self) -> float:
         return float(
             self.live_cfg.get("max_usdt_per_trade", self.config.max_usdt_per_trade)
@@ -724,6 +822,11 @@ class GateExecutionAdapter(ExecutionAdapter):
                 if not allowed:
                     return self._rejected_result(
                         order, f"testnet futures disabled: {reason}"
+                    )
+                route_denied = self._futures_route_denial(exchange, order)
+                if route_denied:
+                    return self._rejected_result(
+                        order, f"futures testnet route denied: {route_denied}"
                     )
                 if order.type == "SHORT":
                     return self._execute_short(exchange, order, timeframe)

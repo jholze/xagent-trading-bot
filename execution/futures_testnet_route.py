@@ -1,9 +1,10 @@
 """Default-off Gate futures-testnet route guard (T220-01, non-issued).
 
-The guard is not wired into ``GateExecutionAdapter``. Package A still owns
-``execution/gate_adapter.py`` and ``execution/recovery.py`` (#772, #800, #801
-open). Missing ``shorts.testnet_futures.strict_route`` is off. Off denies this
-path and does not fall back to mainnet or to the legacy testnet host.
+#826 wires ``authorize_route`` into ``GateExecutionAdapter`` before every
+testnet SHORT/COVER. Missing ``shorts.testnet_futures.strict_route`` is off.
+Off denies this route (``strict_route_off``) without inhibiting the existing
+adapter, and never falls back to mainnet or to the legacy testnet host.
+Startup reads in ``execution/recovery.py`` are not routed through this guard.
 
 Pinned origin, checked against Gate API v4.106.180 and ccxt 4.5.88
 ``urls['test']['private']['futures']``:
@@ -22,6 +23,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from typing import Any
 from urllib.parse import urlsplit
+
+import requests
 
 PINNED_HOST = "api-testnet.gateapi.io"
 PINNED_ORIGIN = "https://api-testnet.gateapi.io"
@@ -75,6 +78,56 @@ class Conversion:
     accepted: bool
     reason: str
     contracts: Decimal | None = None
+
+
+class NoRedirectSession(requests.Session):
+    """requests session that never follows a redirect (#826).
+
+    ``follows_redirects`` is the literal False ``authorize_route`` requires.
+    Every request is sent with ``allow_redirects=False`` and ``max_redirects``
+    is 0, so a 3xx comes back as the response instead of a second request.
+    """
+
+    follows_redirects = False
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.max_redirects = 0
+
+    def request(self, method, url, *args, **kwargs):  # type: ignore[override]
+        kwargs["allow_redirects"] = False
+        return super().request(method, url, *args, **kwargs)
+
+    def resolve_redirects(self, *args, **kwargs):  # type: ignore[override]
+        return iter(())
+
+
+class RouteTransport:
+    """The probe transport ``authorize_route`` calls, over a ccxt session.
+
+    ``follows_redirects`` mirrors the session attribute as is: a plain
+    ``requests.Session`` has none (None), so it is denied before the call.
+    """
+
+    def __init__(self, session: Any, *, timeout: float = 10.0) -> None:
+        self._session = session
+        self._timeout = timeout
+
+    @property
+    def follows_redirects(self) -> Any:
+        return getattr(self._session, "follows_redirects", None)
+
+    def request(self, method: str, url: str) -> dict | None:
+        try:
+            response = self._session.request(
+                method, url, allow_redirects=False, timeout=self._timeout
+            )
+        except Exception:
+            return None
+        status = getattr(response, "status_code", None)
+        if isinstance(status, bool) or not isinstance(status, int):
+            return None
+        return {"status": status}
 
 
 def strict_route_enabled(raw: Any) -> bool:

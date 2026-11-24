@@ -405,12 +405,29 @@ class SignalOrchestrator:
                     bar_open_ts_ms=bar_ts,
                 )
             else:
+                from strategies.short_cover_wiring import (
+                    cycle_quote_stale,
+                    sandbox_cover_inputs,
+                    wiring_log_line,
+                )
+
+                cover_raw = self.config.raw if hasattr(self.config, "raw") else None
+                # #826: empty for untagged lots, so their call is unchanged.
+                cover_inputs = sandbox_cover_inputs(
+                    pos,
+                    cover_raw,
+                    price_stale=lambda: cycle_quote_stale(analysis.symbol),
+                )
                 hit = evaluate_short_cover(
                     pos,
                     current_price,
                     symbol=analysis.symbol,
-                    config_raw=self.config.raw if hasattr(self.config, "raw") else None,
+                    config_raw=cover_raw,
+                    **cover_inputs,
                 )
+                line = wiring_log_line(analysis.symbol, cover_inputs, hit)
+                if line:
+                    log(line, "INFO")
             if not hit:
                 return True, None
             lot_tf = str((pos or {}).get("timeframe") or analysis.timeframe)

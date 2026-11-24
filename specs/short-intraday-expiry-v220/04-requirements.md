@@ -4,6 +4,10 @@ Version: 0.2 · Date: 2026-11-10 · Status: draft · Owner: Jens Holze
 
 Local draft id: T220-05 (not a GitHub issue). Hindsight: RECALL_FAILED.
 
+## Rev 2 — 2026-11-24 Europe/Berlin (#826)
+
+The "wiring them from the live callers is deferred" line in Rev 1 is superseded. `SignalOrchestrator._cycle_short_cover` and the exit-realtime hub now pass halt (shorts kill), stale (cycle: last-good fallback quote; hub: tick age above `exit_realtime.max_tick_age_sec`), timeout (False; neither caller has its own signal), and `sandbox_schedule`. The schedule holds the two budgets, optional in `shorts.sandbox_expiry_v220`. These inputs are passed for tagged lots only. Untagged and climax lots keep the previous call. Evidence: `docs/evidence/826.md`.
+
 ## Rev 1 — 2026-11-10 18:40 Europe/Berlin
 
 Owner freeze item 3, delegated to Kay. Item 6 stays parameterized: missing execution or reconcile budgets deny with `buffer_unknown`. No minute value is invented.
