@@ -5,12 +5,12 @@ testnet SHORT/COVER. Missing ``shorts.testnet_futures.strict_route`` is off.
 Off denies this route (``strict_route_off``) without inhibiting the existing
 adapter, and never falls back to mainnet or to the legacy testnet host.
 
-With ``strict_route`` true, production denies every testnet SHORT/COVER at
-``mode_proof_missing`` / ``testnet_env_aliases_live`` until a production
-ModeProof producer and a separate testnet key env name exist (follow-up, to be
-filed by Kay). A testnet-mode ccxt client always uses ``NoRedirectSession``,
-including the startup reads in ``execution/recovery.py``. Those reads are not
-route-checked (follow-up, to be filed by Kay).
+With ``strict_route`` true, ``GateExecutionAdapter`` produces a ModeProof
+(#830: its own isolated set result plus a fresh ``fetch_position`` readback)
+and signs with the dedicated testnet key env *names*
+(``shorts.testnet_futures.api_key_env`` / ``api_secret_env``). The startup
+reads in ``execution/recovery.py`` run ``authorize_read_route`` before every
+read (#831). A testnet-mode ccxt client always uses ``NoRedirectSession``.
 
 Pinned origin, checked against Gate API v4.106.180 and ccxt 4.5.88
 ``urls['test']['private']['futures']``:
@@ -38,6 +38,11 @@ PINNED_PREFIX = "/api/v4/futures/usdt"
 PINNED_BASE = "https://api-testnet.gateapi.io/api/v4"
 LEGACY_TESTNET_HOST = "fx-api-testnet.gateio.ws"
 LIVE_HOSTS = ("api.gateio.ws", "fx-api.gateio.ws")
+# #830 default env *names* for the dedicated testnet key pair. Same naming
+# scheme as ``live.api_key_env`` / ``live.api_secret_env`` (GATE_API_KEY /
+# GATE_API_SECRET). Values are never read into a decision or a log.
+DEFAULT_TESTNET_KEY_ENV = "GATE_TESTNET_API_KEY"
+DEFAULT_TESTNET_SECRET_ENV = "GATE_TESTNET_API_SECRET"
 
 _PATH_SEGMENT = re.compile(r"[A-Za-z0-9._~-]+")
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -236,6 +241,104 @@ def select_credentials(
     if testnet_env == live_env:
         return RouteDecision(False, "testnet_env_aliases_live", credential_env=None)
     return RouteDecision(True, "ok", credential_env=testnet_env)
+
+
+def testnet_credential_env_names(raw: Any) -> tuple[str | None, str | None]:
+    """(key_env, secret_env) names for the dedicated testnet pair (#830).
+
+    Missing keys fall back to ``DEFAULT_TESTNET_KEY_ENV`` /
+    ``DEFAULT_TESTNET_SECRET_ENV``. A present but empty or non-string value is
+    None (unknown), never the default.
+    """
+    block = _testnet_block(raw)
+    block = block if isinstance(block, dict) else {}
+    names: list[str | None] = []
+    for field, default in (
+        ("api_key_env", DEFAULT_TESTNET_KEY_ENV),
+        ("api_secret_env", DEFAULT_TESTNET_SECRET_ENV),
+    ):
+        value = block.get(field, default)
+        names.append(value.strip() if isinstance(value, str) and value.strip() else None)
+    return names[0], names[1]
+
+
+def check_testnet_credentials(
+    raw: Any,
+    *,
+    live_key_env: str,
+    live_secret_env: str,
+    environ: Any,
+) -> RouteDecision:
+    """Dedicated testnet key names, or deny (#830). Never returns or logs a value.
+
+    Denies ``testnet_credentials_unknown`` when a name is missing or empty, the
+    key and secret names are the same, or an env value is unset or empty.
+    Denies ``testnet_env_aliases_live`` when a testnet name equals a live name,
+    or when both values are present and a testnet value equals a live value.
+    """
+    key_env, secret_env = testnet_credential_env_names(raw)
+    if key_env is None or secret_env is None or key_env == secret_env:
+        return RouteDecision(False, "testnet_credentials_unknown")
+    live_names = {str(live_key_env or ""), str(live_secret_env or "")} - {""}
+    if key_env in live_names or secret_env in live_names:
+        return RouteDecision(False, "testnet_env_aliases_live")
+    getter = getattr(environ, "get", None)
+    if not callable(getter):
+        return RouteDecision(False, "testnet_credentials_unknown")
+    testnet_values = [getter(key_env) or "", getter(secret_env) or ""]
+    if not all(isinstance(v, str) and v for v in testnet_values):
+        return RouteDecision(False, "testnet_credentials_unknown")
+    live_values = {
+        value
+        for value in (getter(name) for name in live_names)
+        if isinstance(value, str) and value
+    }
+    if any(value in live_values for value in testnet_values):
+        return RouteDecision(False, "testnet_env_aliases_live")
+    return RouteDecision(True, "ok", credential_env=key_env)
+
+
+def authorize_read_route(
+    raw: Any,
+    *,
+    tenant_id: str | None,
+    mode: str | None,
+    urls: Any,
+    mode_proof: ModeProof | None,
+    live_env: str,
+    testnet_env: str | None,
+    transport: Any,
+) -> RouteDecision:
+    """Read intent (#831): ``authorize_route`` for every signing base, GET.
+
+    Each URL goes through ``authorize_route`` without a transport call. The
+    transport is then judged by its ``follows_redirects`` (literal False
+    only) but not called: the read itself is the next request. No URL denies.
+    """
+    admission = admit_tenant(raw, tenant_id, mode)
+    if not admission.allowed:
+        return admission
+    candidates = [u for u in (urls or []) if isinstance(u, str) and u.strip()]
+    if not candidates:
+        return RouteDecision(False, "url_missing")
+    decision = RouteDecision(False, "url_missing")
+    for url in candidates:
+        decision = authorize_route(
+            raw,
+            tenant_id=tenant_id,
+            mode=mode,
+            url=url,
+            mode_proof=mode_proof,
+            live_env=live_env,
+            testnet_env=testnet_env,
+            transport=None,
+            method="GET",
+        )
+        if not decision.allowed:
+            return decision
+    if getattr(transport, "follows_redirects", None) is not False:
+        return RouteDecision(False, "redirects_not_disabled", transport_calls=0)
+    return decision
 
 
 def redact_mapping(payload: Any, extra_secrets: tuple[str, ...] = ()) -> dict[str, Any]:

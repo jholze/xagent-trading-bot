@@ -104,3 +104,81 @@ def wiring_log_line(
         f"short_cover tagged {symbol or '?'} halt={halted} stale={stale} "
         f"timeout={timeout} sched={sched} -> {source} ({why}) executed={executed}"
     )
+
+
+# #832: stale-quote deferral for the aria_bot queue-off loop. Same name and
+# meaning as the hub stat (+1 each time a stale price reaches an open,
+# sandbox-tagged, non-climax short, which is then not evaluated).
+STALE_TAGGED_SHORT_DEFERRED = "stale_tagged_short_deferred"
+_cycle_stats: dict[str, int] = {STALE_TAGGED_SHORT_DEFERRED: 0}
+
+
+def stale_defers_tagged_short(
+    pos: Mapping[str, Any] | None, config_raw: Mapping[str, Any] | None
+) -> bool:
+    """True for an open sandbox-tagged, non-climax short. Any error is False.
+
+    Shared by the hub stale-tick guard and the aria_bot queue-off loop.
+    """
+    try:
+        from strategies.climax_fade import is_climax_lot
+        from strategies.short_expiry import lot_uses_sandbox_expiry
+        from strategies.short_math import is_short
+
+        lot = dict(pos or {})
+        return bool(
+            is_short(lot)
+            and float(lot.get("amount") or 0) > 0
+            and not is_climax_lot(lot)
+            and lot_uses_sandbox_expiry(lot, config_raw)
+        )
+    except Exception:
+        return False
+
+
+def defer_stale_cycle_quote(
+    symbol: str, price_source: Any, config_raw: Mapping[str, Any] | None
+) -> bool:
+    """aria_bot queue-off loop (#832): skip this coin on a stale quote.
+
+    True only when the cycle's quote label is ``stale`` and every open lot of
+    the symbol is a sandbox-tagged, non-climax short. The cover is then not evaluated at
+    the stale price; ``stale_tagged_short_deferred`` counts it. Untagged,
+    long and climax lots, fresh quotes, the flag off, and any error return
+    False, so the caller makes the unchanged ``process_coin`` call.
+    """
+    if price_source != "stale":
+        return False
+    try:
+        from strategies.positions import find_open_positions_for_symbol
+        from strategies.short_expiry import sandbox_expiry_enabled
+
+        raw = dict(config_raw) if config_raw is not None else None
+        if not sandbox_expiry_enabled(raw):
+            return False
+        lots = [lot for _tf, lot in find_open_positions_for_symbol(symbol)]
+        # Every open lot of the symbol must be a tagged short: a mixed symbol
+        # (e.g. an untagged lot on another timeframe) keeps the base call.
+        if not lots or not all(stale_defers_tagged_short(lot, raw) for lot in lots):
+            return False
+        _cycle_stats[STALE_TAGGED_SHORT_DEFERRED] = (
+            int(_cycle_stats.get(STALE_TAGGED_SHORT_DEFERRED) or 0) + 1
+        )
+        from logger import log
+
+        log(
+            f"short_cover stale deferred {symbol} (queue-off cycle) "
+            f"{STALE_TAGGED_SHORT_DEFERRED}={_cycle_stats[STALE_TAGGED_SHORT_DEFERRED]}",
+            "INFO",
+        )
+        return True
+    except Exception:
+        return False
+
+
+def cycle_stale_stats() -> dict[str, int]:
+    return dict(_cycle_stats)
+
+
+def reset_cycle_stale_stats_for_tests() -> None:
+    _cycle_stats[STALE_TAGGED_SHORT_DEFERRED] = 0

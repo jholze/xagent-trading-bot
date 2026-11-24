@@ -513,12 +513,39 @@ class GateExecutionAdapter(ExecutionAdapter):
     def mode(self) -> str:
         return self._adapter_mode
 
+    def _live_credential_env_names(self) -> tuple[str, str]:
+        return (
+            str(self.live_cfg.get("api_key_env", "GATE_API_KEY")),
+            str(self.live_cfg.get("api_secret_env", "GATE_API_SECRET")),
+        )
+
+    def _testnet_strict_route(self) -> bool:
+        if self._adapter_mode != "testnet":
+            return False
+        from execution.futures_testnet_route import strict_route_enabled
+
+        return strict_route_enabled(self.config.raw)
+
+    def _credential_env_names(self) -> tuple[str | None, str | None]:
+        """Env *names* this client signs with. No value is read here.
+
+        Testnet with ``shorts.testnet_futures.strict_route`` true uses the
+        dedicated testnet names (#830, ``shorts.testnet_futures.api_key_env`` /
+        ``api_secret_env``). Every other case keeps ``live.api_key_env`` /
+        ``live.api_secret_env`` as before.
+        """
+        if self._testnet_strict_route():
+            from execution.futures_testnet_route import testnet_credential_env_names
+
+            return testnet_credential_env_names(self.config.raw)
+        return self._live_credential_env_names()
+
     def _get_exchange(self):
         if self._exchange:
             return self._exchange
-        api_key = os.getenv(self.live_cfg.get("api_key_env", "GATE_API_KEY"), "")
-        secret_env = self.live_cfg.get("api_secret_env", "GATE_API_SECRET")
-        api_secret = os.getenv(secret_env, "")
+        key_env, secret_env = self._credential_env_names()
+        api_key = os.getenv(key_env, "") if key_env else ""
+        api_secret = os.getenv(secret_env, "") if secret_env else ""
         params = {"enableRateLimit": True, "timeout": 20000}
         if self._adapter_mode == "shadow":
             if api_key and api_secret:
@@ -543,9 +570,9 @@ class GateExecutionAdapter(ExecutionAdapter):
 
         Covers every call made with this client, including the startup reads
         in ``execution/recovery.py`` and testnet spot orders (one ccxt client
-        serves both). ``authorize_route`` still runs only before testnet
-        SHORT/COVER; reads are not route-checked (follow-up, to be filed by
-        Kay). Real and shadow never reach this.
+        serves both). ``authorize_route`` runs before testnet SHORT/COVER
+        and, with ``strict_route`` true, before every recovery read (#831).
+        Real and shadow never reach this.
         """
         import requests
 
@@ -623,29 +650,212 @@ class GateExecutionAdapter(ExecutionAdapter):
             )
         return True, ""
 
-    def _futures_route_mode_proof(self, exchange, order: TradeOrder):
-        """#804 ModeProof for this route. Deliberately None: fail closed.
+    def _route_now(self) -> int:
+        """Unix seconds for ModeProof stamps (#830). One local clock for both."""
+        return int(time.time())
 
-        No production ModeProof producer exists. ``collect_mode_proof`` needs
-        a set record and a fresh readback, and both are transport calls. With
-        ``shorts.testnet_futures.strict_route`` true, every testnet SHORT/COVER
-        is therefore denied at ``mode_proof_missing`` (and then at
-        ``testnet_env_aliases_live``, see ``_futures_route_credentials``)
-        before any transport call. This stays so until a production ModeProof
-        producer and a separate testnet key env name exist (follow-up: to be
-        filed by Kay). Do not return a synthetic proof here.
+    def _futures_route_mode_proof(self, exchange, order: TradeOrder):
+        """#830 production ModeProof for this testnet SHORT/COVER. Never raises.
+
+        Built on the #804 ``collect_mode_proof`` contract:
+
+        1. Transport-free prechecks first (tenant, dedicated testnet key names,
+           pinned origin, a client that cannot follow redirects). A failure
+           returns ``mode_proof_missing: <reason>`` and makes no exchange call.
+        2. Set proof: the adapter's own isolated ``set_leverage`` result (Gate
+           returns the position, with ``mode`` and ``leverage``). SHORT sets
+           the clamped order leverage. COVER first reads the open position
+           and re-sets its own leverage, so the cover never changes margin.
+        3. Readback: a fresh ``fetch_position`` through the recovery helpers.
+        4. ``collect_mode_proof`` with ``mode_proof_max_age_seconds`` (60 s
+           ceiling, ``paper_start`` may only tighten it).
+
+        Any missing piece, mismatch, stale record or exception is a denied
+        ModeProof. No synthetic proof is built.
         """
-        return None
+        from execution.futures_testnet_route import (
+            ModeProof,
+            check_futures_url,
+            collect_mode_proof,
+            select_credentials,
+        )
+
+        try:
+            from core.tenant_context import resolve_tenant_id
+            from execution.recovery import read_swap_mode_record, swap_mode_record
+            from strategies.short_mode_proof import mode_proof_max_age_seconds
+
+            live_env, testnet_env = self._futures_route_credentials()
+            creds = select_credentials(
+                self.config.raw,
+                resolve_tenant_id(),
+                mode=self._adapter_mode,
+                live_env=live_env,
+                testnet_env=testnet_env,
+            )
+            if not creds.allowed:
+                return ModeProof(False, f"mode_proof_missing: {creds.reason}")
+            if not self._client_signs_with(exchange, creds.credential_env):
+                return ModeProof(False, "mode_proof_missing: client_not_testnet_signed")
+            checked = check_futures_url(self._futures_route_url(exchange, order))
+            if not checked.allowed:
+                return ModeProof(False, f"mode_proof_missing: {checked.reason}")
+            session = getattr(exchange, "session", None)
+            if getattr(session, "follows_redirects", None) is not False:
+                return ModeProof(False, "mode_proof_missing: redirects_not_disabled")
+            max_age, age_err = mode_proof_max_age_seconds(self.config.raw)
+            if age_err or max_age is None:
+                return ModeProof(False, age_err or "paper_start_invalid")
+
+            swap_symbol = self._swap_symbol(order)
+            if order.type == "SHORT":
+                lev, lev_err = self._clamp_short_leverage(order)
+                if lev_err:
+                    return ModeProof(False, f"mode_proof_missing: {lev_err}")
+            else:
+                current = read_swap_mode_record(exchange, swap_symbol) or {}
+                try:
+                    lev = float(current.get("leverage"))
+                except (TypeError, ValueError):
+                    lev = 0.0
+                if current.get("margin_mode") != "isolated" or lev <= 0:
+                    return ModeProof(False, "set_skipped_position_not_isolated")
+
+            response = exchange.set_leverage(
+                int(lev), swap_symbol, {"marginMode": "isolated"}
+            )
+            set_ack = swap_mode_record(response)
+            if set_ack is not None:
+                set_ack["as_of"] = self._route_now()
+
+            readback = read_swap_mode_record(exchange, swap_symbol)
+            if readback is not None:
+                readback["as_of"] = self._route_now()
+
+            class _Readback:
+                """The readback above, handed to ``collect_mode_proof``."""
+
+                synthetic = False
+
+                def read_mode(self_inner):
+                    return readback
+
+            # observed_at is taken after both stamps (same local clock).
+            return collect_mode_proof(
+                _Readback(),
+                set_ack=set_ack,
+                allow_set=False,
+                observed_at=self._route_now(),
+                max_age_seconds=max_age,
+            )
+        except Exception as e:
+            # Class name only: exception text is not put into order messages.
+            return ModeProof(False, f"mode_proof_error: {e.__class__.__name__}")
+
+    @staticmethod
+    def _client_signs_with(exchange, key_env: str | None) -> bool:
+        """True when the cached client's key is the value of ``key_env``.
+
+        Guards a client built before the names changed. Compared in process;
+        neither value is logged or returned.
+        """
+        value = os.getenv(key_env, "") if key_env else ""
+        client_key = getattr(exchange, "apiKey", None)
+        return bool(value) and isinstance(client_key, str) and client_key == value
 
     def _futures_route_credentials(self) -> tuple[str, str | None]:
-        """(live_env, testnet_env) as env *names*. No value is read.
+        """(live_env, testnet_env) as env *names* for ``select_credentials``.
 
-        Testnet mode signs with the same ``api_key_env`` as live today, so
-        ``select_credentials`` denies ``testnet_env_aliases_live`` until a
-        separate testnet key env name exists (follow-up: to be filed by Kay).
+        #830: the testnet name comes from ``shorts.testnet_futures.api_key_env``
+        (default ``GATE_TESTNET_API_KEY``). When the testnet names are missing,
+        empty, or alias the live names or values, testnet_env is None
+        (``testnet_credentials_unknown``) or the live name
+        (``testnet_env_aliases_live``). Env values are compared, never returned
+        or logged.
         """
-        key_env = str(self.live_cfg.get("api_key_env", "GATE_API_KEY"))
-        return key_env, key_env
+        from execution.futures_testnet_route import check_testnet_credentials
+
+        live_key, live_secret = self._live_credential_env_names()
+        decision = check_testnet_credentials(
+            self.config.raw,
+            live_key_env=live_key,
+            live_secret_env=live_secret,
+            environ=os.environ,
+        )
+        if decision.allowed:
+            return live_key, decision.credential_env
+        if decision.reason == "testnet_env_aliases_live":
+            return live_key, live_key
+        return live_key, None
+
+    def _read_route_mode_proof(self, exchange):
+        """#831 read-intent proof: this client is the testnet sandbox client.
+
+        Allowed only when this adapter and the resolved execution mode are both
+        testnet and ccxt reports sandbox mode on (``set_sandbox_mode(True)``).
+        A read places no risk, so no margin/position set is made here.
+        """
+        from core.execution_mode import resolve_execution_mode
+        from execution.futures_testnet_route import ModeProof
+
+        if self._adapter_mode != "testnet":
+            return ModeProof(False, "read_mode_not_testnet")
+        if resolve_execution_mode(self.config.raw).adapter_mode != "testnet":
+            return ModeProof(False, "read_mode_not_testnet")
+        if getattr(exchange, "isSandboxModeEnabled", None) is not True:
+            return ModeProof(False, "read_sandbox_not_enabled")
+        live_env, testnet_env = self._futures_route_credentials()
+        # Aliased or unknown names are denied by select_credentials itself.
+        if testnet_env and testnet_env != live_env and not self._client_signs_with(exchange, testnet_env):
+            return ModeProof(False, "read_client_not_testnet_signed")
+        return ModeProof(True, "ok")
+
+    def _private_api_bases(self, exchange) -> list[str]:
+        urls = getattr(exchange, "urls", None)
+        api = urls.get("api") if isinstance(urls, dict) else None
+        if isinstance(api, str):
+            return [api.strip().rstrip("/")] if api.strip() else []
+        private = api.get("private") if isinstance(api, dict) else None
+        if not isinstance(private, dict):
+            return []
+        return [
+            value.strip().rstrip("/")
+            for value in private.values()
+            if isinstance(value, str) and value.strip()
+        ]
+
+    def _read_route_denial(self, exchange, method: str) -> str | None:
+        """#831: ``authorize_read_route`` before one recovery read. Never raises.
+
+        Every private API base of the client must pass the pinned-origin check,
+        because spot and futures reads sign on different bases. Returns the
+        denial reason or None.
+        """
+        try:
+            from core.tenant_context import resolve_tenant_id
+            from execution.futures_testnet_route import authorize_read_route
+
+            label = str(method or "read").replace("fetch_", "", 1) or "read"
+            live_env, testnet_env = self._futures_route_credentials()
+            decision = authorize_read_route(
+                self.config.raw,
+                tenant_id=resolve_tenant_id(),
+                mode=self._adapter_mode,
+                urls=[f"{b}/futures/usdt/{label}" for b in self._private_api_bases(exchange)],
+                mode_proof=self._read_route_mode_proof(exchange),
+                live_env=live_env,
+                testnet_env=testnet_env,
+                transport=getattr(exchange, "session", None),
+            )
+        except Exception as e:
+            reason = f"route_check_error: {str(e)[:120] or e.__class__.__name__}"
+            log(f"futures testnet route read {method}: {reason}", "WARNING")
+            return reason
+        if decision.allowed:
+            log(f"futures testnet route authorized read {method}", "INFO")
+            return None
+        log(f"futures testnet route denied read {method}: {decision.reason}", "WARNING")
+        return decision.reason
 
     def _futures_route_transport(self, exchange):
         """Probe transport over the ccxt session. A real requests session is
@@ -685,9 +895,9 @@ class GateExecutionAdapter(ExecutionAdapter):
     def _futures_route_denial(self, exchange, order: TradeOrder) -> str | None:
         """Run ``authorize_route`` before any testnet futures transport (#826).
 
-        Returns a denial reason or None. ``strict_route`` off returns
-        ``strict_route_off`` with ``inhibits_existing_adapter=False``: the
-        existing adapter path continues unchanged. With it on, the
+        Returns a denial reason or None. ``strict_route`` off returns None
+        before anything else (``strict_route_off`` never inhibits the existing
+        adapter path). With it on, the #830 ModeProof is produced and the
         transport-independent checks (tenant, origin, mode proof, credentials)
         run first without a transport. The probe transport is built only when
         they pass. Never raises.
@@ -695,24 +905,29 @@ class GateExecutionAdapter(ExecutionAdapter):
         from execution.futures_testnet_route import strict_route_enabled
 
         strict = strict_route_enabled(self.config.raw)
+        if not strict:
+            # strict_route_off never inhibits the existing adapter. The #830
+            # ModeProof producer makes exchange calls, so it must not run here.
+            return None
         try:
             from core.tenant_context import resolve_tenant_id
             from execution.futures_testnet_route import authorize_route
 
             live_env, testnet_env = self._futures_route_credentials()
+            url = self._futures_route_url(exchange, order)
             route_kwargs = dict(
                 tenant_id=resolve_tenant_id(),
                 mode=self._adapter_mode,
-                url=self._futures_route_url(exchange, order),
+                url=url,
                 mode_proof=self._futures_route_mode_proof(exchange, order),
                 live_env=live_env,
                 testnet_env=testnet_env,
                 method="GET",
             )
-            # Pass 1, no transport: strict_route_off or any transport-
-            # independent denial ends here and the ccxt session is untouched.
+            # Pass 1, no transport: any transport-independent denial ends
+            # here and the probe transport is never built.
             decision = authorize_route(self.config.raw, transport=None, **route_kwargs)
-            if strict and decision.allowed:
+            if decision.allowed:
                 decision = authorize_route(
                     self.config.raw,
                     transport=self._futures_route_transport(exchange),
@@ -721,11 +936,13 @@ class GateExecutionAdapter(ExecutionAdapter):
         except Exception as e:
             reason = f"route_check_error: {str(e)[:120] or e.__class__.__name__}"
             log(f"futures testnet route {order.symbol}: {reason}", "WARNING")
-            # Off never inhibits the existing adapter, even on a check error.
-            return reason if strict else None
+            return reason
         if decision.allowed:
-            return None
-        if decision.reason == "strict_route_off" and not decision.inhibits_existing_adapter:
+            log(
+                f"futures testnet route authorized {order.type} {order.symbol} "
+                f"calls={decision.transport_calls}",
+                "INFO",
+            )
             return None
         log(
             f"futures testnet route denied {order.type} {order.symbol}: "
@@ -848,8 +1065,8 @@ class GateExecutionAdapter(ExecutionAdapter):
                 return self._active_reconcile_result(order, str(e)[:120])
             log(f"Shadow exchange init failed: {e}", "WARNING")
         if not exchange and self._adapter_mode != "shadow":
-            key_env = self.live_cfg.get("api_key_env", "GATE_API_KEY")
-            secret_env = self.live_cfg.get("api_secret_env", "GATE_API_SECRET")
+            key_env, secret_env = self._credential_env_names()
+            key_env, secret_env = key_env or "<unset>", secret_env or "<unset>"
             return self._rejected_result(
                 order,
                 f"Gate API keys not configured ({key_env} / {secret_env})",
