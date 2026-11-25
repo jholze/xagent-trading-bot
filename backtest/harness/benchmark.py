@@ -12,9 +12,9 @@ with the same capital and the same cost model.
   fee + slippage, every 1h bar), so both sides use the same marking.
 * Buy & Hold: the capital base is split equally across the basket symbols at
   the open of the first 1h bar at or after the window start, held to the last
-  bar that closed before the window end. The series starts at cash: the first
-  point (the window start) and any point before the entry bar opens are worth
-  the capital itself. Entry pays fee + slippage and every later mark is the
+  bar that closed before the window end. The series starts at cash: at the
+  first point (the window start), and at any point before a leg's entry bar
+  opens, that leg is worth its share of the capital (cash). Entry pays fee + slippage and every later mark is the
   liquidation value net of fee + slippage (the harness ``CostModel``), so the
   round-trip cost shows in return, PnL, the first month, the first daily
   return and max drawdown, as it does for the strategy (#827).

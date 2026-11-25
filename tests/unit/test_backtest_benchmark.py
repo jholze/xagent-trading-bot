@@ -240,3 +240,32 @@ def test_827_zero_costs_rising_price_unchanged():
     assert res["equity"] == pytest.approx([1000.0, 1240.0, 1480.0, 1720.0])
     m = bm.series_metrics(pts, res["equity"], 365.0)
     assert m["return_pct"] == pytest.approx(72.0) and m["max_dd_pct"] == 0.0
+
+
+def _late_entry_legs():
+    return {"AAA/USDT": bars(T0, 5 * 24, lambda k: 100.0),
+            "LATE/USDT": bars(T0 + timedelta(hours=27), 4 * 24, lambda k: 100.0)}
+
+
+def test_827_leg_is_cash_until_its_entry_bar_opens():
+    # Window starts at T0+6h; LATE's first bar opens at T0+27h (lag 21h, within max_entry_lag_s).
+    start = int(T0.timestamp()) + 6 * H
+    pts = bm.sample_points(start, int(T0.timestamp()) + 4 * DAY)
+    res = bm.buy_and_hold(["AAA/USDT", "LATE/USDT"], _late_entry_legs().get, pts, CAP, fee_pct=FEE,
+                          slippage_pct=lambda s: SLIP)
+    net = 1.0 + FLAT_RET / 100.0
+    assert res["symbols"] == ["AAA/USDT", "LATE/USDT"]
+    assert res["equity"][0] == pytest.approx(CAP)
+    assert res["equity"][1] == pytest.approx(500.0 + 500.0 * net)  # T0+24h: AAA bought, LATE still cash
+    assert res["equity"][2] == pytest.approx(CAP * net)  # T0+48h: both bought
+
+
+def test_827_leg_is_marked_net_at_its_entry_bar_open():
+    start = int(T0.timestamp()) + 6 * H
+    late_open = int(T0.timestamp()) + 27 * H
+    pts = sorted(bm.sample_points(start, int(T0.timestamp()) + 4 * DAY) + [late_open])
+    res = bm.buy_and_hold(["AAA/USDT", "LATE/USDT"], _late_entry_legs().get, pts, CAP, fee_pct=FEE,
+                          slippage_pct=lambda s: SLIP)
+    k = pts.index(late_open)
+    assert res["equity"][k] == pytest.approx(CAP * (1.0 + FLAT_RET / 100.0))  # LATE bought at the open: net, not cash
+    assert res["equity"][k] < 500.0 + 500.0

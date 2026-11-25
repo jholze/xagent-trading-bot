@@ -63,6 +63,8 @@ Windows: W1 2026-07-28T22:00 to 2026-08-26T22:00 UTC, W2 2026-08-26T22:00 to 202
 
 ### Buy & Hold comparison
 
+> B&H figures predate #827 (costs cancelled at equity[0]); B&H about 0.7-1.4 pp too high.
+
 #### baseline: strategy vs Buy & Hold
 
 Window 2026-07-28T22:00 to 2026-10-30T04:00 UTC. Capital base 380,357 USDT (peak deployed capital). Sharpe = daily equity returns, annualised x sqrt(365).
