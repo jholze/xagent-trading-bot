@@ -12,8 +12,12 @@ with the same capital and the same cost model.
   fee + slippage, every 1h bar), so both sides use the same marking.
 * Buy & Hold: the capital base is split equally across the basket symbols at
   the open of the first 1h bar at or after the window start, held to the last
-  bar that closed before the window end. Entry pays fee + slippage, every mark
-  is the liquidation value net of fee + slippage (the harness ``CostModel``).
+  bar that closed before the window end. The series starts at cash: the first
+  point (the window start) and any point before the entry bar opens are worth
+  the capital itself. Entry pays fee + slippage and every later mark is the
+  liquidation value net of fee + slippage (the harness ``CostModel``), so the
+  round-trip cost shows in return, PnL, the first month, the first daily
+  return and max drawdown, as it does for the strategy (#827).
 * Baskets (configurable): the fixed benchmark symbols (default BTC only) and an
   equal-weight basket of the symbols the run actually traded.
 * Sharpe: mean / stdev of daily equity returns times sqrt(periods_per_year).
@@ -193,8 +197,10 @@ def buy_and_hold(
 
     Entry at the open of the first bar whose open is at or after the window
     start (the same causal convention as the engine: no bar that opened
-    before the start is used). Every mark, including the first, is the
-    liquidation value net of fee + slippage, as the engine marks open lots.
+    before the start is used). The first point (window start) and points
+    before the entry bar opens are cash (``per_leg``), like the strategy
+    series, which starts at capital. Every later mark is the liquidation value
+    net of fee + slippage, as the engine marks open lots (#827).
     """
     start, end = points[0], points[-1]
     legs = []
@@ -219,6 +225,9 @@ def buy_and_hold(
         qty = per_leg * (1.0 - fee) / (entry * (1.0 + slip))
         vals = []
         for p in points:
+            if p == start or p < ts[i]:  # still cash: not bought yet
+                vals.append(per_leg)
+                continue
             # last bar that closed at or before p (bar open + bar_seconds <= p)
             j = bisect.bisect_right(ts, p - bar_seconds) - 1
             px = float(bars[j][4]) if j >= i else entry

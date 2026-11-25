@@ -54,8 +54,9 @@ def test_costs_always_lower_the_benchmark():
     pts = bm.sample_points(int(T0.timestamp()), int(T0.timestamp()) + n * H)
     free = bm.buy_and_hold(["AAA/USDT"], data.get, pts, 1000.0)
     paid = bm.buy_and_hold(["AAA/USDT"], data.get, pts, 1000.0, fee_pct=0.2, slippage_pct=lambda s: 0.5)
-    assert all(p < f for p, f in zip(paid["equity"], free["equity"]))
-    assert paid["equity"][0] < 1000.0  # entry cost and liquidation cost show at once
+    # #827 (spec change): both series start at cash; costs lower every later mark.
+    assert paid["equity"][0] == free["equity"][0] == pytest.approx(1000.0)
+    assert all(p < f for p, f in zip(paid["equity"][1:], free["equity"][1:]))
 
 
 def test_symbol_without_price_at_start_is_excluded_and_listed():
@@ -184,3 +185,58 @@ def test_fixed_capital_and_empty_run():
     empty = bm.benchmark_report(run([], {}, {}), lambda s: [], T0, T0 + timedelta(days=2))
     assert empty["strategy"] is None and "note" in empty
     assert "no capital" in "\n".join(bm.render_markdown("x", empty))
+
+
+# ------------------------------------------- #827: Buy & Hold starts at cash
+FEE, SLIP, CAP = 0.2, 0.5, 1000.0
+FLAT_RET = 100.0 * ((CAP * (1 - FEE / 100) / (100.0 * (1 + SLIP / 100))) * 100.0 * (1 - SLIP / 100) * (1 - FEE / 100) / CAP - 1.0)
+
+
+def _flat_report(days=5):
+    data = {"FLAT/USDT": bars(T0, days * 24, lambda k: 100.0)}
+    r = run([], {}, {})  # zero-PnL strategy
+    cfg = bm.BenchmarkConfig(symbols=("FLAT/USDT",), include_traded_basket=False, capital=CAP)
+    return bm.benchmark_report(r, data.get, T0, T0 + timedelta(days=days), config=cfg,
+                               fee_pct=FEE, slippage_pct=lambda s: SLIP)
+
+
+def test_827_flat_price_hand_calculated_round_trip_cost():
+    assert FLAT_RET == pytest.approx(-1.39065, abs=1e-5)  # 0.998**2 * 0.995 / 1.005 - 1
+    b = _flat_report()["benchmarks"]["FLAT/USDT"]
+    m = b["metrics"]
+    assert m["start_equity"] == pytest.approx(CAP)
+    assert m["return_pct"] == pytest.approx(FLAT_RET, abs=1e-9)
+    assert m["pnl_usdt"] == pytest.approx(CAP * FLAT_RET / 100.0, abs=1e-9)  # about -13.90
+    assert b["per_symbol"]["FLAT/USDT"]["return_pct"] == pytest.approx(m["return_pct"], abs=1e-12)
+    assert m["months"][0]["return_pct"] == pytest.approx(FLAT_RET, abs=1e-9)  # single (first) month bucket
+    assert m["max_dd_pct"] == pytest.approx(-FLAT_RET, abs=1e-9)  # cash -> first net mark is a drawdown
+
+
+def test_827_first_daily_return_carries_the_cost():
+    data = {"FLAT/USDT": bars(T0, 5 * 24, lambda k: 100.0)}
+    pts = bm.sample_points(int(T0.timestamp()), int(T0.timestamp()) + 5 * DAY)
+    res = bm.buy_and_hold(["FLAT/USDT"], data.get, pts, CAP, fee_pct=FEE, slippage_pct=lambda s: SLIP)
+    assert res["equity"][0] == pytest.approx(CAP)
+    rets = bm.daily_returns_from_equity(res["equity"])
+    assert rets[0] == pytest.approx(FLAT_RET / 100.0, abs=1e-12) and rets[0] < 0
+    assert all(r == pytest.approx(0.0) for r in rets[1:])
+
+
+def test_827_benchmark_report_zero_pnl_strategy_beats_costly_flat_bh():
+    rep = _flat_report()
+    st, b = rep["strategy"], rep["benchmarks"]["FLAT/USDT"]
+    assert st["pnl_usdt"] == pytest.approx(0.0) and st["return_pct"] == pytest.approx(0.0)
+    assert b["metrics"]["pnl_usdt"] < 0
+    assert b["excess_return_pp"] == pytest.approx(-FLAT_RET, abs=1e-9)  # about +1.39 pp
+    assert b["beats_return"] is True
+
+
+def test_827_zero_costs_rising_price_unchanged():
+    n = 72
+    data = {"UP/USDT": bars(T0, n, lambda k: 100.0 + k)}
+    pts = bm.sample_points(int(T0.timestamp()), int(T0.timestamp()) + n * H)
+    res = bm.buy_and_hold(["UP/USDT"], data.get, pts, 1000.0)
+    # qty = 10; marks = close of the last bar closed at each point
+    assert res["equity"] == pytest.approx([1000.0, 1240.0, 1480.0, 1720.0])
+    m = bm.series_metrics(pts, res["equity"], 365.0)
+    assert m["return_pct"] == pytest.approx(72.0) and m["max_dd_pct"] == 0.0
