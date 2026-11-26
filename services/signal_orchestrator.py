@@ -34,6 +34,20 @@ def _utc_now():
     return datetime.now(timezone.utc)
 
 
+def _in_memory_stale_after_sec(config_raw):
+    """``stale_after_sec`` from the loaded config. No disk and no Mongo.
+
+    The #835 buy path passes this same in-memory ``oracle_score`` block into
+    ``score_is_fresh``. A missing window is not fresh.
+    """
+    raw = config_raw if isinstance(config_raw, dict) else {}
+    switches = raw.get("rule_switches")
+    block = switches.get("oracle_score") if isinstance(switches, dict) else None
+    if not isinstance(block, dict):
+        return None
+    return block.get("stale_after_sec")
+
+
 def _entry_tier_from_analysis(analysis) -> str | None:
     """#711: the tier the cycle analysis resolved for this coin (no lot yet)."""
     try:
@@ -527,14 +541,16 @@ class SignalOrchestrator:
         errored = False
         try:
             from services.market_oracle.score import score_is_fresh
-            from services.market_oracle.score_runtime import (
-                committed_oracle_score,
-                read_published_score,
-            )
+            from services.market_oracle.score_runtime import read_published_score
 
+            # Same accessor as the #835 buy path: published snapshot plus
+            # score_is_fresh against the in-memory stale window. No disk read
+            # and no copy of the Redis EMA state.
             block = read_published_score()
             now_ts = float(now.timestamp())
-            stale_after = committed_oracle_score().get("stale_after_sec")
+            stale_after = _in_memory_stale_after_sec(
+                self.config.raw if hasattr(self.config, "raw") else None
+            )
             if isinstance(block, dict):
                 smoothed = block.get("smoothed")
                 try:

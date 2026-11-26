@@ -47,13 +47,17 @@ def _reset_gate_state():
     reset_trend_shadow()
 
 
-def _raw(mode="enforce", max_score=-0.2, *, enabled=True, shorts_on=True):
+def _raw(mode="enforce", max_score=-0.2, *, enabled=True, shorts_on=True, stale_after=100.0):
     gate = {"mode": mode, "max_score": max_score}
+    oracle = {"default_mode": "off"}
+    if stale_after is not None:
+        oracle["stale_after_sec"] = stale_after
     return {
         "shorts": {
             "enabled": shorts_on,
             "climax_fade": {"enabled": enabled, "regime_gate": gate},
-        }
+        },
+        "rule_switches": {"oracle_score": oracle},
     }
 
 
@@ -113,7 +117,7 @@ def _orch(raw, fetch, maybe=None):
     return orch
 
 
-def _patch_clock(monkeypatch, logs, block, *, stale_after=100.0):
+def _patch_clock(monkeypatch, logs, block):
     monkeypatch.setattr("services.signal_orchestrator._utc_now", lambda: NOW)
 
     def _reader():
@@ -121,11 +125,11 @@ def _patch_clock(monkeypatch, logs, block, *, stale_after=100.0):
             raise block
         return block
 
+    def _no_disk():
+        raise AssertionError("regime gate must not read the committed config file")
+
     monkeypatch.setattr("services.market_oracle.score_runtime.read_published_score", _reader)
-    monkeypatch.setattr(
-        "services.market_oracle.score_runtime.committed_oracle_score",
-        lambda: {"stale_after_sec": stale_after},
-    )
+    monkeypatch.setattr("services.market_oracle.score_runtime.committed_oracle_score", _no_disk)
     monkeypatch.setattr(
         "services.signal_orchestrator.log",
         lambda message, level="INFO": logs.append((level, str(message))),
@@ -199,12 +203,7 @@ def test_enforce_blocks_when_the_score_is_missing(monkeypatch):
 def test_enforce_blocks_when_the_score_is_stale(monkeypatch):
     logs = []
     now_ts = NOW.timestamp()
-    _patch_clock(
-        monkeypatch,
-        logs,
-        {"smoothed": -0.5, "ts": now_ts - 101},
-        stale_after=100,
-    )
+    _patch_clock(monkeypatch, logs, {"smoothed": -0.5, "ts": now_ts - 101})
     fetches = []
     orch = _orch(_raw(), lambda *a, **k: fetches.append("fetch"))
     assert orch._try_climax_fade_open("AAA/USDT", 1.0) is None
@@ -213,6 +212,15 @@ def test_enforce_blocks_when_the_score_is_stale(monkeypatch):
     assert fields["reason"] == "stale"
     assert fields["s"] == "-0.5"
     assert fields["age_s"] == "101"
+
+    # A missing in-memory window is not fresh. Do not fall back to the config file.
+    logs.clear()
+    reset_climax_regime_gate_log_for_tests()
+    _patch_clock(monkeypatch, logs, {"smoothed": -0.5, "ts": now_ts})
+    bare = _orch(_raw(stale_after=None), lambda *a, **k: fetches.append("fetch"))
+    assert bare._try_climax_fade_open("CCC/USDT", 1.0) is None
+    assert fetches == []
+    assert _fields(_gate_lines(logs)[0])["reason"] == "stale"
 
 
 def test_enforce_opens_at_and_below_max_score(monkeypatch):
@@ -290,9 +298,13 @@ def test_off_does_not_read_the_score_and_still_opens(monkeypatch):
     def _reader():
         raise AssertionError("off mode must not read the score")
 
+    def _no_disk():
+        raise AssertionError("off mode must not read the committed config file")
+
     monkeypatch.setattr("strategies.climax_fade.closed_bar_from_ohlcv", closed)
     monkeypatch.setattr("services.signal_orchestrator._utc_now", lambda: NOW)
     monkeypatch.setattr("services.market_oracle.score_runtime.read_published_score", _reader)
+    monkeypatch.setattr("services.market_oracle.score_runtime.committed_oracle_score", _no_disk)
     monkeypatch.setattr(
         "services.signal_orchestrator.log",
         lambda message, level="INFO": logs.append(str(message)),
@@ -383,6 +395,11 @@ def test_cover_path_does_not_read_the_regime_score():
     assert "regime_gate" not in src
     opened = inspect.getsource(SignalOrchestrator._try_climax_fade_open)
     assert opened.index("_climax_regime_gate_allows") < opened.index("fetch_ohlcv")
+    gate_src = inspect.getsource(SignalOrchestrator._climax_regime_gate_allows)
+    assert gate_src.index('gate.get("mode") == "off"') < gate_src.index("read_published_score")
+    assert "committed_oracle_score" not in gate_src
+    assert "load_score_state" not in gate_src
+    assert "score_is_fresh" in gate_src
 
 
 def test_gate_line_shape():
@@ -410,6 +427,10 @@ def test_committed_config_pins_the_gate_and_leaves_the_kill_switches():
     assert fade["size_factor"] == 0.5
     assert fade["regime_gate"]["mode"] == "enforce"
     assert fade["regime_gate"]["max_score"] == -0.2
+    oracle = disk["rule_switches"]["oracle_score"]
+    assert "mode" not in oracle
+    assert oracle["default_mode"] == "off"
+    assert oracle["stale_after_sec"] == 2400
     shadow = shorts["trend_short_shadow"]
     assert shadow["enabled"] is True
     assert shadow["fast_hours"] == 48

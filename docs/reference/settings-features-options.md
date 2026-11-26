@@ -54,7 +54,7 @@ A missing or stale score, and any score exception, leave the buy on the fixed te
 
 The gate applies to climax-fade **opens** only. Cover, stop, and time doors are unchanged. Thresholds, `exclude_symbols`, and `size_factor` are unchanged. `shorts.enabled`, `shorts.auto_after_sell`, and `shorts.allow_live` are unchanged.
 
-The smoothed score and its age come from the #835 reader (`read_published_score`) and `score_is_fresh` against `rule_switches.oracle_score.stale_after_sec`. This block does not recompute the score.
+The smoothed score comes from the #835 reader (`read_published_score`). Freshness is `score_is_fresh` on that block's `ts` (advanced on every successful poll) against the in-memory `rule_switches.oracle_score.stale_after_sec` (committed `2400`). The gate does not read the config file, does not recompute the score, and does not use the Redis EMA state.
 
 | key | committed | meaning |
 | --- | --- | --- |
