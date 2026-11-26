@@ -45,6 +45,7 @@ def climax_fade_config(raw: dict | None = None) -> dict[str, Any]:
     block = shorts.get("climax_fade") if isinstance(shorts, dict) else None
     if not isinstance(block, dict):
         out["enabled"] = False
+        out["regime_gate"] = normalize_regime_gate(None)
         return out
     if "enabled" in block:
         out["enabled"] = bool(block.get("enabled"))
@@ -65,6 +66,7 @@ def climax_fade_config(raw: dict | None = None) -> dict[str, Any]:
             out[key] = block[key]
     if isinstance(block.get("exclude_symbols"), list) and block["exclude_symbols"]:
         out["exclude_symbols"] = [normalize_climax_symbol(s) for s in block["exclude_symbols"]]
+    out["regime_gate"] = normalize_regime_gate(block.get("regime_gate"))
     return out
 
 
@@ -120,6 +122,98 @@ def bar_return(prev_close, close) -> float | None:
     if prev <= 0:
         return None
     return last / prev - 1.0
+
+
+def _finite_num(value: Any) -> float | None:
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if num != num or num in (float("inf"), float("-inf")):
+        return None
+    return num
+
+
+def normalize_regime_gate(raw: Any) -> dict[str, Any]:
+    """``off`` when the block is missing. An unknown mode fails closed (``enforce``)."""
+    out: dict[str, Any] = {"mode": "off", "max_score": None}
+    if not isinstance(raw, dict):
+        return out
+    mode = str(raw.get("mode") or "off").strip().lower()
+    if mode not in ("off", "shadow", "enforce"):
+        mode = "enforce"
+    out["mode"] = mode
+    out["max_score"] = _finite_num(raw.get("max_score"))
+    return out
+
+
+def regime_gate_verdict(gate: dict | None, *, smoothed: Any, fresh: bool) -> dict[str, Any]:
+    """Pure open decision. ``block`` is true only in enforce when the open must not happen.
+
+    ``verb`` is ``blocked`` or ``would_block`` when a line should be logged.
+    A fresh score at or below ``max_score`` is ``reason=ok`` and does not log.
+    """
+    view = normalize_regime_gate(gate)
+    mode = view["mode"]
+    max_score = view["max_score"]
+    result: dict[str, Any] = {
+        "mode": mode,
+        "block": False,
+        "verb": None,
+        "reason": "ok",
+        "s": None,
+        "max_score": max_score,
+    }
+    if mode == "off":
+        return result
+    s = _finite_num(smoothed)
+    result["s"] = s
+    if s is None:
+        reason = "missing"
+    elif not fresh:
+        reason = "stale"
+    elif max_score is None:
+        reason = "bad_config"
+    elif s > float(max_score):
+        reason = "above_max"
+    else:
+        reason = "ok"
+    result["reason"] = reason
+    if reason != "ok":
+        result["verb"] = "blocked" if mode == "enforce" else "would_block"
+        result["block"] = mode == "enforce"
+    return result
+
+
+def format_gate_num(value: Any) -> str:
+    num = _finite_num(value)
+    if num is None:
+        return "na"
+    text = f"{num:.6f}".rstrip("0").rstrip(".")
+    if text in ("", "-", "-0"):
+        return "0"
+    return text
+
+
+def format_regime_gate_line(symbol: str, verdict: dict, age_s: Any) -> str:
+    verb = verdict.get("verb") or "blocked"
+    reason = verdict.get("reason") or "missing"
+    return (
+        f"climax_fade_regime_gate {verb} symbol={symbol} "
+        f"s={format_gate_num(verdict.get('s'))} age_s={format_gate_num(age_s)} "
+        f"max={format_gate_num(verdict.get('max_score'))} reason={reason}"
+    )
+
+
+def last_closed_4h_open_ms(now) -> int:
+    """Open timestamp (ms) of the latest fully closed 4h bar. Wall clock only."""
+    if isinstance(now, datetime):
+        n = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+        now_ms = int(n.timestamp() * 1000)
+    else:
+        now_ms = int(float(now) * 1000)
+    open_ms = (now_ms // _FOUR_H_MS) * _FOUR_H_MS
+    return open_ms - _FOUR_H_MS
 
 
 def is_closed_4h_bar(bar_ts_ms, now) -> bool:
