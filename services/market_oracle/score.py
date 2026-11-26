@@ -1,7 +1,7 @@
 """Continuous market-oracle regime score (KLTB-7, #835).
 
 Pure functions. Every weight, scale, half-life, gap, staleness limit and
-mapping anchor is an argument. Callers read them from
+mapping coefficient is an argument. Callers read them from
 ``rule_switches.oracle_score`` in committed ``config.json``.
 
 Component inputs are the feature dict ``MarketDataClient.fetch_features``
@@ -37,11 +37,38 @@ def _finite(value: Any) -> float | None:
     return out
 
 
-def components(features: dict | None, specs: list | None) -> dict[str, float]:
-    """One clipped component per spec whose feature is present.
+def _blend_value(features: dict, legs: list) -> float | None:
+    """Weighted sum of blend legs. Any missing leg drops the whole blend.
 
-    ``(value - center) / scale * sign``, then clipped to [-1, 1]. A missing
-    feature, a non-numeric value, or a zero scale drops that component.
+    The weights are the coefficients in the sum (0.7 and 0.3 stay 0.7·a + 0.3·b).
+    They are not renormalised inside the blend.
+    """
+    if not isinstance(features, dict) or not legs:
+        return None
+    acc = 0.0
+    for leg in legs:
+        if not isinstance(leg, dict):
+            return None
+        feature = leg.get("feature")
+        weight = _finite(leg.get("weight"))
+        if not isinstance(feature, str) or not feature or weight is None:
+            return None
+        if feature not in features:
+            return None
+        value = _finite(features.get(feature))
+        if value is None:
+            return None
+        acc += weight * value
+    return acc
+
+
+def components(features: dict | None, specs: list | None) -> dict[str, float]:
+    """One clipped component per spec whose inputs are present.
+
+    A spec with ``blend`` uses the weighted sum of those features, then
+    ``(blend - center) / scale * sign``. A single ``feature`` uses that value
+    the same way. The result is clipped to [-1, 1]. A missing input, a
+    non-numeric value, or a zero scale drops that component.
     """
     out: dict[str, float] = {}
     if not isinstance(features, dict) or not isinstance(specs, list):
@@ -50,12 +77,16 @@ def components(features: dict | None, specs: list | None) -> dict[str, float]:
         if not isinstance(spec, dict):
             continue
         name = spec.get("name")
-        feature = spec.get("feature")
-        if not isinstance(name, str) or not name or not isinstance(feature, str) or not feature:
+        if not isinstance(name, str) or not name:
             continue
-        if feature not in features:
-            continue
-        value = _finite(features.get(feature))
+        blend = spec.get("blend")
+        if isinstance(blend, list) and blend:
+            value = _blend_value(features, blend)
+        else:
+            feature = spec.get("feature")
+            if not isinstance(feature, str) or not feature or feature not in features:
+                continue
+            value = _finite(features.get(feature))
         scale = _finite(spec.get("scale"))
         if value is None or scale is None or scale == 0.0:
             continue
@@ -153,93 +184,102 @@ def smooth_score(
     return (ema_update(prev_f, raw_f, dt, half_life_sec), False)
 
 
-def _interp(s: float, anchors: list, field: str) -> float | None:
-    points: list[tuple[float, float]] = []
-    for anchor in anchors:
-        if not isinstance(anchor, dict) or field not in anchor:
-            continue
-        xs = _finite(anchor.get("s"))
-        ys = _finite(anchor.get(field))
-        if xs is None or ys is None:
-            continue
-        points.append((xs, ys))
-    if not points:
-        return None
-    points.sort(key=lambda item: item[0])
-    if s <= points[0][0]:
-        return points[0][1]
-    if s >= points[-1][0]:
-        return points[-1][1]
-    for (s0, y0), (s1, y1) in zip(points, points[1:]):
-        if s0 <= s <= s1:
-            if s1 == s0:
-                return y1
-            t = (s - s0) / (s1 - s0)
-            return y0 + t * (y1 - y0)
-    return points[-1][1]
-
-
-def _scaled(interp: float | None, base: float | None, ref: float | None) -> float | None:
-    if interp is None:
-        return base
-    if base is None or ref is None or ref == 0.0:
-        return interp
-    return interp * (base / ref)
+def _round_half_up(value: float) -> int:
+    """Round half away from zero for the non-negative SMA lengths in #835."""
+    return int(math.floor(float(value) + 0.5))
 
 
 def filter_params(s: float, base_cfg: dict | None, mapping: dict | None) -> dict[str, Any]:
-    """Map a score onto filter parameters.
+    """Map a score onto filter parameters relative to the tenant base.
 
-    At each anchor, a field scales by ``base / reference`` so s = 0 reproduces
-    the tenant base when the reference equals that base. Outside the anchor
-    span the nearest anchor is held, so a higher score is never stricter than
-    the loosest anchor. ``sma_days`` is floored (a non-increasing round) and
-    then held at ``mapping["sma_days_min"]`` when that key is set.
+    Every coefficient is read from ``mapping``. s = 0 returns the tenant base.
+    ``max_pump_24h_pct`` is not mapped. ``sma_condition_off`` is true at and
+    above ``sma_off_at``; ``sma_window`` is then the configured floor, used
+    only to measure extension. ``size_round_up_frac`` is the fraction of
+    ``min_trade`` inside which a shortfall may be rounded up (0 means skip).
     """
     base = base_cfg if isinstance(base_cfg, dict) else {}
     block = mapping if isinstance(mapping, dict) else {}
-    ref = block.get("reference") if isinstance(block.get("reference"), dict) else {}
-    anchors = block.get("anchors") if isinstance(block.get("anchors"), list) else []
     s_f = _finite(s)
     if s_f is None:
         s_f = 0.0
     s_f = clip(s_f)
-    sma_min = _finite(block.get("sma_days_min"))
 
-    def one(field: str, *, as_int: bool = False) -> float | int | None:
-        interp = _interp(s_f, anchors, field)
-        base_v = _finite(base.get(field))
-        ref_v = _finite(ref.get(field))
-        scaled = _scaled(interp, base_v, ref_v)
-        if scaled is None:
+    def base_of(field: str) -> float | None:
+        return _finite(base.get(field))
+
+    sma_base = base_of("sma_days")
+    tight = _finite(block.get("sma_tight_days"))
+    neg_span = _finite(block.get("sma_neg_span"))
+    pos_span = _finite(block.get("sma_pos_span"))
+    floor = _finite(block.get("sma_floor"))
+    off_at = _finite(block.get("sma_off_at"))
+    sma_days: int | None = None
+    sma_off = False
+    sma_window: int | None = None
+    if (
+        sma_base is not None
+        and sma_base > 0
+        and tight is not None
+        and tight > 0
+        and neg_span is not None
+        and neg_span > 0
+        and pos_span is not None
+        and pos_span > 0
+        and floor is not None
+    ):
+        floor_n = max(1, _round_half_up(floor))
+        if off_at is not None and s_f >= off_at:
+            sma_off = True
+            sma_window = floor_n
+        elif s_f < 0:
+            power = min((-s_f) / neg_span, 1.0)
+            sma_days = _round_half_up(sma_base * ((tight / sma_base) ** power))
+            if sma_days < 1:
+                sma_days = max(1, _round_half_up(sma_base))
+            sma_window = sma_days
+        else:
+            raw = sma_base - (sma_base - 1.0) * min(s_f / pos_span, 1.0)
+            sma_days = max(floor_n, _round_half_up(raw))
+            sma_window = sma_days
+
+    ext = None
+    ext_base = base_of("max_extension_pct")
+    slope = _finite(block.get("extension_slope"))
+    if ext_base is not None and slope is not None:
+        ext = ext_base * (1.0 + slope * s_f)
+
+    floor_base = _finite(block.get("floor_base"))
+    floor_exp = _finite(block.get("floor_exponent"))
+
+    def scaled_floor(field: str) -> float | None:
+        value = base_of(field)
+        if value is None or floor_base is None or floor_base <= 0 or floor_exp is None:
             return None
-        if not as_int:
-            return scaled
-        n = int(math.floor(scaled + 1e-9))
-        if sma_min is not None:
-            n = max(int(math.floor(sma_min)), n)
-        if n < 1:
-            if base_v is None:
-                return None
-            return max(1, int(math.floor(base_v)))
-        return n
+        return value * (floor_base ** (-s_f * floor_exp))
+
+    frac = None
+    round_frac = _finite(block.get("size_round_up_frac"))
+    if round_frac is not None:
+        frac = round_frac * max(s_f, 0.0)
 
     return {
         "s": s_f,
-        "sma_days": one("sma_days", as_int=True),
-        "max_extension_pct": one("max_extension_pct"),
-        "max_pump_24h_pct": one("max_pump_24h_pct"),
-        "mcap_floor_usd": one("mcap_floor_usd"),
-        "liq_floor_usdt": one("liq_floor_usdt"),
-        "size_round_up_usdt": one("size_round_up_usdt"),
+        "sma_days": sma_days,
+        "sma_condition_off": sma_off,
+        "sma_window": sma_window,
+        "max_extension_pct": ext,
+        "mcap_floor_usd": scaled_floor("mcap_floor_usd"),
+        "liq_floor_usdt": scaled_floor("liq_floor_usdt"),
+        "size_round_up_frac": frac,
     }
 
 
 def clamp_not_looser(params: dict | None, base_cfg: dict | None, s: float | None) -> dict:
     """For s <= 0, refuse a mapped sma shorter or an extension wider than base.
 
-    A positive score may loosen. max_pump is left as mapped; the trend filter
-    does not apply it in enforce (the caller keeps the tenant pump cap).
+    A positive score may loosen. An SMA condition that is off is left off.
+    max_pump is not a mapped field.
     """
     out = dict(params or {})
     base = base_cfg if isinstance(base_cfg, dict) else {}
@@ -248,8 +288,10 @@ def clamp_not_looser(params: dict | None, base_cfg: dict | None, s: float | None
         return out
     base_sma = _finite(base.get("sma_days"))
     mapped_sma = _finite(out.get("sma_days"))
-    if base_sma is not None and mapped_sma is not None:
-        out["sma_days"] = int(max(mapped_sma, base_sma))
+    if base_sma is not None and mapped_sma is not None and not out.get("sma_condition_off"):
+        held = int(max(mapped_sma, base_sma))
+        out["sma_days"] = held
+        out["sma_window"] = held
     base_ext = _finite(base.get("max_extension_pct"))
     mapped_ext = _finite(out.get("max_extension_pct"))
     if base_ext is not None and mapped_ext is not None:
@@ -330,6 +372,9 @@ def history_cutoff(now_ts: float, retain_sec: float) -> float | None:
 
 
 def _fmt_num(value: Any) -> str:
+    if isinstance(value, str):
+        text = value.strip()
+        return text if text else "na"
     num = _finite(value)
     if num is None:
         return "na"

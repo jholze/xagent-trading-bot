@@ -144,10 +144,7 @@ def _specs(block: dict) -> list:
 
 def _mapping(block: dict) -> dict:
     mapping = block.get("mapping")
-    out = dict(mapping) if isinstance(mapping, dict) else {}
-    if "sma_days_min" not in out and block.get("sma_days_min") is not None:
-        out["sma_days_min"] = block.get("sma_days_min")
-    return out
+    return dict(mapping) if isinstance(mapping, dict) else {}
 
 
 def compute_poll(features: dict | None, memory: dict | None, block: dict, now_ts: float) -> tuple[dict | None, dict]:
@@ -311,7 +308,6 @@ def _base_cfg(trend_cfg: dict, floors: dict) -> dict:
     return {
         "sma_days": trend_cfg.get("sma_days"),
         "max_extension_pct": trend_cfg.get("max_extension_pct"),
-        "max_pump_24h_pct": trend_cfg.get("max_pump_24h_pct"),
         "mcap_floor_usd": floors.get("mcap_floor_usd"),
         "liq_floor_usdt": floors.get("liq_floor_usdt"),
     }
@@ -385,18 +381,37 @@ def scored_trend_decision(
                 log.warning("oracle score mapping failed", exc_info=True)
                 mapped = None
     score_sma = fixed_sma
-    if isinstance(mapped, dict) and mapped.get("sma_days") is not None:
-        score_sma = int(mapped["sma_days"])
+    sma_log = None
+    if isinstance(mapped, dict):
+        if mapped.get("sma_condition_off"):
+            window = mapped.get("sma_window")
+            if window is not None:
+                score_sma = int(window)
+            sma_log = "off"
+        elif mapped.get("sma_days") is not None:
+            score_sma = int(mapped["sma_days"])
+            sma_log = mapped["sma_days"]
     limit = max(fixed_sma, score_sma) + 10
     daily = rs.closed_bars(fetch_daily(limit), now, rs.DAY)
     fixed = rs.evaluate_trend_filter(trend_cfg, daily, hourly)
     score_check = None
-    if isinstance(mapped, dict) and mapped.get("sma_days") is not None:
+    if isinstance(mapped, dict):
         scored_cfg = dict(trend_cfg)
-        scored_cfg["sma_days"] = mapped["sma_days"]
+        use_score = False
+        if mapped.get("sma_condition_off"):
+            scored_cfg["sma_condition_off"] = True
+            if mapped.get("sma_window") is not None:
+                scored_cfg["sma_days"] = mapped["sma_window"]
+            use_score = True
+        elif mapped.get("sma_days") is not None:
+            scored_cfg.pop("sma_condition_off", None)
+            scored_cfg["sma_days"] = mapped["sma_days"]
+            use_score = True
         if mapped.get("max_extension_pct") is not None:
             scored_cfg["max_extension_pct"] = mapped["max_extension_pct"]
-        score_check = rs.evaluate_trend_filter(scored_cfg, daily, hourly)
+            use_score = True
+        if use_score:
+            score_check = rs.evaluate_trend_filter(scored_cfg, daily, hourly)
     would_fixed = fixed.block_code is None
     would_score = None if score_check is None else score_check.block_code is None
     if mode is None:
@@ -409,7 +424,7 @@ def scored_trend_decision(
         raw=raw,
         age_s=age,
         sma_days_fixed=fixed_sma,
-        sma_days_score=None if not isinstance(mapped, dict) else mapped.get("sma_days"),
+        sma_days_score=sma_log,
         max_ext_fixed=trend_cfg.get("max_extension_pct"),
         max_ext_score=None if not isinstance(mapped, dict) else mapped.get("max_extension_pct"),
         would_pass_fixed=would_fixed,
@@ -418,7 +433,7 @@ def scored_trend_decision(
         mcap_score=None if not isinstance(mapped, dict) else mapped.get("mcap_floor_usd"),
         liq_fixed=floors.get("liq_floor_usdt"),
         liq_score=None if not isinstance(mapped, dict) else mapped.get("liq_floor_usdt"),
-        size_round_up=None if not isinstance(mapped, dict) else mapped.get("size_round_up_usdt"),
+        size_round_up=None if not isinstance(mapped, dict) else mapped.get("size_round_up_frac"),
         prefix=prefix,
     )
     _emit(line)
@@ -433,7 +448,7 @@ def scored_trend_decision(
         "age_s": age,
         "fresh": fresh,
         "sma_days_fixed": fixed_sma,
-        "sma_days_score": None if not isinstance(mapped, dict) else mapped.get("sma_days"),
+        "sma_days_score": sma_log,
         "max_ext_fixed": trend_cfg.get("max_extension_pct"),
         "max_ext_score": None if not isinstance(mapped, dict) else mapped.get("max_extension_pct"),
         "would_pass_fixed": would_fixed,
@@ -442,7 +457,7 @@ def scored_trend_decision(
         "mcap_floor_score": None if not isinstance(mapped, dict) else mapped.get("mcap_floor_usd"),
         "liq_floor_fixed": floors.get("liq_floor_usdt"),
         "liq_floor_score": None if not isinstance(mapped, dict) else mapped.get("liq_floor_usdt"),
-        "size_round_up": None if not isinstance(mapped, dict) else mapped.get("size_round_up_usdt"),
+        "size_round_up": None if not isinstance(mapped, dict) else mapped.get("size_round_up_frac"),
         "applied": mode == MODE_ENFORCE and fresh and score_check is not None,
         "decision_code_fixed": fixed.block_code,
         "decision_code_score": None if score_check is None else score_check.block_code,

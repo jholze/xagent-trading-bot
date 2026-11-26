@@ -1,10 +1,12 @@
 """Continuous market-oracle regime score (#835).
 
-The numeric anchors live in committed config.json. These tests pin that
-draft: clipping, weight renormalisation, the EMA half-life step, the four
-mapping anchors, monotonicity, stale/missing fallback, mode order, an off
-path that does not read the score, a shadow decision that matches the fixed
-filter, and an oracle poll that survives a score exception.
+The formulas live in committed config.json and match issue comment
+7185819947. These tests pin clipping, blend components, weight
+renormalisation, the EMA half-life step, the issue table at s=-1, 0,
++0.6 and +0.8, a second tenant base, monotonicity, the SMA-off enforce
+path, stale/missing fallback, mode order, an off path that does not read
+the score, a shadow decision that matches the fixed filter, and an oracle
+poll that survives a score exception.
 """
 
 from __future__ import annotations
@@ -52,12 +54,17 @@ from test_tenant_rule_switches import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-REF_BASE = {
+ISSUE_BASE = {
     "sma_days": 3,
     "max_extension_pct": 20,
-    "max_pump_24h_pct": 20,
-    "mcap_floor_usd": 5_000_000,
-    "liq_floor_usdt": 50_000,
+    "mcap_floor_usd": 20_000_000,
+    "liq_floor_usdt": 100_000,
+}
+OTHER_BASE = {
+    "sma_days": 10,
+    "max_extension_pct": 40,
+    "mcap_floor_usd": 8_000_000,
+    "liq_floor_usdt": 80_000,
 }
 TREND = _on("trend_filter", sma_days=3, max_extension_pct=20, max_pump_24h_pct=20)
 
@@ -107,31 +114,61 @@ def test_component_clip_and_sign():
     assert low["down"] == 1.0
 
 
+def _neutral_features(specs):
+    features = {}
+    for spec in specs:
+        if isinstance(spec.get("blend"), list):
+            for leg in spec["blend"]:
+                features[leg["feature"]] = 0.0
+        elif spec.get("feature"):
+            features[spec["feature"]] = spec.get("center", 0)
+    return features
+
+
 def test_missing_component_renormalises_weights():
     weights = {"a": 0.25, "b": 0.75}
     assert raw_score({"a": 1.0}, weights) == pytest.approx(1.0)
     assert raw_score({"a": 1.0, "b": -1.0}, weights) == pytest.approx(-0.5)
     assert raw_score({}, weights) is None
     specs = committed_oracle_score()["components"]
-    features = {spec["feature"]: spec.get("center", 0) for spec in specs}
+    features = _neutral_features(specs)
+    # sentiment is configured but the oracle poll does not supply it.
+    features.pop("santiment_composite", None)
     parts = components(features, specs)
-    assert set(parts) == {spec["name"] for spec in specs}
+    assert "sentiment" not in parts
+    assert "m24" in parts
     assert raw_score(parts, weights_of(specs)) == pytest.approx(0.0)
-    dropped = dict(features)
-    del dropped[specs[-1]["feature"]]
-    parts_dropped = components(dropped, specs)
-    assert specs[-1]["name"] not in parts_dropped
-    assert raw_score(parts_dropped, weights_of(specs)) == pytest.approx(0.0)
+    present = dict(parts)
+    present["m24"] = 1.0
+    assert raw_score(present, weights_of(specs)) == pytest.approx(0.25 / 0.95)
 
 
-def test_shipped_components_clip_at_the_configured_scales():
+def test_shipped_blend_and_funding_use_the_issue_formulas():
     specs = committed_oracle_score()["components"]
-    features = {spec["feature"]: spec.get("center", 0) for spec in specs}
-    features["btc_ret_24h_pct"] = 1000
-    features["btc_funding_rate_pct"] = 1
+    features = _neutral_features(specs)
+    features.pop("santiment_composite", None)
+    features["btc_ret_24h_pct"] = 8
+    features["eth_ret_24h_pct"] = 2
+    features["btc_funding_rate_pct"] = 0.05
     parts = components(features, specs)
-    assert parts["ret_24h_a"] == 1.0
+    # (0.7*8 + 0.3*2) / 4 = 1.55, then clipped.
+    assert parts["m24"] == 1.0
     assert parts["funding"] == -1.0
+    assert "sentiment" not in parts
+    features["eth_ret_24h_pct"] = 0
+    features["btc_ret_24h_pct"] = 4
+    quiet = components(features, specs)
+    assert quiet["m24"] == pytest.approx(0.7)
+    dropped = dict(features)
+    del dropped["eth_ret_24h_pct"]
+    assert "m24" not in components(dropped, specs)
+    # Blend coefficients are a weighted sum, not a renormalised mean.
+    blended = components(
+        {"a": 1, "b": 1},
+        [{"name": "mix", "scale": 1, "center": 0, "sign": 1, "weight": 1,
+          "blend": [{"feature": "a", "weight": 0.2}, {"feature": "b", "weight": 0.2}]}],
+    )
+    assert blended["mix"] == pytest.approx(0.4)
 
 
 def test_ema_half_life_is_a_half_step():
@@ -150,70 +187,109 @@ def test_ema_gap_longer_than_configured_max_resets_to_raw():
     assert did_reset is True and jumped == pytest.approx(1.0)
 
 
-def test_mapping_anchors_match_the_committed_draft():
+def _assert_issue_row(got, *, sma, ext, mcap_mult, liq_mult, frac, off):
+    assert got["sma_condition_off"] is off
+    if off:
+        assert got["sma_days"] is None
+        assert got["sma_window"] == 2
+    else:
+        assert got["sma_days"] == sma
+    assert got["max_extension_pct"] == pytest.approx(ext)
+    assert got["mcap_floor_usd"] == pytest.approx(ISSUE_BASE["mcap_floor_usd"] * mcap_mult)
+    assert got["liq_floor_usdt"] == pytest.approx(ISSUE_BASE["liq_floor_usdt"] * liq_mult)
+    assert got["size_round_up_frac"] == pytest.approx(frac)
+    assert "max_pump_24h_pct" not in got
+    assert "size_round_up_usdt" not in got
+
+
+def test_mapping_matches_the_issue_table_for_the_documented_base():
     mapping = _mapping()
-    expected = {
-        -1: dict(sma_days=50, max_extension_pct=10, max_pump_24h_pct=10,
-                 mcap_floor_usd=20_000_000, liq_floor_usdt=200_000, size_round_up_usdt=0),
-        0: dict(sma_days=3, max_extension_pct=20, max_pump_24h_pct=20,
-                mcap_floor_usd=5_000_000, liq_floor_usdt=50_000, size_round_up_usdt=0),
-        0.6: dict(sma_days=3, max_extension_pct=30, max_pump_24h_pct=25,
-                  mcap_floor_usd=3_000_000, liq_floor_usdt=30_000, size_round_up_usdt=0),
-        0.8: dict(sma_days=2, max_extension_pct=40, max_pump_24h_pct=35,
-                  mcap_floor_usd=2_000_000, liq_floor_usdt=20_000, size_round_up_usdt=50),
+    table = {
+        -1: dict(sma=50, ext=10, mcap_mult=2, liq_mult=2, frac=0, off=False),
+        0: dict(sma=3, ext=20, mcap_mult=1, liq_mult=1, frac=0, off=False),
+        0.6: dict(sma=2, ext=26, mcap_mult=2 ** -0.6, liq_mult=2 ** -0.6, frac=0.3, off=False),
+        0.8: dict(sma=None, ext=28, mcap_mult=2 ** -0.8, liq_mult=2 ** -0.8, frac=0.4, off=True),
     }
-    for s, want in expected.items():
-        got = filter_params(s, REF_BASE, mapping)
+    for s, want in table.items():
+        got = filter_params(s, ISSUE_BASE, mapping)
         assert got["s"] == pytest.approx(s)
-        for key, value in want.items():
-            assert got[key] == pytest.approx(value), (s, key, got[key])
-    # Past the last anchor the loosest row is held. s=+0.8 is sma 2, not 1.
-    top = filter_params(1, REF_BASE, mapping)
-    assert top["sma_days"] == 2
-    assert top["max_extension_pct"] == pytest.approx(40)
+        _assert_issue_row(got, **want)
+    top = filter_params(1, ISSUE_BASE, mapping)
+    assert top["sma_condition_off"] is True
+    assert top["max_extension_pct"] == pytest.approx(30)
+    assert top["mcap_floor_usd"] == pytest.approx(ISSUE_BASE["mcap_floor_usd"] * 0.5)
+    assert top["size_round_up_frac"] == pytest.approx(0.5)
 
 
-def test_higher_score_is_never_stricter():
+def test_mapping_is_monotonic_across_the_score_span():
     mapping = _mapping()
-    previous = None
-    for step in range(0, 41):
-        got = filter_params(-1 + step * 0.05, REF_BASE, mapping)
-        if previous is not None:
-            assert got["sma_days"] <= previous["sma_days"]
-            assert got["max_extension_pct"] >= previous["max_extension_pct"] - 1e-9
-            assert got["max_pump_24h_pct"] >= previous["max_pump_24h_pct"] - 1e-9
-            assert got["mcap_floor_usd"] <= previous["mcap_floor_usd"] + 1e-6
-            assert got["liq_floor_usdt"] <= previous["liq_floor_usdt"] + 1e-6
-            assert got["size_round_up_usdt"] >= previous["size_round_up_usdt"] - 1e-9
-        previous = got
+    for base in (ISSUE_BASE, OTHER_BASE):
+        previous = None
+        for step in range(0, 41):
+            got = filter_params(-1 + step * 0.05, base, mapping)
+            if previous is not None:
+                if got["sma_condition_off"]:
+                    assert got["sma_days"] is None
+                elif previous["sma_condition_off"]:
+                    raise AssertionError("sma condition returned after turning off")
+                else:
+                    assert got["sma_days"] <= previous["sma_days"]
+                assert got["max_extension_pct"] >= previous["max_extension_pct"] - 1e-9
+                assert got["mcap_floor_usd"] <= previous["mcap_floor_usd"] + 1e-6
+                assert got["liq_floor_usdt"] <= previous["liq_floor_usdt"] + 1e-6
+                assert got["size_round_up_frac"] >= previous["size_round_up_frac"] - 1e-9
+            previous = got
 
 
-def test_other_tenant_base_scales_around_its_own_s0():
+def test_other_tenant_base_is_reproduced_at_s0():
     mapping = _mapping()
-    base = dict(REF_BASE)
-    base["sma_days"] = 6
-    assert filter_params(0, base, mapping)["sma_days"] == 6
-    assert filter_params(-1, base, mapping)["sma_days"] == 100
-    assert filter_params(0.8, base, mapping)["sma_days"] == 4
+    zero = filter_params(0, OTHER_BASE, mapping)
+    assert zero["sma_days"] == 10
+    assert zero["max_extension_pct"] == pytest.approx(40)
+    assert zero["mcap_floor_usd"] == pytest.approx(8_000_000)
+    assert zero["liq_floor_usdt"] == pytest.approx(80_000)
+    assert zero["sma_condition_off"] is False
+    tight = filter_params(-1, OTHER_BASE, mapping)
+    assert tight["sma_days"] == 50
+    assert tight["max_extension_pct"] == pytest.approx(20)
+    assert tight["mcap_floor_usd"] == pytest.approx(16_000_000)
+    hot = filter_params(0.6, OTHER_BASE, mapping)
+    assert hot["sma_days"] == 2
+    assert hot["max_extension_pct"] == pytest.approx(52)
+    off = filter_params(0.8, OTHER_BASE, mapping)
+    assert off["sma_condition_off"] is True
+    assert off["sma_days"] is None
 
 
 def test_negative_score_cannot_map_looser_than_the_tenant_base():
-    bad = {
-        "reference": {"sma_days": 3, "max_extension_pct": 20},
-        "anchors": [
-            {"s": -1, "sma_days": 1, "max_extension_pct": 100},
-            {"s": 0, "sma_days": 3, "max_extension_pct": 20},
-        ],
-    }
-    base = {"sma_days": 3, "max_extension_pct": 20}
-    mapped = filter_params(-1, base, bad)
-    assert mapped["sma_days"] == 1
-    clamped = clamp_not_looser(mapped, base, -1)
-    assert clamped["sma_days"] == 3
+    mapping = _mapping()
+    wide = {"sma_days": 80, "max_extension_pct": 40, "mcap_floor_usd": 1_000_000, "liq_floor_usdt": 10_000}
+    mapped = filter_params(-1, wide, mapping)
+    assert mapped["sma_days"] == 50
+    clamped = clamp_not_looser(mapped, wide, mapped["s"])
+    assert clamped["sma_days"] == 80
+    assert clamped["sma_window"] == 80
     assert clamped["max_extension_pct"] == pytest.approx(20)
-    loose = clamp_not_looser({"sma_days": 2, "max_extension_pct": 40}, base, 0.8)
-    assert loose["sma_days"] == 2
-    assert loose["max_extension_pct"] == pytest.approx(40)
+    held = clamp_not_looser(filter_params(0, wide, mapping), wide, 0)
+    assert held["sma_days"] == 80
+    loose = clamp_not_looser(filter_params(0.8, wide, mapping), wide, 0.8)
+    assert loose["sma_condition_off"] is True
+    assert loose["sma_days"] is None
+    assert loose["max_extension_pct"] == pytest.approx(56)
+
+
+def test_missing_mapping_coefficients_leave_that_field_unmapped():
+    base = dict(ISSUE_BASE)
+    ext_only = filter_params(1, base, {"extension_slope": 0.5})
+    assert ext_only["sma_days"] is None
+    assert ext_only["sma_condition_off"] is False
+    assert ext_only["max_extension_pct"] == pytest.approx(30)
+    assert ext_only["mcap_floor_usd"] is None
+    no_off = dict(_mapping())
+    del no_off["sma_off_at"]
+    stayed = filter_params(0.9, base, no_off)
+    assert stayed["sma_condition_off"] is False
+    assert stayed["sma_days"] == 2
 
 
 def test_mode_resolution_order():
@@ -245,6 +321,23 @@ def test_committed_block_leaves_henry_trend_filter_untouched():
     assert block["mode"] == "off"
     assert block["tenant_modes"] == {"henry": "shadow"}
     assert abs(sum(row["weight"] for row in block["components"]) - 1.0) < 1e-9
+    assert [row["name"] for row in block["components"]] == [
+        "m24", "m4", "m1", "trend", "breadth", "funding", "sentiment",
+    ]
+    assert block["components"][-1]["feature"] == "santiment_composite"
+    mapping = block["mapping"]
+    assert mapping == {
+        "sma_tight_days": 50,
+        "sma_neg_span": 0.8,
+        "sma_pos_span": 0.6,
+        "sma_floor": 2,
+        "sma_off_at": 0.8,
+        "extension_slope": 0.5,
+        "floor_base": 2,
+        "floor_exponent": 1,
+        "size_round_up_frac": 0.5,
+    }
+    assert "sma_days_min" not in block
     raw = __import__("json").loads((ROOT / "config.json").read_text())
     assert "trend_filter" not in raw["rule_switches"]
     for rel in (
@@ -392,8 +485,9 @@ def test_shadow_keeps_the_fixed_pass_and_records_the_counterfactual():
     assert row["applied"] is False
 
 
-def test_enforce_uses_score_sma_when_fresh_and_fixed_values_when_stale_or_missing():
-    daily = _daily([120.0, 90.0, 100.0, 100.0])
+def test_enforce_skips_the_sma_condition_when_fresh_and_keeps_it_when_stale():
+    # Close is below both SMA3 and SMA2, so a shorter window would still reject.
+    daily = _daily([100.0, 80.0, 70.0, 70.0])
     fresh = scored_trend_decision(
         trend_cfg=TREND["trend_filter"],
         hourly=_closed_hourly(),
@@ -406,6 +500,21 @@ def test_enforce_uses_score_sma_when_fresh_and_fixed_values_when_stale_or_missin
         mode="enforce",
     )
     assert fresh.block_code is None
+    assert fresh.details["sma_condition_off"] is True
+    assert fresh.details["sma_days"] == 2
+    still_on = scored_trend_decision(
+        trend_cfg=TREND["trend_filter"],
+        hourly=_closed_hourly(),
+        fetch_daily=lambda _limit: daily,
+        now=NOW,
+        symbol=SYM,
+        tenant_id="henry",
+        config_raw={},
+        score_block=_score(0.6, NOW),
+        mode="enforce",
+    )
+    assert still_on.block_code == "trend_filter_below_sma"
+    assert still_on.details["sma_condition_off"] is False
     stale = scored_trend_decision(
         trend_cfg=TREND["trend_filter"],
         hourly=_closed_hourly(),
@@ -430,6 +539,65 @@ def test_enforce_uses_score_sma_when_fresh_and_fixed_values_when_stale_or_missin
             mode="enforce",
         )
     assert missing.block_code == "trend_filter_below_sma"
+    flagged = dict(TREND["trend_filter"])
+    flagged["sma_condition_off"] = "false"
+    closed = rs.closed_bars(daily, NOW, rs.DAY)
+    assert rs.evaluate_trend_filter(flagged, closed, _closed_hourly()).block_code == "trend_filter_below_sma"
+
+
+def test_shadow_logs_sma_off_and_keeps_the_fixed_rejection():
+    logs: list[str] = []
+    daily = _daily([100.0, 80.0, 70.0, 70.0])
+    with patch("logger.log", side_effect=lambda message, level="INFO": logs.append(str(message))):
+        check = scored_trend_decision(
+            trend_cfg=TREND["trend_filter"],
+            hourly=_closed_hourly(),
+            fetch_daily=lambda _limit: daily,
+            now=NOW,
+            symbol=SYM,
+            tenant_id="henry",
+            config_raw={},
+            score_block=_score(0.8, NOW),
+            mode="shadow",
+        )
+    assert check.block_code == "trend_filter_below_sma"
+    fields = _fields([line for line in logs if line.startswith("oracle_score_shadow ")][0])
+    assert fields["sma_days_score"] == "off"
+    assert fields["max_ext_score"] == "28"
+    assert fields["would_pass_fixed"] == "false"
+    assert fields["would_pass_score"] == "true"
+    assert fields["size_round_up"] == "0.4"
+
+
+def test_enforce_measures_extension_on_the_floor_window_when_sma_is_off():
+    # SMA2 extension is 20% (under 28). SMA3 extension is about 28.6% (over 28).
+    passing = _daily([100.0, 100.0, 150.0, 150.0])
+    kept = scored_trend_decision(
+        trend_cfg=TREND["trend_filter"],
+        hourly=_closed_hourly(),
+        fetch_daily=lambda _limit: passing,
+        now=NOW,
+        symbol=SYM,
+        tenant_id="henry",
+        config_raw={},
+        score_block=_score(0.8, NOW),
+        mode="enforce",
+    )
+    assert kept.block_code is None
+    assert kept.details["sma_days"] == 2
+    extended = _daily([100.0, 100.0, 200.0, 200.0])
+    blocked = scored_trend_decision(
+        trend_cfg=TREND["trend_filter"],
+        hourly=_closed_hourly(),
+        fetch_daily=lambda _limit: extended,
+        now=NOW,
+        symbol=SYM,
+        tenant_id="henry",
+        config_raw={},
+        score_block=_score(0.8, NOW),
+        mode="enforce",
+    )
+    assert blocked.block_code == "trend_filter_extended"
 
 
 def test_enforce_does_not_replace_the_pump_cap():
@@ -493,7 +661,7 @@ def test_henry_shadow_buy_matches_the_fixed_decision():
 
 
 def test_enforce_buy_and_fallback_go_through_the_risk_manager():
-    loosen = _daily([120.0, 90.0, 100.0, 100.0])
+    loosen = _daily([100.0, 80.0, 70.0, 70.0])
     blocked = _evaluate(_rm(TREND, _Market(daily=loosen)), _order())
     assert blocked.code == "trend_filter_below_sma"
     with patch("services.market_oracle.score_runtime.current_mode", return_value="enforce"), patch(
@@ -502,6 +670,12 @@ def test_enforce_buy_and_fallback_go_through_the_risk_manager():
     ):
         opened = _evaluate(_rm(TREND, _Market(daily=loosen)), _order())
     assert opened.approved
+    with patch("services.market_oracle.score_runtime.current_mode", return_value="enforce"), patch(
+        "services.market_oracle.score_runtime.read_published_score",
+        return_value=_score(0.6, NOW),
+    ):
+        still = _evaluate(_rm(TREND, _Market(daily=loosen)), _order())
+    assert still.code == "trend_filter_below_sma"
     with patch("services.market_oracle.score_runtime.current_mode", return_value="enforce"), patch(
         "services.market_oracle.score_runtime.read_published_score",
         return_value=_score(0.8, NOW - 1801),
@@ -590,6 +764,8 @@ def test_run_once_publishes_a_score_and_survives_a_score_exception():
         assert -1.0 <= snap["oracle_score"]["smoothed"] <= 1.0
         assert "raw" in snap["oracle_score"]
         assert "components" in snap["oracle_score"]
+        assert "m24" in snap["oracle_score"]["components"]
+        assert "sentiment" not in snap["oracle_score"]["components"]
 
         def boom(*_a, **_k):
             raise RuntimeError("score exploded")

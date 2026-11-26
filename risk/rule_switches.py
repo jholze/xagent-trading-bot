@@ -380,11 +380,18 @@ def evaluate_trend_filter(
     max_pump = _as_float(cfg.get("max_pump_24h_pct"), 20.0)
     above, ext = sma_extension(daily_closed, length)
     pump = pump_24h_pct(hourly_closed)
-    details = {"above_sma": above, "extension_pct": ext, "pump_24h_pct": pump, "sma_days": length}
+    sma_off = cfg.get("sma_condition_off") is True
+    details = {
+        "above_sma": above,
+        "extension_pct": ext,
+        "pump_24h_pct": pump,
+        "sma_days": length,
+        "sma_condition_off": sma_off,
+    }
     if above is None or ext is None or pump is None:
         details["missing_data"] = True
         return EntryCheck(None, "trend filter: no data, entry kept", details)
-    if not above:
+    if not sma_off and not above:
         return EntryCheck("trend_filter_below_sma", f"trend filter: close below SMA{length}", details)
     if ext > max_ext:
         return EntryCheck(
