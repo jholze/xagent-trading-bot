@@ -3327,11 +3327,47 @@ class RiskManager:
         hourly = rs.closed_bars(self._rule_switch_bars(sym, "1h", 72), now, rs.HOUR)
 
         if new_entry and trend_cfg["enabled"]:
-            sma_days = int(trend_cfg.get("sma_days") or 50)
-            daily = rs.closed_bars(
-                self._rule_switch_bars(sym, "1d", sma_days + 10), now, rs.DAY
-            )
-            check = rs.evaluate_trend_filter(trend_cfg, daily, hourly)
+            from core.tenant_context import resolve_tenant_id
+            from services.market_oracle.score import MODE_OFF, mode_from_raw
+
+            tenant_id = resolve_tenant_id()
+            score_mode = mode_from_raw(raw, tenant_id)
+            if score_mode == MODE_OFF:
+                # Unchanged #828 path. Do not read the oracle score, disk, or Mongo.
+                sma_days = int(trend_cfg.get("sma_days") or 50)
+                daily = rs.closed_bars(
+                    self._rule_switch_bars(sym, "1d", sma_days + 10), now, rs.DAY
+                )
+                check = rs.evaluate_trend_filter(trend_cfg, daily, hourly)
+            else:
+                from services.market_oracle.score_runtime import scored_trend_decision
+
+                score_block = ((raw.get("rule_switches") or {}).get("oracle_score"))
+                try:
+                    check = scored_trend_decision(
+                        trend_cfg=trend_cfg,
+                        hourly=hourly,
+                        fetch_daily=lambda limit: self._rule_switch_bars(sym, "1d", limit),
+                        now=now,
+                        symbol=sym,
+                        tenant_id=tenant_id,
+                        config_raw=raw,
+                        committed=score_block if isinstance(score_block, dict) else {},
+                        mode=score_mode,
+                    )
+                except Exception:
+                    from logger import log
+
+                    log(
+                        f"oracle score failed tenant={tenant_id} symbol={sym}; "
+                        "trend filter uses the fixed tenant values",
+                        "WARNING",
+                    )
+                    sma_days = int(trend_cfg.get("sma_days") or 50)
+                    daily = rs.closed_bars(
+                        self._rule_switch_bars(sym, "1d", sma_days + 10), now, rs.DAY
+                    )
+                    check = rs.evaluate_trend_filter(trend_cfg, daily, hourly)
             if check.block_code:
                 return RiskDecision(
                     approved=False,

@@ -373,18 +373,30 @@ class EntryCheck:
 
 
 def evaluate_trend_filter(
-    cfg: dict[str, Any], daily_closed: list[tuple], hourly_closed: list[tuple]
+    cfg: dict[str, Any],
+    daily_closed: list[tuple],
+    hourly_closed: list[tuple],
+    *,
+    sma_condition_off: bool = False,
 ) -> EntryCheck:
     length = int(_as_float(cfg.get("sma_days"), 50) or 50)
     max_ext = _as_float(cfg.get("max_extension_pct"), 20.0)
     max_pump = _as_float(cfg.get("max_pump_24h_pct"), 20.0)
     above, ext = sma_extension(daily_closed, length)
     pump = pump_24h_pct(hourly_closed)
-    details = {"above_sma": above, "extension_pct": ext, "pump_24h_pct": pump, "sma_days": length}
+    # Only the score path passes this keyword. A tenant trend_filter key is ignored.
+    sma_off = sma_condition_off is True
+    details = {
+        "above_sma": above,
+        "extension_pct": ext,
+        "pump_24h_pct": pump,
+        "sma_days": length,
+        "sma_condition_off": sma_off,
+    }
     if above is None or ext is None or pump is None:
         details["missing_data"] = True
         return EntryCheck(None, "trend filter: no data, entry kept", details)
-    if not above:
+    if not sma_off and not above:
         return EntryCheck("trend_filter_below_sma", f"trend filter: close below SMA{length}", details)
     if ext > max_ext:
         return EntryCheck(
