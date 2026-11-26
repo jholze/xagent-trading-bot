@@ -14,6 +14,9 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+import queue
+import threading
+
 from services.market_oracle.score import (
     MODE_ENFORCE,
     MODE_OFF,
@@ -23,7 +26,6 @@ from services.market_oracle.score import (
     format_shadow_line,
     history_cutoff,
     raw_score,
-    resolve_mode,
     score_is_fresh,
     should_write_history,
     smooth_score,
@@ -36,13 +38,22 @@ _CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.json"
 _BLOCK_CACHE: dict | None = None
 HISTORY_COLLECTION = "obs_oracle_score"
 SHADOW_COLLECTION = "obs_oracle_score_shadow"
-STATE_COLLECTION = "oracle_score_state"
-STATE_ID = "latest"
+_HISTORY_QUEUE: queue.Queue = queue.Queue(maxsize=64)
+_HISTORY_WORKER_STARTED = False
+_PERSIST_LOCK = threading.Lock()
+_PERSIST_ERROR = {"logged": False, "last": 0.0}
 
 
 def reset_for_tests() -> None:
     global _BLOCK_CACHE
     _BLOCK_CACHE = None
+    _PERSIST_ERROR["logged"] = False
+    _PERSIST_ERROR["last"] = 0.0
+    while True:
+        try:
+            _HISTORY_QUEUE.get_nowait()
+        except queue.Empty:
+            break
 
 
 def _pytest_running() -> bool:
@@ -63,44 +74,6 @@ def committed_oracle_score() -> dict:
         log.warning("oracle score config unreadable", exc_info=True)
         _BLOCK_CACHE = {}
     return _BLOCK_CACHE
-
-
-def read_tenant_oracle_block(tenant_id: str | None) -> dict | None:
-    """Tenant overlay ``rule_switches.oracle_score``, or None when unset.
-
-    Unit tests skip Mongo. A read failure is "unset", not a crash.
-    """
-    if not tenant_id:
-        return None
-    if _pytest_running() and os.environ.get("ORACLE_SCORE_READ_TENANT") != "1":
-        return None
-    try:
-        from data_manager import _load_default_config_from_disk
-        from storage.tenant_meta_store import load_tenant_config_body
-
-        body = load_tenant_config_body(
-            str(tenant_id), default_cfg=_load_default_config_from_disk()
-        )
-    except Exception:
-        log.warning("oracle score tenant config unreadable tenant=%s", tenant_id, exc_info=True)
-        return None
-    if not isinstance(body, dict):
-        return None
-    switches = body.get("rule_switches")
-    block = switches.get("oracle_score") if isinstance(switches, dict) else None
-    return block if isinstance(block, dict) else None
-
-
-def current_mode(tenant_id: str | None) -> str:
-    try:
-        return resolve_mode(
-            read_tenant_oracle_block(tenant_id),
-            committed_oracle_score(),
-            tenant_id,
-        )
-    except Exception:
-        log.warning("oracle score mode failed tenant=%s", tenant_id, exc_info=True)
-        return MODE_OFF
 
 
 def read_published_score() -> dict | None:
@@ -155,7 +128,7 @@ def compute_poll(features: dict | None, memory: dict | None, block: dict, now_ts
     parts = components(features or {}, _specs(block))
     weights = weights_of(_specs(block))
     raw = raw_score(parts, weights)
-    if raw is None and not parts:
+    if raw is None:
         return None, mem
     smoothed, _reset = smooth_score(
         mem.get("smoothed"),
@@ -186,18 +159,75 @@ def _mongo_enabled() -> bool:
     return True
 
 
-def load_persisted_memory() -> dict | None:
-    if not _mongo_enabled():
-        return None
-    try:
-        from storage.mongo_client import get_database
+def note_persist_failure(op: str, *, now: float | None = None, interval_sec: float | None = None) -> None:
+    """Log ERROR on the first failed persist, then at most once per interval.
 
-        doc = get_database()[STATE_COLLECTION].find_one({"_id": STATE_ID})
-    except Exception:
-        log.warning("oracle score state load failed", exc_info=True)
-        return None
-    if not isinstance(doc, dict):
-        return None
+    The interval is ``persist_error_interval_sec`` from the committed block
+    when the caller does not pass one.
+    """
+    import time
+
+    if interval_sec is None:
+        try:
+            interval_sec = _configured_float(
+                committed_oracle_score(), "persist_error_interval_sec", 300.0
+            )
+        except Exception:
+            interval_sec = 300.0
+    stamp = time.time() if now is None else float(now)
+    with _PERSIST_LOCK:
+        first = not _PERSIST_ERROR["logged"]
+        due = stamp - float(_PERSIST_ERROR["last"]) >= float(interval_sec)
+        if not first and not due:
+            return
+        _PERSIST_ERROR["logged"] = True
+        _PERSIST_ERROR["last"] = stamp
+    log.error("oracle score persist failed op=%s", op, exc_info=True)
+
+
+def _redis_enabled() -> bool:
+    if _pytest_running() and os.environ.get("ORACLE_SCORE_REDIS") != "1":
+        return False
+    return True
+
+
+def _configured_float(block: dict, key: str, default: float) -> float:
+    try:
+        value = float(block.get(key))
+    except (TypeError, ValueError):
+        return default
+    if value <= 0:
+        return default
+    return value
+
+
+def _configured_timeout_ms(block: dict) -> int:
+    try:
+        value = int(block.get("mongo_timeout_ms"))
+    except (TypeError, ValueError):
+        return 0
+    return value if value > 0 else 0
+
+
+def score_state_key() -> str:
+    from bus.redis_keys import redis_key_prefix
+
+    return f"{redis_key_prefix()}market_oracle:score_state"
+
+
+def _redis_client(timeout_sec: float):
+    import redis
+    from bus.redis_client import redis_url_from_env
+
+    return redis.Redis.from_url(
+        redis_url_from_env(),
+        socket_timeout=float(timeout_sec),
+        socket_connect_timeout=float(timeout_sec),
+        decode_responses=True,
+    )
+
+
+def _memory_from_doc(doc: dict) -> dict:
     return {
         "smoothed": doc.get("smoothed"),
         "raw": doc.get("raw"),
@@ -207,25 +237,115 @@ def load_persisted_memory() -> dict | None:
     }
 
 
-def _default_sink(op: str, payload: dict) -> None:
-    if not _mongo_enabled():
+def load_score_state(client: Any = None, *, timeout_sec: float = 0.5) -> dict | None:
+    """EMA restart state from Redis, beside the oracle snapshot. Never raises."""
+    own = client is None
+    if own and not _redis_enabled():
+        return None
+    try:
+        if own:
+            client = _redis_client(timeout_sec)
+        raw = client.get(score_state_key())
+    except Exception:
+        note_persist_failure("redis-load")
+        return None
+    if not raw:
+        return None
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        doc = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        note_persist_failure("redis-load")
+        return None
+    return _memory_from_doc(doc) if isinstance(doc, dict) else None
+
+
+def save_score_state(memory: dict, client: Any = None, *, timeout_sec: float = 0.5) -> bool:
+    """Write the EMA restart state to Redis. A failure is logged and swallowed."""
+    payload = json.dumps(
+        {
+            "smoothed": memory.get("smoothed"),
+            "raw": memory.get("raw"),
+            "ts": memory.get("ts"),
+            "components": memory.get("components") or {},
+            "last_history_ts": memory.get("last_history_ts"),
+        }
+    )
+    own = client is None
+    if own and not _redis_enabled():
+        return False
+    try:
+        if own:
+            client = _redis_client(timeout_sec)
+        client.set(score_state_key(), payload)
+        return True
+    except Exception:
+        note_persist_failure("redis-save")
+        return False
+
+
+def _write_history_mongo(payload: dict, timeout_ms: int) -> None:
+    """One history write. Timeouts are the configured millisecond value, each."""
+    from pymongo import MongoClient
+    from storage.mongo_client import (
+        assert_safe_dev_db_mutation,
+        resolve_database_name,
+        resolve_mongo_uri,
+    )
+
+    client = MongoClient(
+        resolve_mongo_uri(),
+        serverSelectionTimeoutMS=int(timeout_ms),
+        socketTimeoutMS=int(timeout_ms),
+        connectTimeoutMS=int(timeout_ms),
+    )
+    try:
+        db = client[resolve_database_name()]
+        assert_safe_dev_db_mutation(db.name, action="write")
+        cutoff = payload.get("cutoff")
+        row = payload.get("row")
+        if cutoff is not None:
+            db[HISTORY_COLLECTION].delete_many({"ts": {"$lt": float(cutoff)}})
+        if isinstance(row, dict):
+            db[HISTORY_COLLECTION].insert_one(dict(row))
+    finally:
+        client.close()
+
+
+def _history_worker() -> None:
+    while True:
+        try:
+            timeout_ms, payload = _HISTORY_QUEUE.get(timeout=0.2)
+        except queue.Empty:
+            continue
+        try:
+            _write_history_mongo(payload, int(timeout_ms))
+        except Exception:
+            note_persist_failure("history")
+
+
+def _ensure_history_worker() -> None:
+    global _HISTORY_WORKER_STARTED
+    with _PERSIST_LOCK:
+        if _HISTORY_WORKER_STARTED:
+            return
+        thread = threading.Thread(target=_history_worker, name="oracle-score-history", daemon=True)
+        thread.start()
+        _HISTORY_WORKER_STARTED = True
+
+
+def enqueue_history(payload: dict, timeout_ms: int) -> None:
+    """Queue a Mongo history write. Returns without waiting for Mongo."""
+    if timeout_ms <= 0 or not _mongo_enabled():
         return
     try:
-        from storage.mongo_client import assert_safe_dev_db_mutation, get_database
-
-        db = get_database()
-        assert_safe_dev_db_mutation(db.name, action="write")
-        if op == "state":
-            db[STATE_COLLECTION].update_one({"_id": STATE_ID}, {"$set": payload}, upsert=True)
-        elif op == "history":
-            cutoff = payload.get("cutoff")
-            row = payload.get("row")
-            if cutoff is not None:
-                db[HISTORY_COLLECTION].delete_many({"ts": {"$lt": float(cutoff)}})
-            if isinstance(row, dict):
-                db[HISTORY_COLLECTION].insert_one(dict(row))
+        _ensure_history_worker()
+        _HISTORY_QUEUE.put_nowait((int(timeout_ms), payload))
+    except queue.Full:
+        note_persist_failure("history-queue")
     except Exception:
-        log.warning("oracle score persist failed op=%s", op, exc_info=True)
+        note_persist_failure("history-queue")
 
 
 def apply_poll_score(
@@ -235,15 +355,21 @@ def apply_poll_score(
     *,
     block: dict | None = None,
     sink: Callable[[str, dict], None] | None = None,
+    redis_client: Any = None,
 ) -> dict | None:
-    """Update ``state`` and return the published score block. Never raises."""
+    """Update ``state`` and return the published score block. Never raises.
+
+    The EMA restart state is Redis. Mongo history is queued and does not block
+    this call. A caller-supplied ``sink`` is invoked in-process for tests.
+    """
     try:
         import time
 
         now_ts = float(time.time() if now is None else now)
         cfg = block if isinstance(block, dict) else committed_oracle_score()
+        timeout_sec = _configured_float(cfg, "redis_timeout_sec", 0.5)
         if not state.get("oracle_score_memory_loaded"):
-            loaded = load_persisted_memory()
+            loaded = load_score_state(redis_client, timeout_sec=timeout_sec)
             if loaded and not state.get("oracle_score_memory"):
                 state["oracle_score_memory"] = loaded
             state["oracle_score_memory_loaded"] = True
@@ -253,17 +379,16 @@ def apply_poll_score(
         state["oracle_score_memory"] = memory
         if published is None:
             return None
-        writer = sink or _default_sink
-        writer(
-            "state",
-            {
-                "smoothed": memory.get("smoothed"),
-                "raw": memory.get("raw"),
-                "ts": memory.get("ts"),
-                "components": memory.get("components") or {},
-                "last_history_ts": memory.get("last_history_ts"),
-            },
-        )
+        save_score_state(memory, redis_client, timeout_sec=timeout_sec)
+        state_row = {
+            "smoothed": memory.get("smoothed"),
+            "raw": memory.get("raw"),
+            "ts": memory.get("ts"),
+            "components": memory.get("components") or {},
+            "last_history_ts": memory.get("last_history_ts"),
+        }
+        if sink is not None:
+            sink("state", state_row)
         if should_write_history(
             memory.get("last_history_ts"), now_ts, cfg.get("history_min_interval_sec")
         ):
@@ -275,7 +400,11 @@ def apply_poll_score(
                 "components": published.get("components") or {},
                 "ts": now_ts,
             }
-            writer("history", {"row": row, "cutoff": cutoff})
+            history_payload = {"row": row, "cutoff": cutoff}
+            if sink is not None:
+                sink("history", history_payload)
+            else:
+                enqueue_history(history_payload, _configured_timeout_ms(cfg))
             memory["last_history_ts"] = now_ts
             state["oracle_score_memory"] = memory
         return published
@@ -314,12 +443,13 @@ def _base_cfg(trend_cfg: dict, floors: dict) -> dict:
 
 
 def _record_shadow(row: dict) -> None:
+    """Bot-side obs row. ``mirror_record`` enqueues with put_nowait and does not wait on Mongo."""
     try:
         from services.observe_streams import mirror_record
 
         mirror_record(SHADOW_COLLECTION, row)
     except Exception:
-        log.warning("oracle score shadow obs failed", exc_info=True)
+        note_persist_failure("shadow-obs")
 
 
 def _emit(line: str) -> None:
@@ -348,8 +478,9 @@ def scored_trend_decision(
 
     The returned check is the one the buy path must use. Shadow always returns
     the fixed check. Enforce returns the score check only when the score is
-    fresh. Mapping, logging and the observation write swallow their own errors.
-    A candle failure propagates so the buy path can fall back to the fixed check.
+    fresh. The fixed decision fetches ``sma_days + 10`` bars. The score variant
+    fetches on its own; a failed extra fetch leaves the score check unset.
+    Mapping, logging and the observation write swallow their own errors.
     """
     from risk import rule_switches as rs
 
@@ -382,40 +513,51 @@ def scored_trend_decision(
                 mapped = None
     score_sma = fixed_sma
     sma_log = None
+    sma_off = False
     if isinstance(mapped, dict):
         if mapped.get("sma_condition_off"):
             window = mapped.get("sma_window")
             if window is not None:
                 score_sma = int(window)
             sma_log = "off"
+            sma_off = True
         elif mapped.get("sma_days") is not None:
             score_sma = int(mapped["sma_days"])
             sma_log = mapped["sma_days"]
-    limit = max(fixed_sma, score_sma) + 10
-    daily = rs.closed_bars(fetch_daily(limit), now, rs.DAY)
-    fixed = rs.evaluate_trend_filter(trend_cfg, daily, hourly)
+    daily_fixed = rs.closed_bars(fetch_daily(fixed_sma + 10), now, rs.DAY)
+    fixed = rs.evaluate_trend_filter(trend_cfg, daily_fixed, hourly)
     score_check = None
     if isinstance(mapped, dict):
         scored_cfg = dict(trend_cfg)
+        scored_cfg.pop("sma_condition_off", None)
         use_score = False
-        if mapped.get("sma_condition_off"):
-            scored_cfg["sma_condition_off"] = True
+        if sma_off:
             if mapped.get("sma_window") is not None:
                 scored_cfg["sma_days"] = mapped["sma_window"]
             use_score = True
         elif mapped.get("sma_days") is not None:
-            scored_cfg.pop("sma_condition_off", None)
             scored_cfg["sma_days"] = mapped["sma_days"]
             use_score = True
         if mapped.get("max_extension_pct") is not None:
             scored_cfg["max_extension_pct"] = mapped["max_extension_pct"]
             use_score = True
         if use_score:
-            score_check = rs.evaluate_trend_filter(scored_cfg, daily, hourly)
+            try:
+                raw_bars = fetch_daily(max(fixed_sma, score_sma) + 10)
+            except Exception:
+                log.warning("oracle score daily fetch failed", exc_info=True)
+                raw_bars = None
+            if raw_bars:
+                daily_score = rs.closed_bars(raw_bars, now, rs.DAY)
+                score_check = rs.evaluate_trend_filter(
+                    scored_cfg, daily_score, hourly, sma_condition_off=sma_off
+                )
+                if score_check.details.get("missing_data"):
+                    score_check = None
     would_fixed = fixed.block_code is None
     would_score = None if score_check is None else score_check.block_code is None
     if mode is None:
-        mode = current_mode(tenant_id)
+        mode = MODE_OFF
     prefix = "oracle_score_shadow" if mode != MODE_ENFORCE else "oracle_score_enforce"
     line = format_shadow_line(
         tenant=str(tenant_id),

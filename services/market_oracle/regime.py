@@ -297,4 +297,10 @@ def should_push(
             return True
     except Exception:
         return True
+    prev_score = prev.get("oracle_score") if isinstance(prev, dict) else None
+    new_score = new.get("oracle_score") if isinstance(new, dict) else None
+    prev_ts = prev_score.get("ts") if isinstance(prev_score, dict) else None
+    new_ts = new_score.get("ts") if isinstance(new_score, dict) else None
+    if new_ts is not None and new_ts != prev_ts:
+        return True
     return False

@@ -299,43 +299,58 @@ def clamp_not_looser(params: dict | None, base_cfg: dict | None, s: float | None
     return out
 
 
-def normalize_mode(value: Any) -> str | None:
-    """Return a known mode, or None when the value is absent.
+def normalize_mode(value: Any) -> str:
+    """Only the literals ``off``, ``shadow`` and ``enforce``. Anything else is ``off``.
 
-    An unknown non-empty value is ``off`` so a typo cannot loosen entries.
+    Booleans, ``on``, ``yes`` and ``1`` are not enforce. A typo cannot loosen entries.
     """
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return MODE_ENFORCE if value else MODE_OFF
-    text = str(value).strip().lower()
-    if text in ("", "none", "null"):
-        return None
-    if text in MODES:
-        return text
-    if text in ("1", "true", "yes", "on"):
-        return MODE_ENFORCE
-    if text in ("0", "false", "no"):
-        return MODE_OFF
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in MODES:
+            return text
     return MODE_OFF
 
 
-def resolve_mode(tenant_block: dict | None, committed_block: dict | None, tenant_id: str | None) -> str:
-    """Tenant ``mode`` if set, else ``tenant_modes[tenant_id]``, else committed ``mode``."""
-    if isinstance(tenant_block, dict) and "mode" in tenant_block:
-        chosen = normalize_mode(tenant_block.get("mode"))
+def _mode_override(value: Any) -> str | None:
+    """A set override, or None when the value is blank so resolution can fall through."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in ("", "none", "null"):
+        return None
+    return normalize_mode(value)
+
+
+def resolve_mode(effective_block: dict | None, tenant_id: str | None) -> str:
+    """``tenant_mode_override`` if set, else ``tenant_modes[tenant_id]``, else ``default_mode``.
+
+    The committed key is ``default_mode``. ``mode`` is ignored, so a save-back of the
+    merged config cannot pin the committed default over ``tenant_modes``.
+    """
+    block = effective_block if isinstance(effective_block, dict) else {}
+    if "tenant_mode_override" in block:
+        chosen = _mode_override(block.get("tenant_mode_override"))
         if chosen is not None:
             return chosen
-    committed = committed_block if isinstance(committed_block, dict) else {}
-    modes = committed.get("tenant_modes")
-    if isinstance(modes, dict) and tenant_id:
-        key = str(tenant_id)
-        if key in modes:
-            chosen = normalize_mode(modes.get(key))
-            if chosen is not None:
-                return chosen
-    chosen = normalize_mode(committed.get("mode"))
-    return chosen if chosen is not None else MODE_OFF
+    modes = block.get("tenant_modes")
+    if isinstance(modes, dict) and tenant_id and str(tenant_id) in modes:
+        chosen = _mode_override(modes.get(str(tenant_id)))
+        if chosen is not None:
+            return chosen
+    if "default_mode" in block:
+        chosen = _mode_override(block.get("default_mode"))
+        if chosen is not None:
+            return chosen
+    return MODE_OFF
+
+
+def mode_from_raw(config_raw: dict | None, tenant_id: str | None) -> str:
+    """Mode from an in-memory tenant-effective config. No disk and no Mongo."""
+    raw = config_raw if isinstance(config_raw, dict) else {}
+    switches = raw.get("rule_switches")
+    block = switches.get("oracle_score") if isinstance(switches, dict) else None
+    if not isinstance(block, dict):
+        return MODE_OFF
+    return resolve_mode(block, tenant_id)
 
 
 def score_is_fresh(ts: float | None, now_ts: float | None, stale_after_sec: float | None) -> bool:
