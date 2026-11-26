@@ -20,6 +20,34 @@ from notifications.user_explain import (
 )
 
 
+# One regime-gate log per symbol per closed 4h bar (#836). The value is the bar open ms.
+_regime_gate_logged: dict[str, int] = {}
+
+
+def reset_climax_regime_gate_log_for_tests() -> None:
+    _regime_gate_logged.clear()
+
+
+def _utc_now():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
+def _in_memory_stale_after_sec(config_raw):
+    """``stale_after_sec`` from the loaded config. No disk and no Mongo.
+
+    The #835 buy path passes this same in-memory ``oracle_score`` block into
+    ``score_is_fresh``. A missing window is not fresh.
+    """
+    raw = config_raw if isinstance(config_raw, dict) else {}
+    switches = raw.get("rule_switches")
+    block = switches.get("oracle_score") if isinstance(switches, dict) else None
+    if not isinstance(block, dict):
+        return None
+    return block.get("stale_after_sec")
+
+
 def _entry_tier_from_analysis(analysis) -> str | None:
     """#711: the tier the cycle analysis resolved for this coin (no lot yet)."""
     try:
@@ -466,9 +494,13 @@ class SignalOrchestrator:
             return True, None
 
     def _try_climax_fade_open(self, symbol: str, current_price: float):
-        """Once per closed 4h bar. Missing OHLCV → no open (fail-closed)."""
-        from datetime import datetime, timezone
+        """Once per closed 4h bar. Missing OHLCV → no open (fail-closed).
 
+        #836 regime gate runs before the OHLCV fetch. ``enforce`` opens only
+        when the smoothed oracle score exists, is fresh, and is <= max_score.
+        ``shadow`` logs ``would_block`` and does not block. ``off`` does not
+        read the score. Covers do not use this method.
+        """
         from strategies.climax_fade import closed_bar_from_ohlcv, climax_fade_config
         from strategies.short_policy import shorts_enabled
 
@@ -476,7 +508,9 @@ class SignalOrchestrator:
         cfg = climax_fade_config(raw)
         if not cfg.get("enabled") or not shorts_enabled(raw):
             return None
-        now = datetime.now(timezone.utc)
+        now = _utc_now()
+        if not self._climax_regime_gate_allows(symbol, cfg, now):
+            return None
         try:
             df = self.market.fetch_ohlcv(symbol, "4h", 30)
         except Exception as exc:
@@ -488,6 +522,65 @@ class SignalOrchestrator:
         return self.trading._maybe_climax_fade_short(
             symbol, "4h", closed_bar, current_price, now=now
         )
+
+    def _climax_regime_gate_allows(self, symbol: str, cfg: dict, now) -> bool:
+        """True when the open may continue to the OHLCV fetch."""
+        from strategies.climax_fade import (
+            format_regime_gate_line,
+            last_closed_4h_open_ms,
+            normalize_climax_symbol,
+            regime_gate_verdict,
+        )
+
+        gate = cfg.get("regime_gate") if isinstance(cfg, dict) else None
+        if not isinstance(gate, dict) or gate.get("mode") == "off":
+            return True
+        smoothed = None
+        age = None
+        fresh = False
+        errored = False
+        try:
+            from services.market_oracle.score import score_is_fresh
+            from services.market_oracle.score_runtime import read_published_score
+
+            # Same accessor as the #835 buy path: published snapshot plus
+            # score_is_fresh against the in-memory stale window. No disk read
+            # and no copy of the Redis EMA state.
+            block = read_published_score()
+            now_ts = float(now.timestamp())
+            stale_after = _in_memory_stale_after_sec(
+                self.config.raw if hasattr(self.config, "raw") else None
+            )
+            if isinstance(block, dict):
+                smoothed = block.get("smoothed")
+                try:
+                    age = now_ts - float(block.get("ts"))
+                except (TypeError, ValueError):
+                    age = None
+                fresh = bool(score_is_fresh(block.get("ts"), now_ts, stale_after))
+        except Exception:
+            errored = True
+            age = None
+        if errored:
+            shadow = gate.get("mode") == "shadow"
+            verdict = {
+                "mode": gate.get("mode"),
+                "block": not shadow,
+                "verb": "would_block" if shadow else "blocked",
+                "reason": "error",
+                "s": None,
+                "max_score": gate.get("max_score"),
+            }
+        else:
+            verdict = regime_gate_verdict(gate, smoothed=smoothed, fresh=fresh)
+        if verdict.get("verb"):
+            bar_ms = last_closed_4h_open_ms(now)
+            key = normalize_climax_symbol(symbol) or str(symbol)
+            if _regime_gate_logged.get(key) != bar_ms:
+                level = "ERROR" if verdict.get("reason") == "error" else "INFO"
+                log(format_regime_gate_line(symbol, verdict, age), level)
+                _regime_gate_logged[key] = bar_ms
+        return not bool(verdict.get("block"))
 
     def process_entry_sensor(
         self,
@@ -600,6 +693,16 @@ class SignalOrchestrator:
                 trade_result = climax_res
             else:
                 trade_result = self.execute_if_needed(analysis, coin, current_price)
+        try:
+            from services.trend_short_shadow import observe_trend_short
+
+            observe_trend_short(
+                symbol,
+                getattr(self, "market", None),
+                self.config.raw if hasattr(self.config, "raw") else None,
+            )
+        except Exception as exc:
+            log(f"trend_short_shadow skipped {symbol}: {exc}", "WARNING")
         self.audit.record(coin, analysis, trade_result, current_price)
 
         # Rule E (per-tenant, off by default): full exit of an old lot deep in loss.
