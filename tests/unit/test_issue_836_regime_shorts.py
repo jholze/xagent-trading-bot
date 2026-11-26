@@ -9,7 +9,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -367,6 +367,89 @@ def test_unknown_mode_does_not_loosen(monkeypatch):
     assert _fields(_gate_lines(logs)[0])["reason"] == "above_max"
 
 
+def test_present_blank_mode_is_enforce_and_absent_mode_stays_off(monkeypatch):
+    logs = []
+    now_ts = NOW.timestamp()
+    _patch_clock(monkeypatch, logs, {"smoothed": 0.0, "ts": now_ts})
+    fetches = []
+
+    def fetch(*_a, **_k):
+        fetches.append("fetch")
+        return None
+
+    for mode in (None, "", False):
+        logs.clear()
+        fetches.clear()
+        reset_climax_regime_gate_log_for_tests()
+        raw = _raw()
+        raw["shorts"]["climax_fade"]["regime_gate"] = {"mode": mode, "max_score": -0.2}
+        orch = _orch(raw, fetch, lambda *a, **k: "opened")
+        assert orch._try_climax_fade_open("AAA/USDT", 1.0) is None
+        assert fetches == []
+        assert _fields(_gate_lines(logs)[0])["reason"] == "above_max"
+
+    logs.clear()
+    fetches.clear()
+    absent = _raw()
+    absent["shorts"]["climax_fade"]["regime_gate"] = {"max_score": -0.2}
+    monkeypatch.setattr(
+        "services.market_oracle.score_runtime.read_published_score",
+        lambda: (_ for _ in ()).throw(AssertionError("absent mode must not read the score")),
+    )
+    monkeypatch.setattr(
+        "strategies.climax_fade.closed_bar_from_ohlcv", lambda *_a, **_k: {"ts_ms": 1}
+    )
+    opened = _orch(absent, fetch, lambda *a, **k: "opened")
+    assert opened._try_climax_fade_open("AAA/USDT", 1.0) == "opened"
+    assert fetches == ["fetch"]
+    assert _gate_lines(logs) == []
+
+
+def test_missing_or_nan_max_score_is_bad_config_before_fetch(monkeypatch):
+    logs = []
+    now_ts = NOW.timestamp()
+    _patch_clock(monkeypatch, logs, {"smoothed": -0.5, "ts": now_ts})
+    fetches = []
+    gates = (
+        {"mode": "enforce"},
+        {"mode": "enforce", "max_score": None},
+        {"mode": "enforce", "max_score": float("nan")},
+    )
+    for index, gate in enumerate(gates):
+        logs.clear()
+        fetches.clear()
+        reset_climax_regime_gate_log_for_tests()
+        raw = _raw()
+        raw["shorts"]["climax_fade"]["regime_gate"] = gate
+        orch = _orch(raw, lambda *a, **k: fetches.append("fetch"))
+        assert orch._try_climax_fade_open(f"SYM{index}/USDT", 1.0) is None
+        assert fetches == []
+        assert _fields(_gate_lines(logs)[0])["reason"] == "bad_config"
+
+
+def test_gate_log_fires_again_on_the_next_closed_bar(monkeypatch):
+    logs = []
+    clock = {"now": NOW}
+    monkeypatch.setattr("services.signal_orchestrator._utc_now", lambda: clock["now"])
+    monkeypatch.setattr(
+        "services.market_oracle.score_runtime.read_published_score", lambda: None
+    )
+    monkeypatch.setattr(
+        "services.market_oracle.score_runtime.committed_oracle_score",
+        lambda: (_ for _ in ()).throw(AssertionError("no disk")),
+    )
+    monkeypatch.setattr(
+        "services.signal_orchestrator.log",
+        lambda message, level="INFO": logs.append((level, str(message))),
+    )
+    orch = _orch(_raw(), lambda *a, **k: None)
+    assert orch._try_climax_fade_open("AAA/USDT", 1.0) is None
+    assert len(_gate_lines(logs)) == 1
+    clock["now"] = NOW + timedelta(hours=4)
+    assert orch._try_climax_fade_open("AAA/USDT", 1.0) is None
+    assert len(_gate_lines(logs)) == 2
+
+
 def test_gate_config_does_not_change_climax_thresholds():
     cfg = climax_fade_config(
         {
@@ -503,7 +586,7 @@ def _run_shadow(monkeypatch, closes, symbol="AAA/USDT", raw=None, score=-0.4):
 
 def test_trend_shadow_emits_would_open_and_would_cover(monkeypatch):
     opened, logs, rows, fetches = _run_shadow(
-        monkeypatch, [10.0] * 5 + [16.0, 16.0, 4.0]
+        monkeypatch, [10.0] * 6 + [16.0, 16.0, 4.0]
     )
     assert opened is not None
     assert opened["event"] == "would_open"
@@ -514,6 +597,7 @@ def test_trend_shadow_emits_would_open_and_would_cover(monkeypatch):
     assert opened["excluded"] is False
     assert opened["fast_span"] == 2
     assert opened["slow_span"] == 3
+    assert opened["n_bars"] == 9
     assert opened["round_trip_cost_pct"] == pytest.approx(0.70)
     assert fetches == [("AAA/USDT", "4h", 9)]
     assert rows[0][0] == "obs_trend_short_shadow"
@@ -524,10 +608,11 @@ def test_trend_shadow_emits_would_open_and_would_cover(monkeypatch):
     assert fields["symbol"] == "AAA/USDT"
     assert fields["close"] == "4"
     assert fields["s"] == "-0.4"
+    assert fields["n_bars"] == "9"
     assert fields["excluded"] == "false"
 
     reset_trend_shadow()
-    covered, logs, _rows, _fetches = _run_shadow(monkeypatch, [10.0] * 5 + [16.0])
+    covered, logs, _rows, _fetches = _run_shadow(monkeypatch, [10.0] * 8 + [16.0])
     assert covered["event"] == "would_cover"
     assert any(item.startswith("trend_short_shadow would_cover ") for item in logs)
 
@@ -537,7 +622,7 @@ def test_trend_shadow_is_once_per_closed_bar_and_tags_excluded(monkeypatch):
 
     def fetch(sym, timeframe, limit):
         fetches.append(sym)
-        return _frame([10.0] * 5 + [16.0, 16.0, 4.0])
+        return _frame([10.0] * 6 + [16.0, 16.0, 4.0])
 
     market = type("M", (), {})()
     market.fetch_ohlcv = fetch
@@ -607,6 +692,79 @@ def test_trend_shadow_never_calls_the_order_path_and_swallows_errors(monkeypatch
     # A second failure in the same bar is logged once.
     assert observe_trend_short("AAA/USDT", market, _shadow_raw(), now=NOW) is None
     assert sum("trend_short_shadow error" in line for line in logs) == 1
+
+
+def test_short_frame_is_fetched_once_per_closed_bar(monkeypatch):
+    """Eight closed bars would cross, but warmup is 9, so the cross does not count."""
+    fetches = []
+    rows = []
+
+    def fetch(sym, timeframe, limit):
+        fetches.append((sym, timeframe, limit))
+        return _frame([10.0] * 5 + [16.0, 16.0, 4.0])
+
+    market = type("M", (), {})()
+    market.fetch_ohlcv = fetch
+    monkeypatch.setattr("logger.log", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "services.observe_streams.mirror_record",
+        lambda collection, row: rows.append((collection, row)),
+    )
+    raw = _shadow_raw()
+    assert observe_trend_short("AAA/USDT", market, raw, now=NOW) is None
+    assert observe_trend_short("AAA/USDT", market, raw, now=NOW) is None
+    assert fetches == [("AAA/USDT", "4h", 9)]
+    assert rows == []
+
+
+def test_non_4h_timeframe_disables_the_shadow_with_one_warning(monkeypatch):
+    logs = []
+    fetches = []
+
+    def fetch(*_a, **_k):
+        fetches.append(1)
+        return _frame([10.0] * 9)
+
+    market = type("M", (), {})()
+    market.fetch_ohlcv = fetch
+    monkeypatch.setattr(
+        "logger.log", lambda message, level="INFO": logs.append((level, str(message)))
+    )
+    raw = _shadow_raw()
+    raw["shorts"]["trend_short_shadow"]["timeframe"] = "1h"
+    assert observe_trend_short("AAA/USDT", market, raw, now=NOW) is None
+    assert observe_trend_short("BBB/USDT", market, raw, now=NOW) is None
+    assert fetches == []
+    warnings = [text for level, text in logs if level == "WARNING"]
+    assert warnings == ["trend_short_shadow disabled timeframe=1h reason=only_4h"]
+
+
+def test_none_or_empty_frame_logs_no_data_once(monkeypatch):
+    logs = []
+    fetches = []
+    frames = {"AAA/USDT": None, "BBB/USDT": type("Empty", (), {"empty": True})()}
+
+    def fetch(sym, timeframe, limit):
+        fetches.append(sym)
+        return frames[sym]
+
+    market = type("M", (), {})()
+    market.fetch_ohlcv = fetch
+    monkeypatch.setattr(
+        "logger.log", lambda message, level="INFO": logs.append(str(message))
+    )
+    monkeypatch.setattr("services.observe_streams.mirror_record", lambda *a, **k: None)
+    raw = _shadow_raw()
+    assert observe_trend_short("AAA/USDT", market, raw, now=NOW) is None
+    assert observe_trend_short("AAA/USDT", market, raw, now=NOW) is None
+    assert observe_trend_short("BBB/USDT", market, raw, now=NOW) is None
+    assert observe_trend_short("BBB/USDT", market, raw, now=NOW) is None
+    assert fetches == ["AAA/USDT", "BBB/USDT"]
+    no_data = [line for line in logs if line.startswith("trend_short_shadow no_data ")]
+    assert no_data == [
+        "trend_short_shadow no_data symbol=AAA/USDT",
+        "trend_short_shadow no_data symbol=BBB/USDT",
+    ]
 
 
 def test_process_coin_calls_the_shadow_and_not_from_the_cover_path():

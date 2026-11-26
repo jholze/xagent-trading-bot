@@ -135,7 +135,7 @@
       "regime_gate": {
         "mode": "enforce",
         "max_score": -0.2,
-        "_doc": "KLTB-5 (#836). Climax_fade OPENS only. enforce: open only when the #835 smoothed oracle score exists, is fresh (rule_switches.oracle_score.stale_after_sec) and is <= max_score; otherwise no open and one climax_fade_regime_gate blocked line per symbol per closed 4h bar. shadow: logs would_block and does not block. off: the score is not read. An unknown mode is enforce. A missing or non-finite max_score does not open in enforce. Covers, stops, the time door, thresholds, exclude_symbols and size_factor are not this gate. max_score -0.2 is the lower edge of the neutral bucket."
+        "_doc": "KLTB-5 (#836). Climax_fade OPENS only. enforce: open only when the #835 smoothed oracle score exists, is fresh (rule_switches.oracle_score.stale_after_sec) and is <= max_score; otherwise no open and one climax_fade_regime_gate blocked line per symbol per closed 4h bar. shadow: logs would_block and does not block. off: the score is not read. The mode is off only when the key is absent or the block is missing. A present value that is not off, shadow, or enforce, including null, empty, and false, is enforce. A missing or non-finite max_score does not open in enforce (reason=bad_config). Covers, stops, the time door, thresholds, exclude_symbols and size_factor are not this gate. max_score -0.2 is the lower edge of the neutral bucket."
       }
     },
     "trend_short_shadow": {
@@ -145,7 +145,7 @@
       "timeframe": "4h",
       "warmup_mult": 3,
       "round_trip_cost_pct": 0.7,
-      "_doc": "KLTB-5 (#836). Observe only, on symbols the orchestrator already scans. EMA spans are fast_hours and slow_hours divided by the timeframe hours (48/4=12, 480/4=120). Bars requested = warmup_mult times the slow span so the slow EMA can converge. EMA fast crossing below EMA slow logs trend_short_shadow would_open; crossing above logs would_cover. One evaluation per symbol per closed 4h bar. An obs_trend_short_shadow row stores close, both EMAs, the smoothed regime score and round_trip_cost_pct (0.70 percent round trip) so a later job can score the 72h outcome. Climax exclude_symbols are still logged and tagged excluded. Never calls execute_order and never takes a slot."
+      "_doc": "KLTB-5 (#836). Observe only, on symbols the orchestrator already scans. Only timeframe 4h is accepted; any other value disables the shadow and logs one WARNING. EMA spans are fast_hours and slow_hours divided by 4 (48/4=12, 480/4=120). Bars requested = warmup_mult times the slow span. A cross counts only when closed bars are at least that warmup. The log line and the obs row include n_bars. A None or empty frame logs trend_short_shadow no_data once per symbol per closed bar and is not fetched again that bar. A short history on the expected bar is not fetched again that bar. EMA fast crossing below EMA slow logs would_open; crossing above logs would_cover. The row also stores close, both EMAs, the smoothed regime score and round_trip_cost_pct (0.70 percent round trip). Climax exclude_symbols are still logged and tagged excluded. Never calls execute_order and never takes a slot."
     },
     "leverage_default": 2,
     "leverage_cap": 2,

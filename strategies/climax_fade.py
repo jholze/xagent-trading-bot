@@ -134,15 +134,24 @@ def _finite_num(value: Any) -> float | None:
     return num
 
 
+_GATE_MODES = ("off", "shadow", "enforce")
+
+
 def normalize_regime_gate(raw: Any) -> dict[str, Any]:
-    """``off`` when the block is missing. An unknown mode fails closed (``enforce``)."""
+    """``off`` when the block or the mode key is missing.
+
+    A present ``mode`` that is not ``off``, ``shadow``, or ``enforce``
+    (including null, ``""``, and false) fails closed as ``enforce``.
+    """
     out: dict[str, Any] = {"mode": "off", "max_score": None}
     if not isinstance(raw, dict):
         return out
-    mode = str(raw.get("mode") or "off").strip().lower()
-    if mode not in ("off", "shadow", "enforce"):
-        mode = "enforce"
-    out["mode"] = mode
+    if "mode" in raw:
+        value = raw.get("mode")
+        mode = value.strip().lower() if isinstance(value, str) else ""
+        if mode not in _GATE_MODES:
+            mode = "enforce"
+        out["mode"] = mode
     out["max_score"] = _finite_num(raw.get("max_score"))
     return out
 

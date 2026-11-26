@@ -58,16 +58,16 @@ The smoothed score comes from the #835 reader (`read_published_score`). Freshnes
 
 | key | committed | meaning |
 | --- | --- | --- |
-| `shorts.climax_fade.regime_gate.mode` | `enforce` | `off`: the score is not read and opens behave as before. `shadow`: a failing check logs `climax_fade_regime_gate would_block` and the open still runs. `enforce`: the open runs only when the smoothed score exists, is fresh, and is `<= max_score`. Otherwise the open returns before the 4h fetch and logs `climax_fade_regime_gate blocked symbol=… s=… age_s=… max=… reason=…` once per symbol per closed 4h bar. An unknown mode is `enforce`. |
+| `shorts.climax_fade.regime_gate.mode` | `enforce` | `off`: the score is not read and opens behave as before. `shadow`: a failing check logs `climax_fade_regime_gate would_block` and the open still runs. `enforce`: the open runs only when the smoothed score exists, is fresh, and is `<= max_score`. Otherwise the open returns before the 4h fetch and logs `climax_fade_regime_gate blocked symbol=… s=… age_s=… max=… reason=…` once per symbol per closed 4h bar. The mode is `off` only when the key is absent or the block is missing. A present value that is not `off`, `shadow`, or `enforce`, including null, `""`, and false, is `enforce`. |
 | `shorts.climax_fade.regime_gate.max_score` | `-0.2` | Upper bound on the smoothed score for an open. `-0.2` is the lower edge of the neutral bucket. A missing or non-finite value does not open in `enforce`. |
 | `shorts.trend_short_shadow.enabled` | `true` | Observe only. Literal `true` only. Evaluated once per closed bar on symbols `process_coin` already scans. Never calls `execute_order` and never takes a slot. |
 | `shorts.trend_short_shadow.fast_hours` | `48` | Fast EMA length in hours. The span in bars is `fast_hours / timeframe hours` (48/4 = 12). |
 | `shorts.trend_short_shadow.slow_hours` | `480` | Slow EMA length in hours. The span in bars is `slow_hours / timeframe hours` (480/4 = 120). |
-| `shorts.trend_short_shadow.timeframe` | `4h` | Bar size for the EMA. |
+| `shorts.trend_short_shadow.timeframe` | `4h` | Only `4h` is accepted. Any other value disables the shadow and logs one `trend_short_shadow disabled … reason=only_4h` WARNING. |
 | `shorts.trend_short_shadow.warmup_mult` | `3` | Bars requested = `warmup_mult * slow span` (3 × 120 = 360) so the slow EMA can converge. |
 | `shorts.trend_short_shadow.round_trip_cost_pct` | `0.7` | Round-trip cost in percent stored on each `obs_trend_short_shadow` row (0.70%). A later job uses it for the 72h outcome. |
 
-A cross of the fast EMA below the slow EMA logs `trend_short_shadow would_open symbol=… close=… ema_fast=… ema_slow=… s=…` and writes `obs_trend_short_shadow`. A cross above logs `would_cover`. Climax `exclude_symbols` are still logged, with `excluded=true`. The EMA state is recomputed from the fetched window. A fetch failure logs `trend_short_shadow error` once per symbol per closed bar and does not raise.
+A cross of the fast EMA below the slow EMA logs `trend_short_shadow would_open symbol=… close=… ema_fast=… ema_slow=… s=… n_bars=…` and writes `obs_trend_short_shadow` (the row includes `n_bars`) only when the closed-bar count is at least the configured warmup. A cross above logs `would_cover`. Climax `exclude_symbols` are still logged, with `excluded=true`. The EMA state is recomputed from the fetched window. A None or empty frame logs `trend_short_shadow no_data` once per symbol per closed bar and is not fetched again that bar. A frame whose latest closed bar is the expected bar but shorter than the warmup is not fetched again that bar, and the cross does not count. A raising fetch logs `trend_short_shadow error` once per symbol per closed bar and does not raise.
 
 ## Regenerating
 

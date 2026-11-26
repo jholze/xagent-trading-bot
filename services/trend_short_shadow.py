@@ -11,11 +11,14 @@ from typing import Any
 
 _EVALUATED: dict[str, int] = {}
 _ERROR_LOGGED: dict[str, int] = {}
+_TIMEFRAME_WARNED = False
 
 
 def reset_for_tests() -> None:
+    global _TIMEFRAME_WARNED
     _EVALUATED.clear()
     _ERROR_LOGGED.clear()
+    _TIMEFRAME_WARNED = False
 
 
 def _finite(value: Any) -> float | None:
@@ -147,11 +150,12 @@ def format_trend_shadow_line(
     ema_slow: float,
     s: float | None,
     excluded: bool,
+    n_bars: int,
 ) -> str:
     return (
         f"trend_short_shadow {event} symbol={symbol} close={_fmt(close)} "
         f"ema_fast={_fmt(ema_fast)} ema_slow={_fmt(ema_slow)} s={_fmt(s)} "
-        f"excluded={'true' if excluded else 'false'}"
+        f"n_bars={int(n_bars)} excluded={'true' if excluded else 'false'}"
     )
 
 
@@ -203,6 +207,24 @@ def _log_error_once(symbol: str, bar_ms: int, exc: BaseException) -> None:
     _emit(f"trend_short_shadow error symbol={symbol}: {exc}", "ERROR")
 
 
+def _warn_timeframe_once(timeframe: Any) -> None:
+    """One WARNING for a non-4h timeframe. The shadow stays off."""
+    global _TIMEFRAME_WARNED
+    if _TIMEFRAME_WARNED:
+        return
+    _TIMEFRAME_WARNED = True
+    shown = str(timeframe or "").strip() or "na"
+    _emit(
+        f"trend_short_shadow disabled timeframe={shown} reason=only_4h",
+        "WARNING",
+    )
+
+
+def _remember(symbol: str, bar_ms: int) -> None:
+    """Negative cache: this symbol does not fetch again on this closed bar."""
+    _EVALUATED[symbol] = bar_ms
+
+
 def observe_trend_short(
     symbol: str,
     market,
@@ -240,6 +262,10 @@ def _observe(symbol, market, config_raw, now) -> dict | None:
     cfg = trend_short_shadow_config(config_raw)
     if not cfg.get("enabled"):
         return None
+    timeframe = str(cfg.get("timeframe") or "").strip().lower()
+    if timeframe != "4h":
+        _warn_timeframe_once(cfg.get("timeframe"))
+        return None
     spans = ema_spans(cfg)
     if spans is None:
         return None
@@ -256,12 +282,14 @@ def _observe(symbol, market, config_raw, now) -> dict | None:
     if market is None or not hasattr(market, "fetch_ohlcv"):
         return None
     try:
-        frame = market.fetch_ohlcv(sym, str(cfg.get("timeframe") or "4h"), bars)
+        frame = market.fetch_ohlcv(sym, "4h", bars)
     except Exception as exc:
         _log_error_once(sym, bar_ms, exc)
         return None
     parsed = _read_ohlcv(frame)
     if parsed is None:
+        _emit(f"trend_short_shadow no_data symbol={sym}", "INFO")
+        _remember(sym, bar_ms)
         return None
     closes_all, stamps_all = parsed
     closed_closes: list[float] = []
@@ -270,11 +298,13 @@ def _observe(symbol, market, config_raw, now) -> dict | None:
         if is_closed_4h_bar(ts, now_dt):
             closed_closes.append(close)
             closed_ts.append(ts)
-    if len(closed_closes) < slow_span + 1:
+    if not closed_ts or int(closed_ts[-1]) != bar_ms:
         return None
-    if int(closed_ts[-1]) != bar_ms:
+    n_bars = len(closed_closes)
+    if n_bars < bars:
+        _remember(sym, bar_ms)
         return None
-    _EVALUATED[sym] = bar_ms
+    _remember(sym, bar_ms)
     fast = ema_series(closed_closes, fast_span)
     slow = ema_series(closed_closes, slow_span)
     event = ema_cross(fast[-2], slow[-2], fast[-1], slow[-1])
@@ -294,6 +324,7 @@ def _observe(symbol, market, config_raw, now) -> dict | None:
         ema_slow=ema_slow,
         s=s,
         excluded=excluded,
+        n_bars=n_bars,
     )
     _emit(line, "INFO")
     row = {
@@ -306,8 +337,9 @@ def _observe(symbol, market, config_raw, now) -> dict | None:
         "s": s,
         "score_age_s": age,
         "excluded": excluded,
+        "n_bars": n_bars,
         "bar_open_ts_ms": int(closed_ts[-1]),
-        "timeframe": str(cfg.get("timeframe") or "4h"),
+        "timeframe": "4h",
         "fast_span": fast_span,
         "slow_span": slow_span,
         "round_trip_cost_pct": float(cfg.get("round_trip_cost_pct") or 0.7),
