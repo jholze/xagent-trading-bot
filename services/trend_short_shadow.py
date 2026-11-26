@@ -11,6 +11,7 @@ from typing import Any
 
 _EVALUATED: dict[str, int] = {}
 _ERROR_LOGGED: dict[str, int] = {}
+_NO_DATA_TRIES: dict[str, tuple[int, int]] = {}
 _TIMEFRAME_WARNED = False
 
 
@@ -18,6 +19,7 @@ def reset_for_tests() -> None:
     global _TIMEFRAME_WARNED
     _EVALUATED.clear()
     _ERROR_LOGGED.clear()
+    _NO_DATA_TRIES.clear()
     _TIMEFRAME_WARNED = False
 
 
@@ -33,6 +35,16 @@ def _finite(value: Any) -> float | None:
 
 def _round_half_up(value: float) -> int:
     return int(math.floor(float(value) + 0.5))
+
+
+def _whole_nonneg(value: Any) -> int | None:
+    num = _finite(value)
+    if num is None or num < 0:
+        return None
+    whole = _round_half_up(num)
+    if abs(num - whole) > 1e-9:
+        return None
+    return whole
 
 
 def timeframe_hours(timeframe: str | None) -> float | None:
@@ -61,6 +73,7 @@ def trend_short_shadow_config(raw: dict | None = None) -> dict[str, Any]:
         "timeframe": "4h",
         "warmup_mult": 3.0,
         "round_trip_cost_pct": 0.7,
+        "no_data_retries": 2,
     }
     shorts = (raw or {}).get("shorts") if isinstance(raw, dict) else None
     block = shorts.get("trend_short_shadow") if isinstance(shorts, dict) else None
@@ -71,6 +84,9 @@ def trend_short_shadow_config(raw: dict | None = None) -> dict[str, Any]:
         num = _finite(block.get(key))
         if num is not None and num > 0:
             out[key] = num
+    retries = _whole_nonneg(block.get("no_data_retries"))
+    if retries is not None:
+        out["no_data_retries"] = retries
     tf = str(block.get("timeframe") or "").strip()
     if tf:
         out["timeframe"] = tf
@@ -225,6 +241,17 @@ def _remember(symbol: str, bar_ms: int) -> None:
     _EVALUATED[symbol] = bar_ms
 
 
+def _note_no_data(symbol: str, bar_ms: int, retries: int) -> None:
+    """Log once. Cache only after ``retries`` further misses in this bar."""
+    prev = _NO_DATA_TRIES.get(symbol)
+    count = prev[1] + 1 if prev is not None and prev[0] == bar_ms else 1
+    _NO_DATA_TRIES[symbol] = (bar_ms, count)
+    if count == 1:
+        _emit(f"trend_short_shadow no_data symbol={symbol}", "INFO")
+    if count > retries:
+        _remember(symbol, bar_ms)
+
+
 def observe_trend_short(
     symbol: str,
     market,
@@ -282,14 +309,13 @@ def _observe(symbol, market, config_raw, now) -> dict | None:
     if market is None or not hasattr(market, "fetch_ohlcv"):
         return None
     try:
-        frame = market.fetch_ohlcv(sym, "4h", bars)
+        frame = market.fetch_ohlcv(sym, "4h", bars + 1)
     except Exception as exc:
         _log_error_once(sym, bar_ms, exc)
         return None
     parsed = _read_ohlcv(frame)
     if parsed is None:
-        _emit(f"trend_short_shadow no_data symbol={sym}", "INFO")
-        _remember(sym, bar_ms)
+        _note_no_data(sym, bar_ms, int(cfg.get("no_data_retries") or 0))
         return None
     closes_all, stamps_all = parsed
     closed_closes: list[float] = []

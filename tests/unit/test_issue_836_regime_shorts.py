@@ -94,15 +94,26 @@ class _Col:
         return list(self._values)
 
 
-def _frame(closes, now=NOW):
-    """Closed bars ending on the clock's last closed 4h bar, plus one forming bar."""
+def _frame(closes, limit, now=NOW):
+    """Exactly ``limit`` rows. The last row is the forming bar.
+
+    The other rows are the last ``limit - 1`` closes, ending on the clock's
+    last closed 4h bar. ``closes`` must be at least that long.
+    """
+    closed_n = int(limit) - 1
+    if closed_n < 1 or len(closes) < closed_n:
+        raise AssertionError(f"need {closed_n} closes for limit={limit}, got {len(closes)}")
+    closed = list(closes)[-closed_n:]
     now_ms = int(now.timestamp() * 1000)
     forming = (now_ms // _FOUR_H_MS) * _FOUR_H_MS
     last_closed = forming - _FOUR_H_MS
-    n = len(closes)
-    stamps = [last_closed - (n - 1 - i) * _FOUR_H_MS for i in range(n)]
+    stamps = [last_closed - (closed_n - 1 - i) * _FOUR_H_MS for i in range(closed_n)]
     stamps.append(forming)
-    return _Frame(list(closes) + [float(closes[-1]) * 50.0], stamps)
+    rows = closed + [float(closed[-1]) * 50.0]
+    frame = _Frame(rows, stamps)
+    if len(rows) != int(limit):
+        raise AssertionError(f"frame has {len(rows)} rows, limit={limit}")
+    return frame
 
 
 def _orch(raw, fetch, maybe=None):
@@ -521,6 +532,7 @@ def test_committed_config_pins_the_gate_and_leaves_the_kill_switches():
     assert shadow["timeframe"] == "4h"
     assert shadow["warmup_mult"] == 3
     assert shadow["round_trip_cost_pct"] == pytest.approx(0.70)
+    assert shadow["no_data_retries"] == 2
     spans = ema_spans(trend_short_shadow_config({"shorts": disk["shorts"]}))
     assert spans == (12, 120, 360)
 
@@ -560,12 +572,11 @@ def _run_shadow(monkeypatch, closes, symbol="AAA/USDT", raw=None, score=-0.4):
     logs = []
     rows = []
     fetches = []
-    frame = _frame(closes)
     raw = _shadow_raw() if raw is None else raw
 
     def fetch(sym, timeframe, limit):
         fetches.append((sym, timeframe, limit))
-        return frame
+        return _frame(closes, limit)
 
     monkeypatch.setattr(
         "logger.log", lambda message, level="INFO": logs.append(str(message))
@@ -599,7 +610,7 @@ def test_trend_shadow_emits_would_open_and_would_cover(monkeypatch):
     assert opened["slow_span"] == 3
     assert opened["n_bars"] == 9
     assert opened["round_trip_cost_pct"] == pytest.approx(0.70)
-    assert fetches == [("AAA/USDT", "4h", 9)]
+    assert fetches == [("AAA/USDT", "4h", 10)]
     assert rows[0][0] == "obs_trend_short_shadow"
     assert rows[0][1]["event"] == "would_open"
     line = [item for item in logs if item.startswith("trend_short_shadow ")][0]
@@ -622,7 +633,7 @@ def test_trend_shadow_is_once_per_closed_bar_and_tags_excluded(monkeypatch):
 
     def fetch(sym, timeframe, limit):
         fetches.append(sym)
-        return _frame([10.0] * 6 + [16.0, 16.0, 4.0])
+        return _frame([10.0] * 6 + [16.0, 16.0, 4.0], limit)
 
     market = type("M", (), {})()
     market.fetch_ohlcv = fetch
@@ -643,9 +654,9 @@ def test_trend_shadow_is_once_per_closed_bar_and_tags_excluded(monkeypatch):
 def test_flat_series_does_not_emit_and_disabled_does_not_fetch(monkeypatch):
     fetches = []
 
-    def fetch(*_a, **_k):
+    def fetch(_sym, _timeframe, limit):
         fetches.append(1)
-        return _frame([10.0] * 8)
+        return _frame([10.0] * 9, limit)
 
     market = type("M", (), {})()
     market.fetch_ohlcv = fetch
@@ -701,7 +712,7 @@ def test_short_frame_is_fetched_once_per_closed_bar(monkeypatch):
 
     def fetch(sym, timeframe, limit):
         fetches.append((sym, timeframe, limit))
-        return _frame([10.0] * 5 + [16.0, 16.0, 4.0])
+        return _frame([10.0] * 5 + [16.0, 16.0, 4.0], limit - 1)
 
     market = type("M", (), {})()
     market.fetch_ohlcv = fetch
@@ -713,7 +724,7 @@ def test_short_frame_is_fetched_once_per_closed_bar(monkeypatch):
     raw = _shadow_raw()
     assert observe_trend_short("AAA/USDT", market, raw, now=NOW) is None
     assert observe_trend_short("AAA/USDT", market, raw, now=NOW) is None
-    assert fetches == [("AAA/USDT", "4h", 9)]
+    assert fetches == [("AAA/USDT", "4h", 10)]
     assert rows == []
 
 
@@ -721,9 +732,9 @@ def test_non_4h_timeframe_disables_the_shadow_with_one_warning(monkeypatch):
     logs = []
     fetches = []
 
-    def fetch(*_a, **_k):
+    def fetch(_sym, _timeframe, limit):
         fetches.append(1)
-        return _frame([10.0] * 9)
+        return _frame([10.0] * 9, limit)
 
     market = type("M", (), {})()
     market.fetch_ohlcv = fetch
@@ -759,12 +770,77 @@ def test_none_or_empty_frame_logs_no_data_once(monkeypatch):
     assert observe_trend_short("AAA/USDT", market, raw, now=NOW) is None
     assert observe_trend_short("BBB/USDT", market, raw, now=NOW) is None
     assert observe_trend_short("BBB/USDT", market, raw, now=NOW) is None
-    assert fetches == ["AAA/USDT", "BBB/USDT"]
+    assert fetches == ["AAA/USDT", "AAA/USDT", "BBB/USDT", "BBB/USDT"]
     no_data = [line for line in logs if line.startswith("trend_short_shadow no_data ")]
     assert no_data == [
         "trend_short_shadow no_data symbol=AAA/USDT",
         "trend_short_shadow no_data symbol=BBB/USDT",
     ]
+
+
+def test_no_data_retries_before_the_bar_is_cached(monkeypatch):
+    logs = []
+    fetches = []
+
+    def fetch(sym, timeframe, limit):
+        fetches.append(limit)
+        return None
+
+    market = type("M", (), {})()
+    market.fetch_ohlcv = fetch
+    monkeypatch.setattr(
+        "logger.log", lambda message, level="INFO": logs.append(str(message))
+    )
+    raw = _shadow_raw()
+    for _ in range(4):
+        assert observe_trend_short("AAA/USDT", market, raw, now=NOW) is None
+    assert fetches == [10, 10, 10]
+    assert logs == ["trend_short_shadow no_data symbol=AAA/USDT"]
+
+    reset_trend_shadow()
+    fetches.clear()
+    logs.clear()
+    raw["shorts"]["trend_short_shadow"]["no_data_retries"] = 0
+    assert observe_trend_short("AAA/USDT", market, raw, now=NOW) is None
+    assert observe_trend_short("AAA/USDT", market, raw, now=NOW) is None
+    assert fetches == [10]
+
+
+def test_committed_config_emits_on_a_361_row_exchange_frame(monkeypatch):
+    with open(os.path.join(REPO_ROOT, "config.json"), encoding="utf-8") as handle:
+        disk = json.load(handle)
+    # 8.0 stays exact in the EMA, so the bar before the drop still has fast >= slow.
+    closes = [8.0] * 359 + [1.0]
+    fetches = []
+    rows = []
+
+    def fetch(sym, timeframe, limit):
+        fetches.append((sym, timeframe, limit))
+        frame = _frame(closes, limit)
+        assert len(frame._closes) == 361
+        return frame
+
+    market = type("M", (), {})()
+    market.fetch_ohlcv = fetch
+    monkeypatch.setattr("logger.log", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "services.observe_streams.mirror_record",
+        lambda collection, row: rows.append((collection, dict(row))),
+    )
+    monkeypatch.setattr(
+        "services.market_oracle.score_runtime.read_published_score",
+        lambda: {"smoothed": -0.4, "ts": NOW.timestamp()},
+    )
+    opened = observe_trend_short("AAA/USDT", market, disk, now=NOW)
+    assert fetches == [("AAA/USDT", "4h", 361)]
+    assert opened is not None
+    assert opened["event"] == "would_open"
+    assert opened["n_bars"] == 360
+    assert opened["fast_span"] == 12
+    assert opened["slow_span"] == 120
+    assert rows[0][0] == "obs_trend_short_shadow"
+    assert rows[0][1]["n_bars"] == 360
+    assert rows[0][1]["event"] == "would_open"
 
 
 def test_process_coin_calls_the_shadow_and_not_from_the_cover_path():
