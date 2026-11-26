@@ -2580,6 +2580,41 @@
     "elig_liq7": {"mode": "shadow"},
     "elig_collapse90": {"mode": "shadow"},
     "elig_chase48": {"mode": "shadow"},
-    "elig_mcap": {"mode": "shadow"}
+    "elig_mcap": {"mode": "shadow"},
+    "oracle_score": {
+      "_doc": "KLTB-7 continuous regime score (#835). GitHub issue #835 names a draft-v2 mapping table that is not in the published issue body; this block is that draft and the only place these numbers live. Mode: tenant body rule_switches.oracle_score.mode if that key is set, else tenant_modes[<tenant_id>], else mode. Committed mode is off. henry is shadow via tenant_modes only — do not write henry's tenant config, and do not change henry's trend_filter (sma_days 3, max_extension_pct 20, max_pump_24h_pct 20). off: the trend filter is unchanged. shadow: same decision, one oracle_score_shadow log line and an obs_oracle_score_shadow row. enforce: the trend filter uses the score's sma_days and max_extension_pct only; a stale or missing score uses the fixed tenant values (never looser). max_pump, mcap floor, liquidity floor and size round-up are computed and logged, not applied. Components read MarketDataClient.fetch_features (no second feature computation). Each component is (value-center)/scale*sign, clipped to [-1,1]; missing components are dropped and weights renormalised. EMA alpha = 1 - 0.5^(dt/half_life) from the real gap between polls; a gap longer than max_gap_sec resets to the raw score. Mapping anchors are interpolated and held at the ends (no extrapolation), then scaled by tenant_base/reference so s=0 reproduces the tenant base. sma_days is floored and held at sma_days_min. s=+0.8 maps to sma_days 2: a 1-bar SMA equals the close, so close>SMA can never pass. CRASH handling is unchanged.",
+      "mode": "off",
+      "tenant_modes": {"henry": "shadow"},
+      "half_life_sec": 21600,
+      "max_gap_sec": 21600,
+      "stale_after_sec": 1800,
+      "history_retain_sec": 2592000,
+      "history_min_interval_sec": 300,
+      "sma_days_min": 1,
+      "components": [
+        {"name": "ret_24h_a", "feature": "btc_ret_24h_pct", "weight": 0.24, "scale": 6, "center": 0, "sign": 1},
+        {"name": "ret_24h_b", "feature": "eth_ret_24h_pct", "weight": 0.10, "scale": 8, "center": 0, "sign": 1},
+        {"name": "ret_4h_a", "feature": "btc_ret_4h_pct", "weight": 0.14, "scale": 3, "center": 0, "sign": 1},
+        {"name": "ret_1h_a", "feature": "btc_ret_1h_pct", "weight": 0.08, "scale": 2.5, "center": 0, "sign": 1},
+        {"name": "trend_4h_a", "feature": "btc_trend_4h", "weight": 0.16, "scale": 1, "center": 0, "sign": 1},
+        {"name": "breadth", "feature": "breadth_pct_green", "weight": 0.18, "center": 0.5, "scale": 0.25, "sign": 1},
+        {"name": "funding", "feature": "btc_funding_rate_pct", "weight": 0.10, "scale": 0.05, "center": 0, "sign": -1}
+      ],
+      "mapping": {
+        "reference": {
+          "sma_days": 3,
+          "max_extension_pct": 20,
+          "max_pump_24h_pct": 20,
+          "mcap_floor_usd": 5000000,
+          "liq_floor_usdt": 50000
+        },
+        "anchors": [
+          {"s": -1, "sma_days": 50, "max_extension_pct": 10, "max_pump_24h_pct": 10, "mcap_floor_usd": 20000000, "liq_floor_usdt": 200000, "size_round_up_usdt": 0},
+          {"s": 0, "sma_days": 3, "max_extension_pct": 20, "max_pump_24h_pct": 20, "mcap_floor_usd": 5000000, "liq_floor_usdt": 50000, "size_round_up_usdt": 0},
+          {"s": 0.6, "sma_days": 3, "max_extension_pct": 30, "max_pump_24h_pct": 25, "mcap_floor_usd": 3000000, "liq_floor_usdt": 30000, "size_round_up_usdt": 0},
+          {"s": 0.8, "sma_days": 2, "max_extension_pct": 40, "max_pump_24h_pct": 35, "mcap_floor_usd": 2000000, "liq_floor_usdt": 20000, "size_round_up_usdt": 50}
+        ]
+      }
+    }
   }
 }

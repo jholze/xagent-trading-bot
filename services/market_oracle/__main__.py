@@ -97,6 +97,14 @@ def run_once(cfg: dict, client: MarketDataClient, hyst: StateHysteresis) -> dict
         ttl_sec=cfg["ttl_sec"],
         previous_state=prev_state,
     )
+    try:
+        from services.market_oracle.score_runtime import apply_poll_score
+
+        scored = apply_poll_score(features, _STATE)
+        if scored:
+            snap["oracle_score"] = scored
+    except Exception:
+        log.exception("oracle score failed; snapshot continues without a score")
     _STATE["polls"] += 1
     _STATE["last_snapshot"] = snap
     now = time.time()

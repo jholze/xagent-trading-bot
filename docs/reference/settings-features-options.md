@@ -21,6 +21,28 @@ These keys are not in committed `config.json`. The generated tables only list co
 | `shorts.testnet_futures.api_key_env` | absent → `GATE_TESTNET_API_KEY` | #830. Env var *name* (never the value) of the dedicated Gate testnet API key. Used only in testnet mode with `strict_route: true`; then the testnet client signs with it instead of `live.api_key_env`. Denied (`testnet_credentials_unknown`) if the name is empty or the env var is unset/empty; denied (`testnet_env_aliases_live`) if the name equals `live.api_key_env` / `live.api_secret_env` or the value equals a live value. Values are compared in process, never logged or returned. |
 | `shorts.testnet_futures.api_secret_env` | absent → `GATE_TESTNET_API_SECRET` | #830. Env var *name* of the dedicated testnet API secret. Same rules as `api_key_env`; key and secret names must differ. |
 
+## Oracle regime score (`rule_switches.oracle_score`, #835)
+
+Continuous score in [-1, 1] from the market-oracle feature poll. Numbers live only in committed `config.json` under `rule_switches.oracle_score` (weights, scales, half-life, max gap, staleness, history retention, and the mapping anchors). The code reads that block. It does not recompute `MarketDataClient.fetch_features`.
+
+Mode, per tenant, in this order: the tenant body's `rule_switches.oracle_score.mode` when that key is set, else committed `tenant_modes[<tenant_id>]`, else committed `mode`. Committed `mode` is `off`. Committed `tenant_modes.henry` is `shadow`. Henry's existing `trend_filter` values are not in this block and are not changed (`sma_days` 3, `max_extension_pct` 20, `max_pump_24h_pct` 20).
+
+| key | committed | meaning |
+| --- | --- | --- |
+| `rule_switches.oracle_score.mode` | `off` | `off`: trend filter unchanged, score is not read. `shadow`: same decision, plus one `oracle_score_shadow` log line and an `obs_oracle_score_shadow` row. `enforce`: trend filter uses the score's `sma_days` and `max_extension_pct` only. Unknown values are `off`. |
+| `rule_switches.oracle_score.tenant_modes` | `{"henry": "shadow"}` | Used when the tenant body does not set `mode`. |
+| `rule_switches.oracle_score.half_life_sec` | `21600` | EMA half-life. Alpha is `1 - 0.5^(dt/half_life)` from the real gap between polls. |
+| `rule_switches.oracle_score.max_gap_sec` | `21600` | A longer gap resets the EMA to the raw score. |
+| `rule_switches.oracle_score.stale_after_sec` | `1800` | Older than this, enforce uses the fixed tenant filter (never the score). |
+| `rule_switches.oracle_score.history_retain_sec` | `2592000` | Score history (`obs_oracle_score`) older than this is dropped. |
+| `rule_switches.oracle_score.history_min_interval_sec` | `300` | Minimum spacing between history rows. |
+| `rule_switches.oracle_score.sma_days_min` | `1` | Floor under the mapped `sma_days` after the integer step. The s=+0.8 anchor is 2, because a 1-bar SMA equals the close and `close > SMA` cannot pass. |
+| `rule_switches.oracle_score.components` | 7 entries | `name`, `feature`, `weight`, `scale`, `center`, `sign`. Missing features are dropped and the remaining weights are renormalised. |
+| `rule_switches.oracle_score.mapping.reference` | sma 3 / ext 20 / pump 20 / mcap 5_000_000 / liq 50_000 | Denominator. Mapped values scale by the tenant base divided by this reference, so s=0 returns the tenant's own base. |
+| `rule_switches.oracle_score.mapping.anchors` | s = -1, 0, +0.6, +0.8 | Linear interpolation. Outside the span the nearest anchor is held. Enforce applies only `sma_days` and `max_extension_pct`. Pump, mcap floor, liquidity floor and `size_round_up_usdt` are logged only. |
+
+A missing or stale score, and any score exception, leave the buy on the fixed tenant filter. The oracle poll still publishes its snapshot when the score step fails.
+
 ## Regenerating
 
 ```bash

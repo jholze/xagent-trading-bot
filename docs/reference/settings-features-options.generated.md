@@ -73,7 +73,7 @@ Regenerate: `python3 scripts/generate_settings_reference.py`
 | `recovery_hold` | `<dict len=5>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
 | `regime_detector` | `<dict len=7>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
 | `risk` | `<dict len=37>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
-| `rule_switches` | `<dict len=5>` | Per-tenant feature rule switches (see specs/tenant-rule-switches). |
+| `rule_switches` | `<dict len=6>` | Per-tenant feature rule switches (see specs/tenant-rule-switches). |
 | `sandbox` | `<dict len=6>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
 | `sell_policy` | `<dict len=6>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
 | `shorts` | `<dict len=16>` | _Open code / DOCUMENTATION; no curated one-liner yet._ |
