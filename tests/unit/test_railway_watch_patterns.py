@@ -42,3 +42,13 @@ class TestRailwayWatchPatterns:
         with patch("scripts.deploy.sync_railway_watch._railway") as rw:
             assert main([]) == 0
             rw.assert_not_called()
+
+    def test_dca_sniper_watches_its_imported_code(self):
+        """#822 follow-up: the sniper runs strategies.dca_* and intelligence.memory.*."""
+        spec = json.loads(SPEC.read_text(encoding="utf-8"))
+        sniper = spec["services"]["xagent-dca-sniper"]["patterns"]
+        assert "services/dca_sniper/**" in sniper
+        assert "strategies/dca_*.py" in sniper
+        assert "intelligence/memory/**" in sniper
+        assert "xagent-test" not in spec["services"]
+        assert "xagent-bot" not in spec["services"]

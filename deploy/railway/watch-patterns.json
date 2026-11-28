@@ -43,7 +43,11 @@
     },
     "xagent-dca-sniper": {
       "id": "1fe06bef-ebe6-403e-8fec-fa3586285f7f",
-      "patterns": ["services/dca_sniper/**"]
+      "patterns": [
+        "services/dca_sniper/**",
+        "strategies/dca_*.py",
+        "intelligence/memory/**"
+      ]
     },
     "xagent-gis-monitor": {
       "id": "1b5f1a57-413f-4036-b73a-6785e2607fa2",
